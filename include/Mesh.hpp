@@ -31,17 +31,24 @@ public:
         int cells = 0;
         double cx = 0.0;
         double cy = 0.0;
+        double cz = 0.0;
         double radius = 0.0;
 
         double baseCx = 0.0;
         double baseCy = 0.0;
-        double area = 0.0;
+        double baseCz = 0.0;
+        double volume = 0.0;
+        double inertia[9] = {};
     };
 
     struct BodyPose {
         double x = 0.0;
         double y = 0.0;
-        double theta = 0.0;
+        double z = 0.0;
+        double qw = 1.0;
+        double qx = 0.0;
+        double qy = 0.0;
+        double qz = 0.0;
     };
 
     // presetSolid short-circuits the whole geometry pipeline: a continuation
@@ -50,30 +57,30 @@ public:
     explicit Mesh(const Config& cfg,
                   const std::vector<uint8_t>* presetSolid = nullptr);
 
-    std::vector<double> x, y;
+    std::vector<double> x, y, z;
     std::vector<int> solid;   // 1 = inside body, 0 = fluid
     std::vector<int> objectId;   // 0 = fluid, 1..objects.size() = which body
     std::vector<SolidObject> objects;
     std::vector<Triangle> triangles;
     GeometryType geometryType = GeometryType::STL;
-    float dx, dy;
-    int nx, ny;
+    float dx, dy, dz;
+    int nx, ny, nz;
 
-    void initCircle(double cx, double cy, double R);
+    void initCircle(double cx, double cy, double cz, double R);
     bool loadGeometry(const std::string& filename);
     bool loadOBJ(const std::string& filename);
     bool loadSTL(const std::string& filename);
     void buildSection(const Profile& profile);
+    void buildVolume(const Profile& profile);
 
     bool valid() const { return placementError.empty(); }
     const std::string& error() const { return placementError; }
     void rasterizeSection();
+    void voxelize();
     void buildSolid();
 
-    // Flood-fills the mask into numbered bodies, 8-connected: two cells that
-    // meet only at a corner are one object, and the flow cannot squeeze
-    // through that corner either. Numbering follows the scan order of the
-    // grid, so the same mask always produces the same numbers.
+    // Numbering follows the scan order of the grid, so the same mask always
+    // produces the same numbers.
     void labelObjects();
 
     void checkPlacement(const Profile& profile);
@@ -110,8 +117,12 @@ private:
     // loop comes out as a hole rather than as solid, which is what it is.
     std::vector<std::vector<SectionPoint>> sectionContours;
 
+    std::vector<Triangle> volumeTriangles;
+
     std::vector<std::vector<SectionPoint>> baseContours;
     std::vector<int> contourObject;
+    std::vector<int> baseObjectId;
+    std::vector<std::vector<int>> baseCells;
     std::vector<int> cellOwner;
     std::vector<int> contestedCells;
     std::vector<int> claimScratch;
@@ -121,6 +132,7 @@ private:
 
     void relabelStable();
     void rasterizeOwned();
+    void voxelizeOwned();
 
     void createGrid();
     void clearSolid();

@@ -88,9 +88,9 @@ int checkBalance(const RestartData& frame, const char* label) {
 
 int expectRefused(const Config& cfg, const char* label) {
     std::string error;
-    std::vector<int> solid(static_cast<size_t>(cfg.nx) * cfg.ny, 0);
+    std::vector<int> solid(static_cast<size_t>(cfg.nx) * cfg.ny * cfg.nz, 0);
     if (checkBoundaryMassBalance(cfg.boundaries, cfg.U0,
-                                 DomainExtent{cfg.Lx, cfg.Ly, cfg.nx, cfg.ny},
+                                 DomainExtent{cfg.Lx, cfg.Ly, cfg.Lz, cfg.nx, cfg.ny, cfg.nz},
                                  solid, error))
         return fail(std::string(label) + " was accepted and should not have "
                                          "been");
@@ -100,9 +100,9 @@ int expectRefused(const Config& cfg, const char* label) {
 
 int expectAccepted(const Config& cfg, const char* label) {
     std::string error;
-    std::vector<int> solid(static_cast<size_t>(cfg.nx) * cfg.ny, 0);
+    std::vector<int> solid(static_cast<size_t>(cfg.nx) * cfg.ny * cfg.nz, 0);
     if (!checkBoundaryMassBalance(cfg.boundaries, cfg.U0,
-                                  DomainExtent{cfg.Lx, cfg.Ly, cfg.nx, cfg.ny},
+                                  DomainExtent{cfg.Lx, cfg.Ly, cfg.Lz, cfg.nx, cfg.ny, cfg.nz},
                                   solid, error))
         return fail(std::string(label) + " was refused: " + error);
     std::printf("  %-18s accepted\n", label);

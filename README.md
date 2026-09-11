@@ -1,36 +1,89 @@
 (lets just forget that we pushed 12 commits just for things to build normally and files to look at least alright 'cause we're stooooopid as shi)
 (from Kuzya: i dunno how it works, i have a feeling it's something alive, and changes by itself <3. TOTALLY NOT ME COMMITING 12 TIMES)
-# CFD-Solver-2D
+# Fluid-Solver
 
-> **PROJECT FULLY DONE, NO UPDATES PLANNED.**
+> **1.0 is still the version, and it is no longer the last thing that happened.**
 >
-> 1.0 is the last one. Adaptive mesh refinement was the last thing on the list
-> and it is in: a stretched grid where you want the cells, patches of a finer
-> grid where the flow wants them. Everything before it is still here and still
-> behaves the way it did - the golden master is 88 frames at 0.000e+00 against
-> 0.8, and it has been through every branch since.
+> Adaptive mesh refinement was the last item on the old list and it is in: a
+> stretched grid where you want the cells, patches of a finer grid where the
+> flow wants them. Then the whole solver was ported from a plane to a volume.
+> `nz` and `Lz` join `nx`, `ny`, `Lx` and `Ly`, every feature below gained its
+> third axis, and **`nz = 1` is the plane every earlier version solved** - the
+> code is written so that at `nz = 1` every z term vanishes identically and the
+> answer is the old one, bit for bit. The golden master is still 88 frames at
+> 0.000e+00 against 0.8. Fourteen test suites are green. *Future Work* at the
+> bottom of this file is a real list again, and none of it is this solver.
 
-**A 2D incompressible Navier‑Stokes solver for external flows around arbitrary profiles.**
+**A 3D incompressible Navier‑Stokes solver for external flows around arbitrary bodies. `nz = 1` is the plane it used to solve.**
 
-CFD‑Solver‑2D is an educational/research project that implements a finite‑difference CFD solver for unsteady viscous incompressible flow. It uses the **Chorin projection method** on a **staggered MAC grid** with an **immersed boundary** technique to handle complex geometries. The code is written in C++17 and features:
+That last sentence is the whole update and it is worth reading twice. The
+solver fills a volume `Lx × Ly × Lz` with `nx × ny × nz` cells. `nz` defaults to
+1 and `Lz` to 1.0, and a grid one cell deep *is* the plane — same mask, same
+pressure field, same frames, the same bits out of the same arguments. Nothing
+you ran before runs differently, and the third dimension costs nothing at all
+until you ask for it by typing `nz=`.
+
+The repository was called `CFD-Solver-2D` up to and including 0.2, and that
+name is gone with this release: it is `Fluid-Solver` now, because the next
+things on the list are a deformation solver and an electrodynamic one and
+neither of those is a fluid in two dimensions. GitHub redirects the old
+address, so a link anyone saved still lands here, but a checkout wants
+`git remote set-url origin https://github.com/MihanN1/Fluid-Solver.git`
+before it pushes anywhere.
+
+It is an educational/research project that implements a finite‑difference CFD solver for unsteady viscous incompressible flow. It uses the **Chorin projection method** on a **staggered MAC grid** with an **immersed boundary** technique to handle complex geometries. The code is written in C++17 and features:
 - Interactive console parameter input with confirmation and on-the-fly editing.
 - Full numerical solver with VTK output for post-processing in ParaView.
-- STL/OBJ loading, central plane section extraction, geometry masking, profile rotation, mirroring, and robust contour reconstruction.
-- Optional gravity as a uniform body force, pointing in any direction.
-- Optional wall behaviour: every body in the mask is found and numbered on its own, and each one can spin, drag its surface, or be made frictionless, independently of the rest.
+- STL/OBJ loading; a plane run cuts a section out of the model, a volume run voxelises it whole, with the same placement, rotation and mirroring either way.
+- Optional gravity as a uniform body force, pointing in any direction in three dimensions.
+- Optional wall behaviour: every body in the mask is found and numbered on its own, and each one can spin about any of the three axes, drag its surface, or be made frictionless, independently of the rest.
 - Optional turbulence: Smagorinsky with near-wall damping, or two-equation k-omega SST, both switched on from the configuration and off by default.
-- A second solver, switched on with one key: compressible Euler on the same grid and the same geometry, with HLLC fluxes, shocks, two gases that mix, and the sound the flow makes written out as fields and as microphone traces.- A separate SFML desktop application that configures runs, launches the solver and renders the frames it writes.
+- A second solver, switched on with one key: compressible Euler on the same grid and the same geometry, with HLLC fluxes, shocks, two gases that mix, and the sound the flow makes written out as fields and as microphone traces.- A separate SFML desktop application that configures runs, launches the solver and renders the frames it writes, in a real 3D viewport.
 
-The project is designed to simulate external incompressible flow around arbitrary 2D profiles such as cylinders, airfoils, valves, turbine blades, and similar engineering geometries.
+The project is designed to simulate incompressible flow around arbitrary bodies — cylinders, airfoils, valves, turbine blades, and similar engineering geometries — as a section through them, or as the whole body sitting in a volume.
 
 ---
 
 # Future Work
 
-Possible future extensions include:
+Four groups, and three of them are a different solver rather than another
+feature of this one. That is the honest shape of it: a fluid on a fixed grid is
+one problem, and the things below are not that problem.
 
-- Adaptive mesh refinement (AMR), for the compressible solver
-- MAY add several other solvers(deforming solver + electronic solver + thermal solver) and merge all of them into one
+**Deformation and heat, on finite elements.** A second solver, because a body
+that deforms is not a fixed grid, and finite differences are the wrong tool for
+something whose shape is one of the unknowns. Two scales.
+
+*Micro*, on a composite's own structure — the fibres and the matrix as they
+actually sit: thermophysical properties, electromagnetic properties, elastic,
+elastic-plastic, strength and viscoelastic properties of the material itself,
+worked out from what it is made of rather than measured and typed in.
+
+*Macro*, on the part: quasi-static elasticity, thermoelasticity at high
+temperature, modal analysis, dynamic elasticity, dynamic viscoelasticity,
+stability, quasi-static plasticity, quasi-static creep, shells quasi-static and
+dynamic and their modal analysis, heat conduction, internal heat and mass
+transfer, and heat conduction in shells.
+
+Plus corrosion and cracking — where the material goes and where it opens. Plus
+a region of pressure that travels across a body: animated, and then the same
+travel modelled rather than drawn, so the load moves and the body answers.
+
+**Electrodynamics, on finite differences.** The time-domain solve, and with it
+static charge and triboelectricity.
+
+**Plasma, by finite volumes.** The finite-volume method — or the three solvers
+above joined together, which is what plasma mechanics actually is.
+
+**Fabrics.** The fabric itself, reconstructed from a photograph of it.
+Impregnation of the fabric with a binder, which is how a composite is really
+made. Soaking up and wringing out: how much it holds, how fast, and what comes
+back out. Then forming the preform, curing it, and the technological stresses
+and the distortion the cure leaves behind.
+
+And the two lines that were already here, which have not changed their minds:
+
+- MAY add several other solvers and merge all of them into one
 - MAY make a full on website where u would download it all, but only if the previous point is done
 
 ---
@@ -39,9 +92,13 @@ Possible future extensions include:
 
 ## Numerical solver
 
-- ✅ Incompressible Navier–Stokes equations
+- ✅ Incompressible Navier–Stokes equations, in three dimensions
+- ✅ `nz = 1` is the plane, and it is the old answer bit for bit: every z term
+  vanishes identically there, the multigrid returns the 2D field with the same
+  level count and the same cycle count, and the frames compare at exactly zero
 - ✅ Chorin projection method
-- ✅ Staggered (MAC) grid
+- ✅ Staggered (MAC) grid: `u` on `(nx+1)*ny*nz` faces, `v` on `nx*(ny+1)*nz`,
+  `w` on `nx*ny*(nz+1)`, cells `nx*ny*nz` indexed `(k*ny + j)*nx + i`
 - ✅ Convection: first-order upwind, or a limited second-order scheme
 - ✅ Time: forward Euler, or SSP Runge-Kutta of second or third order
 - ✅ Central-difference diffusion
@@ -50,20 +107,36 @@ Possible future extensions include:
 - ✅ Optimized Poisson solver
 - ✅ Correct residual evaluation
 - ✅ Immersed boundary method
-- ✅ Optional gravity / uniform body force, direction free, as a head added on
-  output or as a real force inside the solve
-- ✅ Named boundary conditions on each of the four sides: inlet, outlet, wall,
+- ✅ A seven-point pressure operator with `coefF`/`coefB`, a multigrid that
+  coarsens each axis independently, and transfers that are the 3D tensor
+  product of the 1D ones it already had
+- ✅ The same hierarchy on CUDA, kernel for kernel: a 2D block over (i, j) and
+  one grid layer per k, every kernel bit-identical to the CPU path
+- ✅ Optional gravity / uniform body force, direction free in three dimensions,
+  as a head added on output or as a real force inside the solve
+- ✅ Named boundary conditions on each of the six sides: inlet, outlet, wall,
   moving wall, free slip
+- ✅ Rectangular inlet windows: `inletFrom`/`inletTo` along the face's first
+  axis, `inletFrom2`/`inletTo2` along its second
 - ✅ A pressure problem with no open side at all, solved up to the constant it
   is defined up to
 - ✅ Variable per-face weights in the pressure operator
-- ✅ Two fluids with an interface: volume fraction, compressive transport,
-  variable density in the momentum equation and in the pressure solve
-- ✅ Surface tension by height-function curvature, with a contact angle at walls
+- ✅ Two fluids with an interface: volume fraction advected on three axes,
+  compressive transport, variable density in the momentum equation and in the
+  pressure solve
+- ✅ Surface tension by height-function curvature — the full 3D normal and
+  curvature — with a contact angle at walls
 - ✅ Two fluids that mix instead, spreading by Fickian diffusion
-- ✅ Moving walls: rotation and sliding, set per object
-- ✅ Bodies that travel through the grid, on a path you give or one the flow
+- ✅ Turbulence on three axes: all nine strain components, a Smagorinsky filter
+  width of `cbrt(dx dy dz)`, k-omega SST transported in z, and a wall distance
+  swept over 26 neighbours
+- ✅ Moving walls: rotation about any of the three axes and sliding along any of
+  them, set per object
+- ✅ Bodies that travel through the volume, on a path you give or one the flow
   decides, with the mask cut again every step
+- ✅ Rigid bodies with a quaternion orientation and a full inertia tensor: a
+  free body carries angular momentum and its gyroscopic term, so it tumbles the
+  way it should and the tennis-racket flip appears
 - ✅ Freshly uncovered cells filled from the surface that swept past them
 - ✅ Fluid-structure interaction with the added mass carried implicitly, and
   strong coupling for a body lighter than what it displaces
@@ -80,16 +153,28 @@ Possible future extensions include:
 
 - ✅ STL import
 - ✅ OBJ import
-- ✅ Arbitrary slicing plane
+- ✅ Arbitrary slicing plane, at `nz = 1`
+- ✅ Voxelisation of the whole model at `nz > 1`: every cell centre tested by a
+  ray cast along +x with a crossing count, one cast per (j, k) scanline, the
+  triangles binned by (y, z) and the scanlines split across threads. 128^3
+  against 50k triangles takes about 5 ms
+- ✅ A surface that is not closed is reported rather than producing garbage
+- ✅ Three slice angles: `sliceAngleY` joins `sliceAngleX` and `sliceAngleZ`,
+  applied as Rz·Ry·Rx, which at `angleY = 0` is exactly the two the plane case
+  applies
 - ✅ Automatic contour reconstruction
 - ✅ Non-manifold diagnostics
 - ✅ Automatic scaling and centering
 - ✅ Rotation and mirroring
 - ✅ Polygon rasterization using even-odd filling
-- ✅ Automatic detection and numbering of separate bodies- ✅ Every closed loop the plane cuts, not only the largest: two profiles side
+- ✅ Automatic detection and numbering of separate bodies — 26-connected in a
+  volume, 8-connected in a plane- ✅ Every closed loop the plane cuts, not only the largest: two profiles side
   by side stay two profiles, and a loop inside a loop comes out as a hole
 - ✅ Slivers under a ten-thousandth of the largest loop are dropped as cutting
   noise rather than rasterized into the flow
+- ✅ Each body carries its volume and its full inertia tensor about its own
+  centroid
+- ✅ `profiles` entries place a model in depth with `z=` and tilt it with `ay=`
 
 ---
 
@@ -99,6 +184,19 @@ Not part of the solver. `cfd_app` writes VTK frames and nothing else; SFML is
 not linked into it. Everything below belongs to the separate desktop UI, which
 is its own executable and drives the solver as a child process.
 
+- ✅ A real 3D viewport on OpenGL: orbit, pan and zoom the way Blender does it,
+  axis views, orthographic or perspective
+- ✅ The domain box and the cell grid
+- ✅ The body's surface, solid or wireframe
+- ✅ Slice planes on any axis, moved through the volume
+- ✅ Isosurfaces by marching cubes
+- ✅ Vortices as a Q-criterion surface, with their core lines
+- ✅ 3D streamlines, with animated tracers
+- ✅ Click to select: a body picks it in the BODIES group, a domain face focuses
+  that face's boundary row
+- ✅ The old 2D view kept whole, working as a slice through the volume — pick
+  the axis, move the plane, and every 2D feature is exactly as it was. `V`
+  switches between the two
 - ✅ Pressure rendering
 - ✅ Velocity rendering
 - ✅ Solid mask rendering
@@ -106,54 +204,86 @@ is its own executable and drives the solver as a child process.
 - ✅ Time scrubbing
 - ✅ Zoom and camera movement
 - ✅ Rendering mode switching
+- ✅ Save and load a configuration the solver's command line accepts verbatim,
+  including one recovered straight out of a `.vtk` frame
 
 ---
 
 ## Output
 
-- ✅ VTK export
+- ✅ VTK export, `DIMENSIONS nx+1 ny+1 nz+1` with a real `SPACING dz` and
+  `CELL_DATA nx*ny*nz`
 - ✅ Physical pressure (Pa)
-- ✅ Velocity vectors
+- ✅ Velocity vectors whose third component is now real
 - ✅ Solid mask
 - ✅ ParaView compatible
-- ✅ Full run state embedded in every frame
+- ✅ Full run state embedded in every frame, `w` faces included, lossless to the
+  bit
+- ✅ Frame format version 3, and a frame written by any earlier version —
+  version 1 included — still loads, as a volume one cell deep with `w` zero
 - ✅ Continue a stopped simulation from any frame
-- ✅ Compact frames, about 19 bytes a cell, with nothing in them stored twice
+- ✅ Compact frames, about 19 bytes a cell in a plane, with nothing in them
+  stored twice
 
 ---
 
 ## Mathematical Model (brief)
 
-We solve the 2D incompressible Navier–Stokes equations (kinematic pressure, ρ = 1):
+We solve the 3D incompressible Navier–Stokes equations (kinematic pressure, ρ = 1). At `nz = 1` the front and back sides are closed, `w` is zero everywhere, every `∂/∂z` differences to nothing, and what is left on the page is the pair of equations this section used to hold:
 
 **Momentum (X):**
 
-![](https://latex.codecogs.com/svg.image?\frac{\partial%20u}{\partial%20t}+u\frac{\partial%20u}{\partial%20x}+v\frac{\partial%20u}{\partial%20y}=-\frac{\partial%20p}{\partial%20x}+\nu\nabla^{2}u+g_{x})
+![](https://latex.codecogs.com/svg.image?\frac{\partial%20u}{\partial%20t}+u\frac{\partial%20u}{\partial%20x}+v\frac{\partial%20u}{\partial%20y}+w\frac{\partial%20u}{\partial%20z}=-\frac{\partial%20p}{\partial%20x}+\nu\nabla^{2}u+g_{x})
 
 **Momentum (Y):**
 
-![](https://latex.codecogs.com/svg.image?\frac{\partial%20v}{\partial%20t}+u\frac{\partial%20v}{\partial%20x}+v\frac{\partial%20v}{\partial%20y}=-\frac{\partial%20p}{\partial%20y}+\nu\nabla^{2}v+g_{y})
+![](https://latex.codecogs.com/svg.image?\frac{\partial%20v}{\partial%20t}+u\frac{\partial%20v}{\partial%20x}+v\frac{\partial%20v}{\partial%20y}+w\frac{\partial%20v}{\partial%20z}=-\frac{\partial%20p}{\partial%20y}+\nu\nabla^{2}v+g_{y})
 
-where the body force **g** is zero unless gravity is enabled — and even then the solver never discretizes it, because at constant density it is exactly a pressure offset. See *Gravity* under §4.
+**Momentum (Z):**
+
+![](https://latex.codecogs.com/svg.image?\frac{\partial%20w}{\partial%20t}+u\frac{\partial%20w}{\partial%20x}+v\frac{\partial%20w}{\partial%20y}+w\frac{\partial%20w}{\partial%20z}=-\frac{\partial%20p}{\partial%20z}+\nu\nabla^{2}w+g_{z})
+
+where the body force **g** is zero unless gravity is enabled — and even then the solver never discretizes it, because at constant density it is exactly a pressure offset. `g_z` is zero unless `gravityTilt` is. See *Gravity* under §4.
 
 **Continuity (incompressibility):**
 
-![](https://latex.codecogs.com/svg.image?\frac{\partial%20u}{\partial%20x}+\frac{\partial%20v}{\partial%20y}=0)
+![](https://latex.codecogs.com/svg.image?\frac{\partial%20u}{\partial%20x}+\frac{\partial%20v}{\partial%20y}+\frac{\partial%20w}{\partial%20z}=0)
 
 The **Chorin projection** splits each time step into:
 
-1. **Predictor** – compute intermediate velocities \(u^*, v^*\) without pressure.
+1. **Predictor** – compute intermediate velocities \(u^*, v^*, w^*\) without pressure.
 2. **Poisson equation** – solve
 
-![](https://latex.codecogs.com/svg.image?\nabla^{2}p=\frac{1}{\Delta%20t}\left(\frac{\partial%20u^{*}}{\partial%20x}+\frac{\partial%20v^{*}}{\partial%20y}\right))
+![](https://latex.codecogs.com/svg.image?\nabla^{2}p=\frac{1}{\Delta%20t}\left(\frac{\partial%20u^{*}}{\partial%20x}+\frac{\partial%20v^{*}}{\partial%20y}+\frac{\partial%20w^{*}}{\partial%20z}\right))
 
-using a multigrid V-cycle with red/black SOR as its smoother.
+using a multigrid V-cycle with red/black SOR as its smoother. The operator is seven-point in a volume and, with the front and back coefficients closed at `nz = 1`, the same five-point one it always was.
 
 3. **Corrector** – update velocities with the pressure gradient.
 
-Boundary conditions: no-slip on solid walls, constant velocity at inlet, zero-gradient at outlet, free-slip at top/bottom. No-slip means "the fluid matches the wall", and the wall is allowed to be moving — or to be frictionless, see *Walls* below and §7. The outlet also carries the only Dirichlet condition on pressure, and it holds `p = 0` whatever gravity is doing — see *Gravity* under §4.
+Boundary conditions: no-slip on solid walls, constant velocity at inlet, zero-gradient at outlet, free-slip at top/bottom and — the two the port added — whatever `bcFront` and `bcBack` say at `z = 0` and `z = Lz`, which default to closing the volume so that a one-cell-deep grid is the plane it used to be. No-slip means "the fluid matches the wall", and the wall is allowed to be moving — or to be frictionless, see *Walls* below and §7. The outlet also carries the only Dirichlet condition on pressure, and it holds `p = 0` whatever gravity is doing — see *Gravity* under §4.
 
-### Geometry section
+### Geometry section, and geometry volume
+
+There are two paths now, and which one runs is decided by `nz` alone.
+
+**`nz > 1`: the model is voxelised, not cut.** There is no section plane and no
+contour. The triangle soup is placed, scaled and rotated exactly the way the
+plane case places it, and then every cell centre is asked one question: is it
+inside? The answer is a ray cast along +x with a crossing count — odd is
+inside, even is out — and the casts are cheap because they are shared: one cast
+per (j, k) scanline rather than one per cell, the triangles binned by (y, z) so
+a scanline only ever meets the few that reach it, and the scanlines handed out
+across OpenMP threads. **128^3 against 50k triangles takes about 5 ms**, which
+is why the mask can be cut again every step for a body that travels.
+
+A crossing count is only meaningful on a closed surface. A model whose surface
+is open has no inside, and the run **says so and stops** rather than filling
+whatever the parity happened to come out as — which is the failure mode that
+produces a body with holes in it and a wake nobody can explain.
+
+**`nz = 1`: the section cut, untouched.** Everything below this line is that
+path, and it is the same code, producing the same mask, that every earlier
+version produced.
 
 The imported triangle mesh is centred at its bounding-box centre
 
@@ -167,7 +297,13 @@ where
 
 ![](https://latex.codecogs.com/svg.image?\mathbf{n})
 
-is constructed from `sliceAngleX` and `sliceAngleZ`.
+is constructed from `sliceAngleX` and `sliceAngleZ` — and from `sliceAngleY`,
+which the port added so that a model can be turned about all three axes rather
+than two. The three are applied as **Rz·Ry·Rx**, in that order, and at
+`sliceAngleY = 0` that product is exactly the pair of rotations the plane case
+has always applied. The same three angles orient the model on the voxel path,
+where there is no plane to make a normal out of and they are simply the
+model's own orientation.
 
 Each triangle edge with signed endpoint distances
 
@@ -212,6 +348,24 @@ Implemented optimizations include:
 - Frames packed against their own contents instead of repeating them
 - Semi-coarsening down to isotropy, including a two-to-one aspect ratio
 
+The third dimension was written so that none of that had to be given back:
+
+- **Loop order is k, j, i, and `i` stays contiguous.** Every AVX2 kernel in the
+  tree is unchanged in shape, because the thing it vectorises — a run of cells
+  along `i` — is still a run of cells along `i`. A volume is a stack of the
+  planes the vector code already knew how to walk.
+- **OpenMP collapses (k, j).** A plane has one k, so collapsing is what keeps
+  a plane parallel over its rows while a volume parallelises over both.
+- **The voxeliser bins triangles by (y, z)** and casts once per scanline rather
+  than once per cell, which is the difference between 5 ms and something you
+  would not do every step.
+- **The multigrid coarsens each axis independently**, so a grid that is deep in
+  one direction and thin in another still walks down towards isotropy instead
+  of stalling on the axis it cannot smooth.
+- **The CUDA hierarchy mirrors the CPU one kernel for kernel**, with a 2D block
+  over (i, j) and one grid layer per k, and every kernel was checked against the
+  CPU path off-GPU and is bit-identical to it.
+
 The implementation prioritizes computational performance without changing the numerical formulation.
 
 ---
@@ -219,7 +373,7 @@ The implementation prioritizes computational performance without changing the nu
 # Architecture
 
 ```text
-CFD-Solver-2D/
+Fluid-Solver/
 ├── .vscode/
 ├── out/
 │   ├── build/
@@ -250,6 +404,13 @@ CFD-Solver-2D/
 │   ├── CompressibleTests.cpp       <- Sod, an oblique shock, two gases, the
 │   │                                  acoustics, a driven body, a written wav,
 │   │                                  a stretched grid and the refinement
+│   ├── VolumeTests.cpp             <- the plane still being the plane, the cube
+│   │                                  cavity, gravity down each of the three
+│   │                                  axes, a closed box's mass, a volumetric
+│   │                                  restart, turbulence staying finite, walls
+│   │                                  turning about every axis, a shock tube
+│   │                                  staying one-dimensional, refinement in
+│   │                                  depth, and a solid body in a volume
 │   └── BackendAgreementTests.cpp   <- AVX2 and OpenMP on against off
 ├── src/
 │   ├── main.cpp
@@ -298,13 +459,23 @@ CFD-Solver-2D/
 - CMake 3.28+ (what `cmake_minimum_required` asks for; `scripts/make-release.sh`
   installs a newer one into `.toolchain/` when the system copy is older)
 - CUDA Toolkit (optional, for the GPU pressure solver)
-- OpenMP (optional, picked up automatically when present). Every directive in
-  the tree stays inside OpenMP 2.0, because that is all MSVC's classic
-  `/openmp` implements and the Windows release matrix builds with it. In
-  practice that means signed `int` loop counters everywhere and reductions
-  limited to `+ * - & ^ | && ||` - a `max` or `min` reduction is OpenMP 3.1,
-  MSVC rejects it outright with C7660, and where one is wanted the loop keeps a
-  per-thread value and folds it in a `critical` at the end instead.
+- OpenMP (optional, picked up automatically when present). This used to say
+  that every directive in the tree stayed inside OpenMP 2.0, because that is
+  all MSVC's classic `/openmp` implements. That is no longer true: the port put
+  `collapse(2)` on the (k, j) loops — a plane has exactly one `k`, so without
+  the collapse a plane run would hand the whole grid to one thread — and
+  `collapse` is **OpenMP 3.0**. Classic `/openmp` rejects it outright, so on
+  MSVC `CMakeLists.txt` now asks for `/openmp:llvm` instead, and the release
+  script packs `libomp140.<arch>.dll` beside the binary where it used to pack
+  `vcomp140.dll` (it still falls back to `vcomp140.dll` if that is what the
+  toolchain produced). `/openmp:llvm` wants Visual Studio 2019 16.9 or newer;
+  an older one fails the `find_package` check and the build says OpenMP was
+  not found rather than dying halfway through a kernel. The rest of the 2.0
+  discipline still holds and is still worth keeping: signed `int` loop
+  counters everywhere, and reductions limited to `+ * - & ^ | && ||` - a `max`
+  or `min` reduction is OpenMP 3.1, MSVC rejects it outright with C7660, and
+  where one is wanted the loop keeps a per-thread value and folds it in a
+  `critical` at the end instead.
 - A CPU with AVX2 (optional, the vector kernels; without it every one of them
   falls back to the scalar loop it already carries)
 - ParaView (optional, for looking at the output)
@@ -323,7 +494,7 @@ Supported compilers:
 # Build (PowerShell)
 
 ```powershell
-cd "...\CFD-Solver-2D"
+cd "...\Fluid-Solver"
 
 if (Test-Path build) { Remove-Item build -Recurse -Force }
 if (Test-Path install) { Remove-Item install -Recurse -Force }
@@ -367,19 +538,61 @@ to this one.
 
 Configure:
 
-- Domain size
-- Grid resolution
+- Domain size, `Lx × Ly × Lz`
+- Grid resolution, `nx × ny × nz` — `nz = 1` is the plane and is the default
 - Flow parameters
 - Reynolds number
-- Gravity (optional: magnitude and direction)
+- Gravity (optional: magnitude, direction in the plane, and tilt out of it)
 - Time parameters
 - Pressure solver parameters
 - Geometry
-- Slice orientation
-- Walls (optional: rotation, sliding and free-slip, per object)
+- Slice orientation, or model orientation in a volume
+- Walls (optional: rotation about any axis, sliding along any axis, and
+  free-slip, per object)
 - CUDA on or off
 
 After confirmation the simulation starts immediately.
+
+## Two runs that actually work
+
+A **cube cavity**: a closed box with the lid sliding, which is the 3D case
+everybody checks a new solver against.
+
+```powershell
+"Fluid Solver.exe" caseType=cavity lidSpeed=1 nu=0.01 ^
+                   Lx=1 Ly=1 Lz=1 nx=64 ny=64 nz=64 ^
+                   steadyTolerance=1e-5 totalTime=200 ^
+                   "extraFields=vorticity,speed"
+```
+
+`caseType=cavity` closes **all six** sides itself now, not four, and empties the
+domain. Re is `lidSpeed * Ly / nu`, so that line is Re 100, and the primary
+vortex lands where Ghia puts it.
+
+**Flow past a body in a duct**: an inlet at one end, an outlet at the other, and
+four solid sides around it.
+
+```powershell
+"Fluid Solver.exe" nx=160 ny=64 nz=64 Lx=2.5 Ly=1 Lz=1 ^
+                   U0=1 nu=2e-3 ^
+                   bcLeft=inlet bcRight=outlet ^
+                   bcBottom=wall bcTop=wall bcFront=wall bcBack=wall ^
+                   inletProfile=parabolic ^
+                   "profiles=ball.obj@x=0.7,y=0.5,z=0.5,size=0.3" ^
+                   "extraFields=vorticity,speed,objectId" ^
+                   totalTime=8 saveInterval=20
+```
+
+`inletProfile=parabolic` bends the inlet along **both** tangential axes, which
+is what duct flow is; `parabolicSpan` bends it along one and leaves the other
+flat, which is a plane channel extruded through z. At `nz = 1` they are the same
+thing. `z=` in a `profiles` entry is where the model sits in depth — leave it
+out and it is centred, which is usually what you want.
+
+Both lines run on a plane by deleting `nz=` and `Lz=` and the two z-side
+boundaries. That is the whole difference — in typing. It is not the whole
+difference in what it costs: see *What a volume costs against a plane* under
+**Performance** before setting `nz=64` on a grid that was already slow.
 
 Every answer is read as a whole line and checked before it is accepted: a value
 that does not fit is refused with the reason and the same question is asked
@@ -443,34 +656,41 @@ above 0.1, `nu=0`.
 | Key | Type | Default | Accepted |
 |---|---|---|---|
 | `Lx` `Ly` | float, m | 1.0 | > 0 |
+| `Lz` | float, m | 1.0 | > 0, how deep the volume is |
 | `nx` `ny` | int | 50 | >= 8 |
+| `nz` | int | 1 | >= 1. 1 is the plane every earlier version solved |
 | `U0` | float, m/s | 1.0 | any finite |
 | `nu` | float, m^2/s | 0.01 | >= 0 |
 | `ro` | float, kg/m^3 | 1.225 | > 0 |
 | `gravityEnabled` | switch | 0 | 1 / 0 |
 | `gravityAccel` | float, m/s^2 | 9.81 | >= 0 |
 | `gravityAngle` | float, deg CW from down | 0 | any finite |
+| `gravityTilt` | float, deg | 0 | how far gravity is tipped out of the xy plane towards +z; 0 leaves it in the plane |
 | `gravityMode` | name | `reduced` | `reduced` / `body`, see below |
 | `convection` | name | `upwind` | `upwind` / `muscl` / `central` |
 | `limiter` | name | `vanLeer` | `minmod` / `vanLeer` / `superbee`, only read by `muscl` |
 | `timeScheme` | name | `euler` | `euler` / `rk2` / `rk3` |
 | `bcLeft` `bcRight` `bcBottom` `bcTop` | name | `inlet` `outlet` `slip` `slip` | `inlet` / `outlet` / `wall` / `movingWall` / `slip` |
+| `bcFront` `bcBack` | name | `slip` `slip` | the same five, at `z = 0` and `z = Lz` |
 | `bcLeftSpeed` … `bcTopSpeed` | float, m/s | unset | what a `movingWall` slides at, or an inlet speed other than `U0` |
-| `inletFrom` `inletTo` | float | 0 / 1 | fraction of the side the inlet occupies |
-| `inletProfile` | name | `uniform` | `uniform` / `parabolic` |
+| `bcFrontSpeed` `bcBackSpeed` | float, m/s | unset | the same, for the two z sides |
+| `inletFrom` `inletTo` | float | 0 / 1 | fraction of the face's **first** axis the inlet occupies |
+| `inletFrom2` `inletTo2` | float | 0 / 1 | the same along the face's **second** axis; the window is a rectangle |
+| `inletProfile` | name | `uniform` | `uniform` / `parabolic` / `parabolicSpan`. `parabolic` bends both axes (duct), `parabolicSpan` bends the first only (extruded channel) |
 | `phases` | int | 1 | 1 or 2. At 2, `ro` and `nu` are ignored |
 | `rho1` `rho2` | float, kg/m^3 | 1000 / 1.225 | the two fluids; 1 is what the start shape is made of |
 | `nu1` `nu2` | float, m^2/s | 1e-6 / 1.5e-5 | their kinematic viscosities |
-| `phaseInit` | name | `layer` | `layer` / `drop` / `column` / `file` |
+| `phaseInit` | name | `layer` | `layer` / `drop` / `column` / `file`. `drop` is a sphere at `nz > 1` |
 | `phaseLevel` `phaseX` `phaseY` | float | 0.5 | fractions of the domain: height, width or centre |
-| `initialPhaseFile` | path | empty | one fraction per cell, row 0 first, `nx*ny` of them |
+| `phaseZ` | float | 0.5 | fraction of `Lz`: where the drop sits in depth. Only read at `nz > 1` |
+| `initialPhaseFile` | path | empty | one fraction per cell, `(k*ny + j)*nx + i` order, `nx*ny*nz` of them. A single plane's worth is extruded through z |
 | `vofScheme` | name | `hric` | `upwind` / `hric` / `cicsam`, only read when they do not mix |
 | `mixing` | name | `immiscible` | `immiscible` / `miscible` |
 | `diffusivity` | float, m^2/s | 1e-6 | how fast one spreads through the other, only read when they mix |
 | `surfaceTension` | float, N/m | 0 | 0 is off and the whole curvature pass is skipped |
 | `contactAngle` | float, deg | 90 | measured inside fluid 1 at a wall; < 90 means fluid 1 wets it |
-| `sources` | list | empty | `x=0.5,y=0.2,r=0.05,rate=2,angle=90,phase=1;...` |
-| `caseType` | name | `channel` | `channel` / `cavity` / `shockTube`, presets that write all four sides at once |
+| `sources` | list | empty | `x=0.5,y=0.2,z=0.5,r=0.05,rate=2,angle=90,elev=0,phase=1;...` — `z=` places it in depth, `elev=` aims it out of the xy plane |
+| `caseType` | name | `channel` | `channel` / `cavity` / `shockTube`, presets that write all six sides at once |
 | `lidSpeed` | float, m/s | 1.0 | how fast the cavity lid slides |
 | `steadyTolerance` | float | 0 | stop early once the field stops changing; 0 runs the whole of `totalTime` |
 | `CFL` | float | 0.5 | > 0, warns above 1 |
@@ -484,12 +704,12 @@ above 0.1, `nu=0`.
 | `mgMinCoarseSize` | int, cells/axis | 8 | >= 2 |
 | `useCuda` | switch | 1 | 1 / 0, ignored on a CPU-only build |
 | `saveInterval` | int, steps | 20 | >= 1 |
-| `extraFields` | list | empty | `vorticity`, `divergence`, `speed`, `objectId`, `density`, `source`, `curvature`, `nuT`, `wallDistance`, `strain`, comma separated |
+| `extraFields` | list | empty | `vorticity` (a vector in a volume, a scalar in a plane), `divergence`, `speed`, `objectId`, `density`, `source`, `curvature`, `nuT`, `wallDistance`, `strain`, comma separated |
 | `outputDir` | path | `output` | created on the first frame, empty = current directory |
-| `geometryFile` | path, `none` or `empty` | `none` | `none` is the verification circle, `empty` is nothing at all |
-| `sliceAngleX` `sliceAngleZ` `sliceRotation` | float, deg | 0 | any finite |
+| `geometryFile` | path, `none` or `empty` | `none` | `none` is the verification circle (a sphere at `nz > 1`), `empty` is nothing at all |
+| `sliceAngleX` `sliceAngleY` `sliceAngleZ` `sliceRotation` | float, deg | 0 | any finite; applied as Rz·Ry·Rx |
 | `invertSection` | switch | 0 | 1 / 0 |
-| `wallMotion` | list | empty | `<object>:rot=90,slideX=0.5;<object>:slip=1` — an object either moves or slips, see below |
+| `wallMotion` | list | empty | `<object>:rotZ=90,slideX=0.5,slideZ=0.2;<object>:slip=1` — also `rotX=` and `rotY=`; `rot=` is `rotZ=`. An object either moves or slips, see below |
 | `amrLevels` | int | 0 | refinement levels over the base grid, compressible only, see below |
 | `amrCriterion` | name | `everything` | `density` / `vorticity` / `species` / `body` / `everything` |
 | `amrThreshold` | float | 0.2 | how steep a feature has to be, as a fraction of the steepest |
@@ -499,7 +719,7 @@ above 0.1, `nu=0`.
 | `gridStretch` | name | `off` | `off` / `body` / `wake` / `edges`, compressible only, see below |
 | `stretchRatio` | float | 1.05 | largest ratio between one cell and the next |
 | `refineNear` | float | 0.25 | width of the fine band, as a fraction of the domain |
-| `bodyMotion` | list | empty | `<object>:vx=0.2,omega=45;<object>:free=1,mass=2` — bodies that travel, in either regime, see below |
+| `bodyMotion` | list | empty | `<object>:vx=0.2,vz=0.1,omegaY=45;<object>:free=1,mass=2` — also `omegaX=`, `pinZ=`, `pinRotX=`, `pinRotY=`, `inertiaX=`, `inertiaY=`; `omega=` is `omegaZ=` and `pinRot=` is `pinRotZ=`. Bodies that travel, in either regime, see below |
 | `bodyCoupling` | name | `added` | `weak` / `added` / `strong`, only read by a free body |
 | `bodyIterations` | int | 4 | most force/motion passes inside one step, only read by `strong` |
 | `bodyCollisions` | switch | 0 | off, bodies pass through each other and through the walls |
@@ -516,7 +736,7 @@ above 0.1, `nu=0`.
 | `acousticFields` | switch | 0 | write the pressure fluctuation, SPL and pitch per cell |
 | `acousticWindow` | float, s | 0.02 | how far back the running average looks |
 | `acousticRef` | float, Pa | 2e-5 | the pressure that counts as 0 dB |
-| `microphones` | list | empty | `x=0.5,y=0.2;x=1,y=0.5` - points that record p(t) |
+| `microphones` | list | empty | `x=0.5,y=0.2,z=0.5;x=1,y=0.5` - points that record p(t); `z=` is optional and is the depth |
 | `micInterval` | int, steps | 1 | steps between microphone samples |
 | `micAudio` | 0/1 | 0 | also write each microphone as a `.wav` |
 | `micAudioRate` | int, Hz | 44100 | sample rate of those files |
@@ -525,7 +745,7 @@ above 0.1, `nu=0`.
 | `Cs` | float | 0.17 | the Smagorinsky constant, 0 to 1; 0.1 is what a channel wants |
 | `turbIntensity` | float | 0.05 | how turbulent the inlet is, as a fraction of its speed; only `kOmegaSST` |
 | `turbLengthScale` | float, m | 0 | the biggest eddy coming in; 0 takes a tenth of `Ly`; only `kOmegaSST` |
-| `profiles` | list | empty | `<file>@x=1,y=0.5,size=0.3;<file>@x=3,y=0.5` — several models at once, see below |
+| `profiles` | list | empty | `<file>@x=1,y=0.5,z=0.5,size=0.3,ay=30;<file>@x=3,y=0.5` — `z=` places it in depth, `ay=` is that model's own `sliceAngleY`. Several models at once, see below |
 | `restart` | switch | 0 | 1 / 0 |
 | `restartFile` | path | empty | a `.vtk` frame or the folder holding them |
 | `addTime` | double, s | 0.0 | counts forward from the frame |
@@ -533,6 +753,20 @@ above 0.1, `nu=0`.
 Duplicated keys are applied in order, so the last one on the line wins. On a
 continuation every key given on the line is applied on top of the frame,
 whatever its position - see *Continuing a run*.
+
+**Everything the third dimension added, in one list**, so it can be diffed
+against an older command line:
+
+```
+nz Lz bcFront bcBack bcFrontSpeed bcBackSpeed inletFrom2 inletTo2
+gravityTilt phaseZ sliceAngleY
+```
+
+plus `z=` and `elev=` inside `sources`, `z=` and `ay=` inside `profiles`,
+`rotX= rotY= slideZ=` inside `wallMotion`,
+`vz= omegaX= omegaY= pinZ= pinRotX= pinRotY= inertiaX= inertiaY=` inside
+`bodyMotion`, and a third coordinate in `microphones`. Every one of them is
+optional and every default reproduces what the plane did.
 
 ### Parameter sweeps
 
@@ -568,6 +802,42 @@ command line it is the same three keys:
 .\install\bin\cfd_app.exe gravityEnabled=1 gravityAccel=9.81 gravityAngle=30
 ```
 
+### Out of the plane: `gravityTilt`
+
+`gravityAngle` keeps its exact meaning — degrees clockwise from down, inside
+the xy plane — and a fourth key tips the whole vector out of that plane towards
++z:
+
+```
+planar = gravityAccel * cos(tilt)
+gx = -planar * sin(angle)
+gy = -planar * cos(angle)
+gz =  gravityAccel * sin(tilt)
+```
+
+`gravityTilt=0`, the default, leaves `gz` at exactly nought and `gx`, `gy`
+exactly what they were. `gravityTilt=90` pulls straight along +z and
+`gravityAngle` then means nothing, because there is nothing left in the plane
+for it to point at.
+
+The reduced-pressure potential picks up the one term that follows:
+
+```
+phi(x, y, z) = gx*(x - Lx) + gy*(y - Ly/2) + gz*(z - Lz/2)
+```
+
+with the reference point at `(Lx, Ly/2, Lz/2)` — the 2D expression plus a term
+that is zero whenever the tilt is.
+
+**Measured.** A light drop released in a heavy fluid rises the same distance
+whichever of the three axes gravity is turned to, **to 0.0001 %**. That is the
+check that matters: there is nothing special about `y`, and if there were, this
+is where it would show.
+
+```powershell
+"Fluid Solver.exe" gravityEnabled=1 gravityAccel=9.81 gravityTilt=90 nz=32 Lz=1
+```
+
 **Read the *Gravity* part of §4 before expecting it to do something.** The
 short version: at constant density it cannot change the velocity field, only
 the pressure. That is not a limitation of this implementation, it is what the
@@ -595,9 +865,12 @@ not driven by a pressure step that is not physically there.
 
 ## Boundaries
 
-Every side of the domain has a name, and the four defaults are the channel
-every earlier version solved: `inlet` on the left, `outlet` on the right,
-`slip` above and below.
+Every side of the domain has a name. There are **six** of them now: `bcFront`
+at `z = 0` and `bcBack` at `z = Lz` join the four that were always there, and
+they take the same five kinds and the same `bc<Side>Speed`. The defaults are
+the channel every earlier version solved — `inlet` on the left, `outlet` on the
+right, `slip` above, below, in front and behind — and at `nz = 1` the two new
+ones close a volume one cell deep, which is the plane.
 
 | Kind | What it does |
 |---|---|
@@ -610,7 +883,13 @@ every earlier version solved: `inlet` on the left, `outlet` on the right,
 ```powershell
 "Fluid Solver.exe" bcBottom=wall bcTop=wall                  # a real channel
 "Fluid Solver.exe" bcLeft=wall bcRight=wall bcBottom=wall bcTop=movingWall bcTopSpeed=1
+"Fluid Solver.exe" nz=64 Lz=1 bcBottom=wall bcTop=wall bcFront=wall bcBack=wall
 ```
+
+The third line is a duct: a square pipe with an inlet at one end and an outlet
+at the other. It is the same channel as the first line with two more walls, and
+that is the point — nothing about writing a case changed, there are just two
+more sides to write.
 
 The second line is a closed box, and a closed box has no side that fixes the
 pressure. The operator then has the constants in its null space: the answer is
@@ -626,6 +905,41 @@ carrying the same flow rate as the flat one.
 ```powershell
 "Fluid Solver.exe" inletFrom=0.4 inletTo=0.6 inletProfile=parabolic
 ```
+
+### The window is a rectangle now
+
+A face of a volume has two tangential axes, so a band is not enough. `inletFrom`
+and `inletTo` cut the window along the face's **first** axis; `inletFrom2` and
+`inletTo2` cut it along the **second**. Which is which depends on the face, and
+there is no way to guess it, so here it is:
+
+| Face | first axis (`inletFrom`/`inletTo`) | second axis (`inletFrom2`/`inletTo2`) |
+|---|---|---|
+| `bcLeft`, `bcRight` | y | z |
+| `bcBottom`, `bcTop` | x | z |
+| `bcFront`, `bcBack` | x | y |
+
+Both pairs default to 0 and 1, so an inlet that was a full side is still a full
+side and an inlet that was a band across the plane is now that same band running
+the whole depth.
+
+```powershell
+"Fluid Solver.exe" nz=64 Lz=1 inletFrom=0.4 inletTo=0.6 inletFrom2=0.4 inletTo2=0.6
+```
+
+That is a square jet a fifth of the face across, in the middle of the left side.
+
+`inletProfile` has three values, and the two curved ones differ only in a
+volume:
+
+| Value | What it bends |
+|---|---|
+| `uniform` | nothing; flat across the window |
+| `parabolicSpan` | a parabola along the first axis, flat along the second — a plane channel extruded through z |
+| `parabolic` | both axes — duct flow |
+
+At `nz = 1` the second axis has one cell and the two are the same thing, which
+is why every old command line means exactly what it always meant.
 
 The outlet is never told about any of this. It has no speed of its own: the
 pressure solve works out what has to leave, so a band a fifth of the height
@@ -656,12 +970,30 @@ for it:
 "Fluid Solver.exe" caseType=cavity lidSpeed=1 nx=64 ny=64 Lx=1 Ly=1 nu=0.01
 ```
 
-`caseType=cavity` writes all four sides itself - wall, wall, wall, and
+`caseType=cavity` writes all **six** sides itself - wall everywhere and
 `movingWall` on top at `lidSpeed` - and empties the domain, because a cavity
 with the verification circle floating in the middle of it is not a cavity.
 Anything you say after it still wins, so `caseType=cavity bcBottom=movingWall`
 is a two-sided cavity and `caseType=cavity profiles=wing.obj@x=0.5,y=0.5` is a
 cavity with something in it.
+
+### The cube cavity
+
+Add `nz` and the same preset closes the front and the back as walls too, and
+what you have is the 3D benchmark:
+
+```powershell
+"Fluid Solver.exe" caseType=cavity lidSpeed=1 nu=0.01 ^
+                   Lx=1 Ly=1 Lz=1 nx=64 ny=64 nz=64 ^
+                   steadyTolerance=1e-5 totalTime=200
+```
+
+It lands where Ghia puts the primary vortex — same tables, same Re 100, the
+centre plane of a cube rather than a square. `VolumeTests` runs it and fails if
+it does not. A cube cavity is the case worth running first on a new build,
+because a closed box has no open side to hide a mistake behind: nothing comes
+in, nothing goes out, and every wrong sign shows up as motion that should not
+be there.
 
 `geometryFile=empty` is what does the emptying and can be asked for on its own.
 `none` still means the verification circle, which is a body like any other and
@@ -722,6 +1054,31 @@ The domain carries a volume fraction per cell - 1 is fluid 1, 0 is fluid 2, and
 in between is a cell the interface passes through. `rho` and `nu` come out of
 that fraction per cell, so `ro` and `nu` stop being read the moment there are
 two of everything.
+
+### In a volume
+
+The fraction is advected on all three axes, by the same scheme and the same
+limiter, and the interface normal and the curvature are the full
+three-dimensional ones rather than the in-plane pair extended by zero. What
+that buys is checked against shapes that have an answer: a sphere of radius R
+comes back with curvature **2/R to within 1%**, a plane comes back with zero,
+and rotating the same interface about x, y or z gives identical numbers. The
+last one is the check with teeth — an axis that is treated differently from the
+other two shows up there and nowhere else.
+
+Three smaller things follow from it:
+
+- `phaseZ` places the start shape in depth, as a fraction of `Lz`, alongside
+  `phaseX` and `phaseY`. It is only read at `nz > 1`.
+- `phaseInit=drop` is a **sphere** at `nz > 1` and the disc it always was at
+  `nz = 1`.
+- `initialPhaseFile` takes a whole volume, `nx*ny*nz` fractions in
+  `(k*ny + j)*nx + i` order. Hand it a single plane's worth and it extrudes that
+  plane through z rather than refusing it, so a field painted for a 2D run is
+  still a legal starting condition for a volume.
+
+**Measured:** the phase volume in a closed box drifts by nothing over the run.
+Not "a little" — the number comes back the number it started at.
 
 ### What the interface is carried by
 
@@ -864,6 +1221,16 @@ cells and grows until it brackets the surface at both ends, because a fixed
 stack does not bracket an interface lying at 45 degrees and gives a curvature
 that is somewhere between wrong and enormous.
 
+In a volume the height is differenced along both directions across the column
+rather than one, so what comes back is the sum of the two principal curvatures
+— which is what `kappa` means and what the CSF force wants. That is not a
+detail: a sphere of radius R has curvature **2/R**, not `1/R`, so the jump
+`sigma * kappa` across it is twice what a circle of the same radius gives. The
+measured curvature of a sphere is 2/R to within 1%, a plane comes back at zero,
+and the answer does not change when the same interface is rotated onto x, y or
+z. At `nz = 1` the second direction has one cell, contributes nothing, and the
+curvature is the `1/R` of a circle exactly as before.
+
 Taking the curvature from a smoothed gradient instead is the version that is
 half the code, and it is a factor of ten worse: a drop that should sit still
 boils on the spot. There is no simple version of this worth writing first,
@@ -896,7 +1263,10 @@ hold has to be resolved in time or it grows:
 
     dt < sqrt((rho1 + rho2) * d^3 / (4 pi sigma))
 
-with `d` the smaller of dx and dy. It is a separate limit from the CFL number
+with `d` the smallest of dx, dy and dz in a volume, and the smaller of dx and
+dy in a plane — a third axis cannot make the limit looser, only tighter, and a
+cell that is thin in z holds a shorter wave than the other two ever see. It is
+a separate limit from the CFL number
 and from the interface Courant number, and it is usually the one that binds -
 on a millimetre of water against air it is microseconds. The solver says so at
 the start rather than leaving you to wonder why it is slow:
@@ -921,7 +1291,9 @@ the start rather than leaving you to wonder why it is slow:
     rounding    interface 0.01741 m -> 0.01610 m (7.5% less)
 
 The first is the only closed-form answer two dimensions give you: the pressure
-inside a circle is `sigma/R` above the outside, and nothing else. The second is
+inside a circle is `sigma/R` above the outside, and nothing else. (Three
+dimensions give you the matching one, `2 sigma/R` inside a sphere, and it is
+the same arithmetic on the curvature checked above.) The second is
 the failure mode of every CSF implementation - a drop that should be at rest
 circulating because the force and the pressure gradient are differenced
 differently - measured against the capillary wave speed rather than against
@@ -963,11 +1335,21 @@ you like and puts each one where you say:
 ```
 
 The separator between the file and its settings is `@` rather than `:`, because
-a Windows path already owns the colon. The settings are all optional: `x` and
-`y` place the centre in metres, `size` is the larger side of its section in
-metres, `rot` turns it in the plane, `ax` and `az` are slice angles for that
-model alone, and `invert=1` mirrors it. A file written with no `@` keeps the old
-behaviour — centred in the domain at a fifth of its smaller side.
+a Windows path already owns the colon. The settings are all optional: `x`, `y`
+and `z` place the centre in metres, `size` is the larger side of its section in
+metres, `rot` turns it in the plane, `ax`, `ay` and `az` are slice angles for
+that model alone, and `invert=1` mirrors it. A file written with no `@` keeps
+the old behaviour — centred in the domain at a fifth of its smaller side.
+
+`z=` and `ay=` are what the third dimension added. `z=` is where the model sits
+in depth and is centred when it is left out, which is what a plane run wants and
+what it always silently did. `ay=` is that model's own `sliceAngleY`, so two
+copies of the same file can sit in the same volume turned differently about all
+three axes:
+
+```powershell
+"Fluid Solver.exe" nz=64 Lz=1 "profiles=wing.stl@x=0.6,y=0.5,z=0.3,ay=15;wing.stl@x=0.6,y=0.5,z=0.7,ay=-15"
+```
 
 Anything that lands on or outside the domain edge is refused before the run
 starts, with the distance it missed by:
@@ -1037,6 +1419,13 @@ They cost four bytes a cell each and are written for ParaView and the UI to
 read; nothing in the solver reads them back, and a frame carrying them still
 continues exactly like one that does not.
 
+**One of them changes shape with `nz`.** `vorticity` is a scalar in a plane —
+there is only one component a plane can hold — and a **vector** in a volume,
+written as three floats and glyphed by ParaView like any other vector. Anything
+that reads frames has to cope with both, which is one reason the frame carries
+a format version. `divergence` and `speed` simply gained their z term and stay
+one float. Everything else on the list is unchanged in a volume.
+
 Two fields are not on that list because they are not optional. The phase
 fraction goes into every frame of a two-fluid run, and `k` and `omega` go into
 every frame of a `kOmegaSST` run, whether or not anybody asked: the frame is
@@ -1061,6 +1450,55 @@ the grounds that it cut its mask once and kept it; it re-cuts it every step
 now, the same way, and what a moving wall means to a gas with a finite speed of
 sound is written up under **Bodies travel here too** in the compressible
 section.
+
+### A body in a volume is a rigid body, properly
+
+In a plane a rigid body has three degrees of freedom and its orientation is one
+number. In a volume it has six, and its orientation is not a number at all.
+So:
+
+**Orientation is a unit quaternion** and **inertia is a 3x3 tensor**, taken
+about the body's own centroid and computed from the voxels it is actually made
+of, alongside its volume. `integrate` carries **angular momentum** rather than
+angular velocity — `L += tau dt`, then `w = I_world^-1 L` — including the
+gyroscopic term, which is the one everybody drops and the one that makes the
+motion right. A free body tumbling in a volume therefore does what a free body
+does: spin it about its intermediate axis and **the tennis-racket flip
+appears**, unasked for, out of the integrator.
+
+At `nz = 1` the gyroscopic term is **identically zero**, the tensor has one
+finite in-plane entry, the quaternion is a rotation about z and nothing else,
+and the update reduces to exactly the scalar `theta`/`omega` one that was there
+before. Not approximately — the terms are not there to round.
+
+**Measured.** Torque-free tumbling conserves `|L|` to **3.6e-5** and the kinetic
+energy to **8.2e-5** over 20000 steps. A dropped body falls at **9.80 m/s^2**
+with no spurious drift. The first pair is the one that catches a wrong
+`I_world`, because a wrong inertia tensor conserves neither; the second catches
+a sign or a factor in the force, which the first would sail straight past.
+
+### What `bodyMotion` gained
+
+    "bodyMotion=1:vx=0.2,vz=0.1,omegaX=30,omegaY=45"
+    "bodyMotion=1:free=1,density=2700,pinZ=1,pinRotX=1,pinRotY=1"
+
+| Setting | Means |
+|---|---|
+| `vz` | velocity along z, next to `vx` and `vy` |
+| `omegaX` `omegaY` | spin about x and about y, deg/s. `omega=` is still `omegaZ=` |
+| `pinZ` | hold it still in z |
+| `pinRotX` `pinRotY` | hold that rotation. `pinRot=` is still `pinRotZ=` |
+| `inertiaX` `inertiaY` | the two moments of inertia the plane never needed. `inertia=` is the z one |
+
+Everything else about the grammar is unchanged, keyframes included: `@<t>` opens
+a keyframe, and a keyframe carries the new components the same way it carried
+the old ones. A body given `pinZ=1,pinRotX=1,pinRotY=1` is a body confined to
+the plane it started in, which is a useful thing to ask for in a volume and is
+what a plane run is doing anyway.
+
+Collisions gained the z walls and the z component of the contact impulse, so a
+body can now bounce off the front and the back of the domain and off another
+body at any angle, not only one in the plane.
 
 ### The mesh stops being a constant
 
@@ -1112,11 +1550,13 @@ one produces the same bits.
 
 ### The numbers are the mask's, not the order you listed the models in
 
-Bodies are numbered by the flood fill, which walks the grid in scan order. That
-is **not** the order `profiles=` lists them in, and it is not left to right
-either - the body whose lowest cell sits in the lowest row is found first, so
-two shapes side by side can come out either way round depending on which one
-rasterised a cell lower.
+Bodies are numbered by the flood fill, which walks the grid in scan order — `i`
+inside `j` inside `k`. That is **not** the order `profiles=` lists them in, and
+it is not left to right either: the body whose first cell the scan reaches is
+found first, so two shapes side by side can come out either way round depending
+on which one rasterised a cell lower — and in a volume, depending on which one
+rasterised a cell nearer the front, since `k` is the outermost loop and the
+scan reaches the whole of the first plane before it reaches any of the second.
 
 The mesh prints the mapping before the run starts, and reading it is the whole
 job:
@@ -1137,10 +1577,21 @@ is the one failure a pose alone can never show.
 
     "bodyMotion=1:free=1,density=2700,pinX=1,pinY=1"
 
-Give it a `mass` in kg per metre of depth, or a `density` and let its own area
-do the arithmetic. `inertia` left out is taken as `m*r^2/2`, which is what a
-disc of that rim has. `pinX`, `pinY` and `pinRot` hold one degree of freedom
-still, so a cylinder free to spin but not to drift is `free=1,pinX=1,pinY=1`.
+Give it a `mass`, or a `density` and let its own size do the arithmetic — the
+area it covers in a plane, where a mass is per metre of depth, and the
+**volume** it fills in a volume, where a mass is a mass. `inertia` left out is
+taken as `m*r^2/2`, which is what a disc of that rim has; in a volume the
+labelling pass has already worked out the body's real inertia tensor about its
+own centroid from the cells it is made of, and `inertiaX` and `inertiaY` are
+there to override the other two diagonal entries the way `inertia` overrides
+the z one.
+
+`pinX`, `pinY`, `pinZ`, `pinRot` and its `pinRotX`/`pinRotY` siblings each hold
+one degree of freedom still, so a cylinder free to spin but not to drift is
+`free=1,pinX=1,pinY=1,pinZ=1`, and a body confined to the plane it started in
+is `free=1,pinZ=1,pinRotX=1,pinRotY=1` — which is what a plane run is doing
+anyway, and is the useful thing to ask for when you want a volume's flow around
+a body that is not allowed to wander out of the mid-plane.
 
 The force is the pressure and the shear integrated over the surface, and the
 surface of a staircase body is exactly the set of faces the mirror pass already
@@ -1253,6 +1704,17 @@ integrates a straight line exactly - and a pair of keyframes is a straight
 line. A body ramped from 0 to 0.5 m/s over 0.2 s and then held moves 0.15001 m
 in 0.4 s, against 0.15 exactly.
 
+**A keyframe carries the new components too.** `vz`, `omegaX` and `omegaY` are
+settings like any other, so they belong to the key they are written on and are
+interpolated between keys the same way `vx` always was:
+
+    "bodyMotion=1:@0,vx=0,vz=0,@1,vx=0.5,vz=0.2,omegaY=90,@2,vx=0,vz=0,omegaY=0"
+
+A component left out of a key is not zero there — it is whatever the
+interpolation between the keys that do mention it says, which is the rule the
+plane keys already followed and the reason a 2D timetable means what it always
+meant when you run it in a volume.
+
 ### How a segment is shaped
 
     "bodyMotion=1:@0,vx=0,interp=bezier,@1,vx=0.5,@2,vx=0"
@@ -1291,6 +1753,19 @@ centre, so a thruster stays on its nozzle however far the body has travelled or
 turned. The jet is turned into the domain frame every step, and the reaction -
 `rho * Q * v`, the momentum leaving per second - goes onto the body.
 
+In a volume that turn is the body's **orientation matrix** rather than one
+angle, so a thruster on a tumbling body stays bolted to the same patch of hull
+through the tumble. The source itself gained the two settings it needed to be
+placed and aimed in three dimensions: `z=` is where it sits in depth, and
+`elev=` is how far its jet is tilted out of the xy plane, in degrees, next to
+the `angle=` that aims it inside the plane.
+
+    "sources=x=-0.14,y=0,z=0,r=0.06,rate=3,angle=180,elev=20,body=1"
+
+Both default to what a plane run means — `z=` to the middle of the domain,
+`elev=0` to a jet that stays in the plane — so every source line written before
+this does the same thing it did.
+
 A prescribed body feels that force too. It is computed and reported and then
 its trajectory ignores it, which is what "prescribed" means: you said where it
 goes, so that is where it goes, and the arithmetic is there for whatever reads
@@ -1306,9 +1781,16 @@ A continuation normally takes the mask straight out of the frame, which is
 exact and needs no model at all. A run whose bodies travel cannot: that mask is
 a rasterised copy of wherever they had got to, and moving them on from it means
 cutting the outline again. So that one case rebuilds the geometry from the
-model and puts the bodies back at the pose the frame carries - six numbers per
-body, written into every frame. Split a run in half and the halves end at the
-same pose and the same mask, to the bit.
+model and puts the bodies back at the pose the frame carries. Split a run in
+half and the halves end at the same pose and the same mask, to the bit.
+
+That pose used to be a fixed run of seven numbers per body. It is a **key/value
+record** now, because a quaternion, a third position and three more velocity
+components do not fit in seven numbers and because the next thing a body grows
+will not fit in whatever number replaces it. `bodyState` carries `z`, the
+quaternion and the extra velocity components alongside everything it carried
+before, and the reader still accepts the old seven-number form, so a frame
+written by an earlier build continues exactly as it used to.
 
 ### Checked against
 
@@ -1367,12 +1849,26 @@ So there is no pressure solve here at all. `Multigrid.cpp` and
 compressible run, and not one line of either changed for this. The riskiest
 code in the project sat this branch out entirely.
 
-What runs instead: the conservative variables rho, rho*u, rho*v, rho*E in the
-cell centres, MUSCL reconstruction of the primitives with the same limiters
-`convection=muscl` uses, an HLLC flux at every face, and SSP-RK3 in time. The
-step size comes from `|u| + c` rather than `|u|` alone, which is the whole
-difference: a sound wave now takes a finite time to cross a cell, and the step
-has to see it.
+What runs instead: the conservative variables rho, rho*u, rho*v, **rho*w** and
+rho*E in the cell centres, MUSCL reconstruction of the primitives with the same
+limiters `convection=muscl` uses, an HLLC flux at every face, and SSP-RK3 in
+time. The step size comes from `|u| + c` rather than `|u|` alone, which is the
+whole difference: a sound wave now takes a finite time to cross a cell, and the
+step has to see it.
+
+`rhoW` is what the third dimension added to the state. The x and y fluxes gained
+their `w` row and a whole **z flux** appeared beside them, using the same
+reconstruction, the same limiter and the same Riemann solver — there is one
+HLLC in this codebase and all three axes call it. Microphones take a third
+coordinate. The stretched grid grew its z axis, and `gridFaceZ` goes into the
+frame next to `gridFaceX` and `gridFaceY` so a continued run lands on the grid
+it left rather than a regenerated one.
+
+**Measured.** A shock tube run in a volume stays one-dimensional to **7e-7** of
+the density, produces **1.8e-5** of transverse momentum, and reproduces the
+plane run's profile to **3.9e-5**. A shock tube is the right test for this
+because it has no business knowing about y or z at all: any number the
+transverse directions produce is a number the code invented.
 
 ### It is written on a block, and that was deliberate
 
@@ -1451,13 +1947,18 @@ pretend otherwise: it reports the rate of the largest thing happening and it is
 fooled by broadband noise. It is also free, it works per cell, and you can look
 at it.
 
-**`microphones=x=0.5,y=0.2;...`** is the accurate half. Each point records the
-pressure every `micInterval` steps and the run writes `microphones.txt` beside
-the frames: the whole trace, then a level and a peak frequency for each point
-found by scanning 512 bins with Goertzel. Not an FFT, because the sample count
-is whatever the time step happened to give and is never a power of two, and
-scanning fixed bins costs bins*samples with no padding, no window artefacts and
-no library.
+**`microphones=x=0.5,y=0.2,z=0.5;...`** is the accurate half. Each point records
+the pressure every `micInterval` steps and the run writes `microphones.txt`
+beside the frames: the whole trace, then a level and a peak frequency for each
+point found by scanning 512 bins with Goertzel. Not an FFT, because the sample
+count is whatever the time step happened to give and is never a power of two,
+and scanning fixed bins costs bins*samples with no padding, no window artefacts
+and no library.
+
+A microphone takes a third coordinate now. It is optional and defaults to the
+middle of the depth, so a line of microphones written for a plane run still
+lands where it always did — and in a volume you can put one off the mid-plane
+and hear the difference, which is the whole reason anybody runs a volume.
 
 On a closed 0.34 m tube rung by a pressure step the field reports 179 dB and
 749 Hz, the microphone 177 dB and 1398 Hz, against a 500 Hz fundamental. Two
@@ -1655,11 +2156,12 @@ cell sets the step - which is the price of stretching and the reason
 `stretchRatio` has a ceiling.
 
 **Frames come out as `RECTILINEAR_GRID`** with the face coordinates written
-out, which ParaView opens natively. The frame also carries `gridFaceX` and
-`gridFaceY` in its restart block, so a continued run lands on the same grid
-rather than a regenerated one - which matters, because with moving bodies the
-mask that the grid was built from is not the mask at the end. An unstretched
-run still writes `STRUCTURED_POINTS` exactly as before.
+out, which ParaView opens natively. The frame also carries `gridFaceX`,
+`gridFaceY` and — since the port — `gridFaceZ` in its restart block, so a
+continued run lands on the same grid rather than a regenerated one - which
+matters, because with moving bodies the mask that the grid was built from is not
+the mask at the end. An unstretched run still writes `STRUCTURED_POINTS` exactly
+as before.
 
 **What it is checked against.** Two things, and the first is the one with
 teeth. A second order scheme reproduces a *linear* profile exactly on any grid:
@@ -1697,6 +2199,18 @@ there is no gap. That is Berger-Rigoutsos, and the whole point of it is that
 one long thin feature becomes one long thin patch instead of a square box round
 everything.
 
+**A patch is a box, not a rectangle.** `AmrBox` gained `k0` and `nz`, and every
+part of the machinery followed: clustering splits along the longest of the
+**three** axes rather than the longer of two, tagging looks at the z gradient
+and at the full 3D curl instead of the single vorticity component a plane has,
+ghost cells interpolate with a z slope as well, and averaging down is the mean
+of **eight** fine cells rather than four. The patch frames go out as 3D
+`RectilinearGrid` pieces.
+
+The refusal that used to say AMR and `nz > 1` could not both be on is gone.
+There was nothing wrong with the argument at the time — a patch had no third
+index to give — and there is nothing left of it now.
+
 A patch is a `Block`. That is the whole reason branch 7 was written the way it
 was: not one kernel needed touching. `advanceStage`, `blockTimeStep`, `hllc`,
 the reconstruction, the solid fill - a patch runs the same code the base grid
@@ -1707,16 +2221,16 @@ takes, which is what keeps every level at the same CFL rather than dragging the
 whole run down to the finest cell. Between them the patches refill their ghost
 cells from the level above by limited linear interpolation - which reproduces a
 constant exactly, and averages back to the coarse value it came from - and from
-their siblings where they overlap. Afterwards the four fine cells under each
-coarse cell are averaged back down into it, so the base grid always carries the
-best answer the hierarchy has.
+their siblings where they overlap. Afterwards the fine cells under each coarse
+cell are averaged back down into it — four of them in a plane, eight in a
+volume — so the base grid always carries the best answer the hierarchy has.
 
 **The bug this shape of code invites**, written down because it cost an
 afternoon: `advanceStage` fills the ghost cells from `BlockBoundaries` before
 it does anything else. Run it on a patch and the patch gets the *domain's*
-walls and inlets imposed on its own four edges - on top of the ghosts that were
-just interpolated for it - and every patch becomes a little closed box that
-rings. The shock tube blew up to the pressure floor in twenty-five steps.
+walls and inlets imposed on its own edges - all four of them in a plane, all
+six in a volume, on top of the ghosts that were just interpolated for it - and
+every patch becomes a little closed box that rings. The shock tube blew up to the pressure floor in twenty-five steps.
 `SideState` now carries an `interior` flag, a patch marks the sides that do not
 reach the edge of the domain, and `mirrorSide` returns immediately for those.
 A patch that *does* touch the domain edge still gets the real boundary, and it
@@ -1884,6 +2398,14 @@ four cells around it. A two-fluid run gets the same term for free: a density
 jump makes `nu` vary just as much as a model does, so the multiphase runs are
 now solving a viscous term they were previously approximating.
 
+In a volume `S` has **nine** components rather than four, and the strain
+magnitude `|S|` is summed over all of them. That is the number both models are
+built on, so getting it wrong would be quiet and total. The check is that it
+cannot prefer an axis: the same shear laid on the xy, the xz and the yz plane
+gives the same `|S|`, **bit for bit on cubic cells**. Not "to within a
+tolerance" — the same floats, because the same expression is being evaluated
+with the indices permuted and nothing else.
+
 ### `smagorinsky`
 
 The large-eddy model, and the smaller of the two. It says the eddies below one
@@ -1891,9 +2413,13 @@ cell behave like extra viscosity:
 
     nu_t = (Cs * delta * D)^2 * |S|
 
-`delta` is `sqrt(dx*dy)`, `Cs` is yours, and `D` is the damping that stops it
-from putting a full eddy viscosity in the one place there is no room for an
-eddy - hard against a wall.
+`delta` is the filter width — the size of the cell the model is standing in.
+That is `cbrt(dx*dy*dz)` in a volume and stays `sqrt(dx*dy)` in a plane, which
+is not a tidying-up: a plane has no third direction for an eddy to be a third
+of, and taking a cube root of a depth that is not a depth would shrink the
+model's reach for no physical reason. `Cs` is yours, and `D` is the damping that
+stops it from putting a full eddy viscosity in the one place there is no room
+for an eddy - hard against a wall.
 
 The obvious damping is to cap the mixing length at `kappa*y`, and it does not
 work. It compares a length against a length, and on any grid a run of this kind
@@ -1916,7 +2442,8 @@ with a wall in it wants about `0.1`.
 
 ### `kOmegaSST`
 
-Menter's 2003 shear-stress-transport model, two more transported fields:
+Menter's 2003 shear-stress-transport model, two more transported fields —
+transported on three axes in a volume, with the same scheme on each:
 
     Dk/Dt     = P - beta* k omega + div((nu + sigma_k nu_t) grad k)
     Domega/Dt = alpha S^2 - beta omega^2 + div((nu + sigma_w nu_t) grad omega)
@@ -1972,9 +2499,14 @@ a k-omega run reproduces the straight-through one to 2.8e-4 relative.
 
 The wall distance is a breadth-first sweep out of the solid cells and the
 domain edges, with the diagonal step counted at its own length so a corner does
-not come out further away than it is. It is geometry, not flow, so it is built
-once - and rebuilt when the geometry moves, because bodies that travel are
-allowed in the same run.
+not come out further away than it is. In a volume that sweep visits all **26**
+neighbours rather than 8, for exactly the same reason: a cell diagonally across
+a corner in three directions at once is `sqrt(3)` cells away, and a sweep that
+cannot step there has to go round and reports it as further off than it is —
+which lands straight in `omega`'s wall value, `60 nu / (beta1 d^2)`, where an
+error in `d` is squared. It is geometry, not flow, so it is built once - and
+rebuilt when the geometry moves, because bodies that travel are allowed in the
+same run.
 
 ### Checked against
 
@@ -2032,9 +2564,16 @@ number and a colon, and everything the body does goes inside it:
 
 | Setting | Unit | Means |
 |---|---|---|
-| `rot` | degrees/s, counter-clockwise | the surface turns about that body's own centroid |
-| `slideX` `slideY` | m/s | the surface is dragged in a straight line |
+| `rotZ` | degrees/s, counter-clockwise | the surface turns about that body's own centroid, about the z axis |
+| `rotX` `rotY` | degrees/s | the same about the x and the y axis |
+| `rot` | degrees/s | an alias for `rotZ`, kept because every line ever written uses it |
+| `slideX` `slideY` `slideZ` | m/s | the surface is dragged in a straight line |
 | `slip` | switch | free-slip instead of no-slip: the fluid slides along the wall and the wall exerts no drag |
+
+`rotX`, `rotY` and `slideZ` are what the third dimension added. A plane has one
+axis a surface can turn about and two it can slide along; a volume has three of
+each, and the three rotations compose as a single angular velocity vector rather
+than as three separate settings that happen to be applied in some order.
 
 The first two rows are one group and the third is the other. `rot` and `slide`
 keep the no-slip wall and give its surface a velocity, so the wall holds the
@@ -2042,8 +2581,10 @@ fluid and now carries it somewhere; `slip` does the opposite and stops the wall
 from holding the fluid at all. Nothing about the geometry changes either way —
 a body never moves, only the velocity its surface hands to the fluid does.
 
-`rot` and the two `slide` components add up, because together they are just the
-rigid-body velocity field **v = slide + ω × (x − centre)**. Counter-clockwise
+The rotations and the `slide` components add up, because together they are just
+the rigid-body velocity field **v = slide + ω × (x − centre)**, with **ω** now a
+three-component vector made of `rotX`, `rotY` and `rotZ` and **slide** a
+three-component one made of `slideX`, `slideY` and `slideZ`. Counter-clockwise
 means what it looks like in ParaView: with `rot=720` the top of the body runs
 towards the inlet at two turns a second.
 
@@ -2059,6 +2600,8 @@ Different objects can of course do different things.
 .\install\bin\cfd_app.exe "wallMotion=1:rot=720;2:slideX=-1.5,slideY=0.4"
 .\install\bin\cfd_app.exe "wallMotion=1:slip=1;2:rot=-45"
 .\install\bin\cfd_app.exe wallMotion=1:rot=720,2:slideX=-1.5
+.\install\bin\cfd_app.exe nz=64 Lz=1 "wallMotion=1:rotX=360,rotY=180"
+.\install\bin\cfd_app.exe nz=64 Lz=1 "wallMotion=1:rotZ=720,slideZ=0.5;2:slip=1"
 ```
 
 Objects are separated by `;` and settings by `,` — and either separator opens a
@@ -2078,22 +2621,38 @@ information:
     object 2: 41 cells, centre (1.04992, 0.679688) m, rim 0.0781845 m
 ```
 
-Numbering follows the scan order of the grid — bottom row first, left to
-right, a body taking its number from the first of its cells the scan reaches —
-so the same mask always produces the same numbers, and *the mask comes out of
+Numbering follows the scan order of the grid — `i` inside `j` inside `k`, so
+bottom row first, left to right, front plane before the one behind it, a body
+taking its number from the first of its cells the scan reaches — so the same
+mask always produces the same numbers, and *the mask comes out of
 the frame on a continuation*, which means the
 numbers therefore still mean the same bodies after a restart. The usual way to
 use this is to let the first run print the list, then continue with the motion
 you want. Two cells that touch only at a corner count as one body, since the
-flow cannot squeeze through that corner either.
+flow cannot squeeze through that corner either — that is 8-connected labelling
+in a plane and **26-connected** in a volume, which is the same rule with the
+same justification counted over the neighbours a volume actually has.
 
-> **Known issue.** All of the above is what the solver does with a mask that
-> already has several bodies in it, and it is what a continuation gets, since
-> the mask then comes out of the frame. Getting there from a *model* does not
-> work yet: the section keeps only its largest contour, so a model that cuts
-> into two shapes loses one, and a model with a hole gets the hole filled.
-> Object numbering and contour generation are both being reworked, and this is
-> fixed closer to the 1.3 release.
+Each body also carries its **volume** and its **full inertia tensor about its
+own centroid**, worked out from the cells it is made of. Nothing in
+`wallMotion` reads either — a surface that moves while the body stays put has
+no use for an inertia — but a body that is let go with `free=1` reads both, and
+they come from the same labelling pass, so they are always the inertia of the
+shape that is actually in the grid rather than of the shape somebody meant to
+put there.
+
+> **Known issue, and it is a `nz = 1` one.** All of the above is what the solver
+> does with a mask that already has several bodies in it, and it is what a
+> continuation gets, since the mask then comes out of the frame. Getting there
+> from a *model* through the **section cut** does not work: the section keeps
+> only its largest contour, so a model that cuts into two shapes loses one, and
+> a model with a hole gets the hole filled.
+>
+> At `nz > 1` this does not arise, because there is no contour. The voxeliser
+> tests every cell centre against the whole triangle soup, so a model that is
+> two shapes comes out as two bodies and a model with a hole comes out with the
+> hole in it, and the 26-connected labelling numbers whatever it finds. The
+> limitation is the section cut's, not the solver's.
 
 `rim` is the distance from the centroid to the farthest cell, i.e. the radius
 the rim speed is computed at, because degrees per second is not a number you
@@ -2182,7 +2741,7 @@ face is which.
 The banner says which build this is:
 
 ```
-=== CFD-Solver-2D 0.2 (avx2-omp-cuda) ===
+=== Fluid Solver 1.0 (avx2-omp-cuda) ===
 ```
 
 AVX2, OpenMP and CUDA can each be turned off without changing which download
@@ -2305,13 +2864,13 @@ Continue from `solution_200_400.vtk` and the next series is
 
 | Parameter | On a continuation |
 |---|---|
-| `nx`, `ny`, `Lx`, `Ly` | fixed by the frame, changing them is refused |
+| `nx`, `ny`, `nz`, `Lx`, `Ly`, `Lz` | fixed by the frame, changing them is refused |
 | geometry (`geometryFile`, slice angles, `invertSection`) | ignored — the solid mask comes out of the frame, the model file is not needed any more |
 | `totalTime` | must be larger than the time already reached, otherwise there is nothing to compute |
 | `saveInterval`, `outputDir`, `CFL`, `dtSafety`, `dtUpdateInterval`, `omega`, `smootherOmega`, `mgIterations`, `mgTolerance`, `mgMinCoarseSize`, `useCuda` | free |
 | `U0`, `nu` | allowed, but it is a discontinuity in the physics, not a continuation of the same problem |
 | `ro` | free — it only scales the pressure on the way out to Pa, the frame stores the kinematic field |
-| `gravityEnabled`, `gravityAccel`, `gravityAngle` | free — changing them shifts the hydrostatic part of the pressure and leaves the velocity where it was |
+| `gravityEnabled`, `gravityAccel`, `gravityAngle`, `gravityTilt` | free — changing them shifts the hydrostatic part of the pressure and leaves the velocity where it was |
 | `bodyMotion` | free, and it is the one key that changes how the frame is read: a run whose bodies travel rebuilds the geometry from the model at the pose the frame carries, rather than inheriting a rasterised copy of the mask. Restart it a hundred times and it is in the same place as the run that was never stopped |
 | `wallMotion` | free — the mask comes out of the frame, so the object numbers still mean the same bodies. Spinning a wall up mid-run is a step change in the boundary condition, not a discontinuity in the state |
 
@@ -2322,17 +2881,30 @@ Frames written before gravity existed simply do not carry its three keys, and
 the reader skips keys it does not know, so they load with gravity off. Frames
 written now stay readable by builds that predate it, for the same reason.
 
+**And a volume continues like a plane does.** A volume stopped halfway and
+continued lands within **5e-4** of one that never stopped. That is a looser
+number than the bit-identical one above and it is the honest one for a volume:
+the plane figure is measured on a single-phase run where nothing but the clock
+and the in-flight `dt` have to be restored, and 5e-4 is what the whole
+machinery — `w` faces, the body records, the phase volume — comes to when it is
+all put back at once.
+
+Frames written before the third dimension existed do not carry `nz` or `Lz`,
+so they load as a volume one cell deep with `w` zero, which is precisely what
+they always were. See *What a frame is made of* for the format version that
+makes that safe rather than lucky.
+
 ## Continuing a run, in detail
 
 Every frame is also a checkpoint. That is less obvious than it sounds, because
 what a frame shows and what the solver needs are not the same thing.
 
 **Why the visible arrays are not enough.** The solver lives on a staggered
-grid: `u` sits on `(nx+1)×ny` vertical faces, `v` on `nx×(ny+1)` horizontal
-ones. A VTK frame is cell centred, so what gets written is the average of the
-two faces around each cell — `0.5*(u[i] + u[i+1])`. Averaging throws away
-exactly one degree of freedom per row, and no amount of cleverness gets it
-back. Reading a frame and interpolating back onto the faces gives a field that
+grid: `u` sits on `(nx+1)×ny×nz` faces, `v` on `nx×(ny+1)×nz`, and `w` on
+`nx×ny×(nz+1)`. A VTK frame is cell centred, so what gets written is the
+average of the two faces around each cell — `0.5*(u[i] + u[i+1])`. Averaging
+throws away exactly one degree of freedom per row, per column and per column of
+depth, and no amount of cleverness gets it back. Reading a frame and interpolating back onto the faces gives a field that
 looks right and is not divergence free, which the projection then has to repair
 with a visible kick.
 
@@ -2353,8 +2925,8 @@ A frame without face velocities — one written before the `RestartData` block e
 Pointing `restartFile` at a folder takes the newest frame in it, by file timestamp, with the step in the file name breaking ties — a run short enough to write its whole output inside one second gives every frame the same timestamp.
 
 `FIELD` is the only legacy VTK block that lets each array declare its own tuple
-count, which is the whole reason it is used — `(nx+1)*ny` simply does not fit
-in a `CELL_DATA` section. The pressure the restart needs is not in here at all:
+count, which is the whole reason it is used — `(nx+1)*ny*nz` simply does not fit
+in a `CELL_DATA` section of `nx*ny*nz`. The pressure the restart needs is not in here at all:
 the `SCALARS pressure` array ParaView reads is the same field times `ro`, so
 the reader divides it back out rather than the frame carrying it twice. What is
 left costs about 12% more file size, and it is the difference between a frame
@@ -2407,16 +2979,21 @@ Available display modes:
 - Velocity magnitude
 - Velocity vectors
 - Solid mask
+- Slice planes on any axis, isosurfaces, Q-criterion vortices with their core
+  lines, and 3D streamlines with animated tracers — the volume half, in the
+  viewport
 
 Interactive controls include:
 
 - Pause
 - Resume
 - Simulation speed
-- Camera movement
+- Camera movement — orbit, pan and zoom, laid out the way Blender lays them out
 - Zoom
 - Time navigation
 - Rendering mode switching
+- `V` to swap between the 3D viewport and the 2D view, which is now a slice
+  through the volume rather than a different picture
 
 ---
 
@@ -2427,7 +3004,7 @@ Simulation results are automatically written in VTK format.
 The exported files contain:
 
 - Pressure (Pa)
-- Velocity vectors
+- Velocity vectors, with a real third component
 - Solid mask
 
 The files can be opened directly in ParaView for further analysis, contour generation, streamline visualization and animation.
@@ -2460,6 +3037,7 @@ executable and the tests link the same objects, so what is tested is what runs.
 | `ConservationTests` | divergence left after the projection, inflow against outflow, and a fluid at rest under real gravity staying at rest |
 | `ConvectionTests` | every scheme run on the same case, and the ordering of how much of the field each one throws away |
 | `RestartTests` | a run cut in half and continued reproducing the run that was never cut |
+| `VolumeTests` | the whole third dimension: that a plane is still the plane, the cube cavity against Ghia, a light drop rising the same distance whichever axis gravity is turned to, a closed box keeping its mass, a volumetric restart, turbulence staying finite in a volume, walls turning about every axis, a shock tube refusing to notice the two directions it should not, refinement in depth, and a solid body that is a body rather than a stack of discs |
 | `BackendAgreementTests` | AVX2 on against off and many threads against one, which is the thing that quietly turns one solver into several that disagree |
 
 `.github/workflows/build-all.yml` runs `ctest` before it builds a single
@@ -2480,6 +3058,45 @@ Performance improvements include:
 - optimized memory access patterns;
 - accelerated pressure solver;
 - optimized boundary-condition processing.
+
+## What a volume costs against a plane
+
+The short version, before any of the detail: **a volume is `nz` times the cells
+of the plane it is made of, and the pressure solve is the expensive part.** The
+Poisson solve is about 90% of the runtime of an incompressible step and it
+scales with the cell count, so `nz=64` is not a setting, it is a decision to do
+sixty-four times as much work per step. Nothing in the port changed that and
+nothing could: it is what solving a volume means.
+
+What the port was careful about is that it is only `nz` times and not worse.
+
+- **The multigrid coarsens each axis independently**, so the hierarchy over a
+  volume is a hierarchy over a volume rather than a stack of 2D ones, and each
+  level is eight times smaller instead of four. A V-cycle over all three axes
+  costs about `1 + 1/8 + 1/64 + … = 8/7` of a fine-grid sweep, against the `4/3`
+  a plane pays — the cycle gets relatively cheaper as the dimension goes up,
+  which is the one piece of good news in this section.
+- **At `nz = 1` the solve is the old solve**: the same level count, the same
+  cycle count, and the 2D field back bit for bit. A plane pays nothing at all
+  for the volume code being there.
+- **The geometry rebuild is measured and it is small.** Voxelising **128^3
+  against 50k triangles takes about 5 ms**, which is why a body can travel in a
+  volume — the mask is cut again every step, and 5 ms against a pressure solve
+  over two million cells is not the thing to worry about. On the section-cut
+  path at `nz = 1` the rebuild is what it always was.
+- **The AVX2 kernels and the threading did not have to be given back.** `i`
+  stays contiguous so the vector kernels are unchanged in shape, and OpenMP
+  collapses (k, j) so a volume parallelises over both.
+
+**What this README does not have is a wall-clock number for a volume pressure
+solve**, and it is not going to invent one. The measurements that exist for the
+3D port are correctness measurements — bit-for-bit agreement at `nz = 1`, second
+order on a manufactured 3D solution, the conservation and isotropy figures
+quoted throughout — plus the 5 ms voxelisation above. The timing tables further
+down this section are all plane runs on a named machine, and quoting them as if
+they said something about a volume would be worse than having nothing. Run your
+own case at `nz=8` before you run it at `nz=128`; the step count and the
+seconds-per-step it prints are the only honest estimate there is.
 
 0.7 added a cost that had never existed: the mask is cut again every step
 instead of once. Best of five interleaved runs, same case, AVX2 and OpenMP on:
@@ -2514,7 +3131,9 @@ instructions to 126.2M, a sixth of the whole run:
   coefficients and touches nothing else.
 
 The single-phase path is unchanged and still bit-for-bit what 0.2 wrote: 88
-frames across ten configurations, relative difference exactly 0.000e+00.
+frames across ten configurations, relative difference exactly 0.000e+00. The
+third dimension did not move that number either, which is the one result the
+whole port was written to produce.
 
 0.6 went back over everything the previous three branches added rather than
 only writing the new feature. Best of three runs, same machine, AVX2 and
@@ -2568,7 +3187,7 @@ Alright. Building it up from the physics, because every design choice in the cod
 
 ## The one-paragraph version
 
-Pressure has no equation of its own; it's whatever makes the flow divergence-free. So each step you advance momentum ignoring pressure, measure the divergence you created, solve a Poisson equation for the pressure that cancels it, and subtract its gradient. The grid is staggered so pressure gradients and divergences land exactly where they're needed and the chessboard mode can't survive. The Poisson operator encodes every boundary condition in its coefficients, which guarantees it's exactly `div ∘ grad` and therefore that the projection actually projects. Multigrid solves it in `O(N)` by exploiting the fact that SOR smooths error fast but converges slowly — so you smooth on every grid size at once. Everything else is SIMD, threads, and not allocating memory in the inner loop. Gravity, if you switch it on, never enters the solve at all: at constant density it is exactly a pressure offset, so the solver works in the reduced pressure and puts the hydrostatic part back on the way out — §4 explains why that is the correct answer and not a shortcut. Wall behaviour is the mirror image: the faces buried inside a body are handed the surface velocity instead of zero — or the neighbouring fluid value, which is free-slip — and the operator does not change one coefficient either way. §7.
+Pressure has no equation of its own; it's whatever makes the flow divergence-free. So each step you advance momentum ignoring pressure, measure the divergence you created, solve a Poisson equation for the pressure that cancels it, and subtract its gradient. That is three momentum components and a seven-point Poisson operator in a volume, and two components and a five-point one in a plane — the same code, with the front and back coefficients at exactly zero when `nz = 1`. The grid is staggered so pressure gradients and divergences land exactly where they're needed and the chessboard mode can't survive. The Poisson operator encodes every boundary condition in its coefficients, which guarantees it's exactly `div ∘ grad` and therefore that the projection actually projects. Multigrid solves it in `O(N)` by exploiting the fact that SOR smooths error fast but converges slowly — so you smooth on every grid size at once. Everything else is SIMD, threads, and not allocating memory in the inner loop. Gravity, if you switch it on, never enters the solve at all: at constant density it is exactly a pressure offset, so the solver works in the reduced pressure and puts the hydrostatic part back on the way out — §4 explains why that is the correct answer and not a shortcut. Wall behaviour is the mirror image: the faces buried inside a body are handed the surface velocity instead of zero — or the neighbouring fluid value, which is free-slip — and the operator does not change one coefficient either way. §7.
 
 ---
 
@@ -2580,6 +3199,8 @@ Incompressible Navier–Stokes:
 ∂u/∂t + (u·∇)u  =  −∇p + ν∇²u        momentum
 ∇·u = 0                                incompressibility
 ```
+
+Written like that it says nothing about how many dimensions it is in, and that is the honest form: **u** has three components in a volume and two in a plane, `∇` runs over three axes or two, and every word below is the same either way.
 
 Read the momentum equation as "F = ma for a blob of fluid": it accelerates because neighbours push it (pressure), because friction drags it (viscosity), and it carries itself along (convection).
 
@@ -2653,15 +3274,29 @@ The fix is to **stagger**: pressure at cell centres, velocities on cell faces.
 
 Now `∂p/∂x` at the `u` face between cells `i−1` and `i` is `(p[i] − p[i−1]) / dx` — **adjacent** cells, no gap. A chessboard produces a huge gradient and gets crushed immediately. Same for divergence: it's the net flux through the four faces of a cell, which are exactly where the velocities live. Everything lands where you need it. No interpolation.
 
-The price is that the three fields have three different shapes, and this is where the index arithmetic bites:
+The price is that the fields have different shapes, and this is where the index arithmetic bites:
 
 ```
-p   nx     × ny        row stride = nx        idxP(i,j) = j*nx     + i
-u   (nx+1) × ny        row stride = nx+1      idxU(i,j) = j*(nx+1) + i    ← different!
-v   nx     × (ny+1)    row stride = nx        idxV(i,j) = j*nx     + i
+p   nx     × ny     × nz       idxP(i,j,k) = (k*ny     + j)*nx     + i
+u   (nx+1) × ny     × nz       idxU(i,j,k) = (k*ny     + j)*(nx+1) + i   ← different!
+v   nx     × (ny+1) × nz       idxV(i,j,k) = (k*(ny+1) + j)*nx     + i   ← different!
+w   nx     × ny     × (nz+1)   idxW(i,j,k) = (k*ny     + j)*nx     + i
 ```
 
-`u` has `nx+1` columns because a row of `nx` cells has `nx+1` vertical faces (think fence posts vs fence panels). Mixing up `j*nx` and `j*(nx+1)` is the single easiest way to destroy this solver, and it's exactly the bug that was in there.
+`u` has `nx+1` columns because a row of `nx` cells has `nx+1` vertical faces (think fence posts vs fence panels), `v` has `ny+1` rows for the same reason, and `w` has `nz+1` planes. Mixing up `j*nx` and `j*(nx+1)` is the single easiest way to destroy this solver, and it's exactly the bug that was in there; the third index gives you a second way to do it, with `k*ny` and `k*(ny+1)`.
+
+Two things about that layout are worth saying out loud, because both were chosen rather than fallen into:
+
+**At `k = 0` every one of those formulas is byte-for-byte the 2D one.** `(0*ny + j)*nx + i` *is* `j*nx + i`. That is not a coincidence and it is not a nicety — it is why a plane run produces the same bits. There is no separate 2D path to keep in step with the 3D one; there is one path, and a plane is the case where the outer loop runs once.
+
+**Loop order is always `k` outermost, then `j`, then `i`, and `i` stays contiguous.** The AVX2 kernels vectorise runs of cells along `i`, and a volume is a stack of the planes those kernels already knew how to walk, so not one of them changed shape for the port. Neighbours are reached by a stride rather than by recomputing an index:
+
+```
+p: +1 (i)   +nx      (j)   +nx*ny  (k)
+u: +1       +(nx+1)        +(nx+1)*ny
+v: +1       +nx            +nx*(ny+1)
+w: +1       +nx            +nx*ny
+```
 
 ---
 
@@ -2671,13 +3306,15 @@ v   nx     × (ny+1)    row stride = nx        idxV(i,j) = j*nx     + i
 
 The scheme is explicit, so there's a speed limit. Two of them.
 
-**Advective (CFL):** in one step, fluid must not cross more than a fraction of a cell. If it jumped two cells, the stencil never even looked at the cell it passed through — information outran the numerics. Condition: `|u|·dt/dx + |v|·dt/dy ≤ 1`.
+**Advective (CFL):** in one step, fluid must not cross more than a fraction of a cell. If it jumped two cells, the stencil never even looked at the cell it passed through — information outran the numerics. Condition: `|u|·dt/dx + |v|·dt/dy + |w|·dt/dz ≤ 1`.
 
-**Diffusive:** the explicit viscous term goes unstable if `dt > 1/(2ν(1/dx² + 1/dy²))`. Physically, momentum must not diffuse more than about a cell per step.
+**Diffusive:** the explicit viscous term goes unstable if `dt > 1/(2ν(1/dx² + 1/dy² + 1/dz²))`. Physically, momentum must not diffuse more than about a cell per step.
 
 Take the smaller, multiply by `CFL` (0.4) and `dtSafety` (0.9) for margin.
 
-One refinement: the Courant number is computed **per cell** from that cell's own faces, then maxed. Taking a global `max|u|` and a global `max|v|` and adding them assumes the worst horizontal and worst vertical flow happen in the same place, which they usually don't — so you'd shrink `dt` for a cell that doesn't exist.
+At `nz = 1` the front and back faces are shut, `w` is zero there and the `1/dz²` term is not summed, so both limits are the two-term ones they have always been and a plane takes exactly the steps it used to take. In a volume the third term only ever makes the limit tighter, which is the honest direction for a stability bound to move.
+
+One refinement: the Courant number is computed **per cell** from that cell's own faces, then maxed. Taking a global `max|u|`, a global `max|v|` and a global `max|w|` and adding them assumes the worst flow in all three directions happens in the same place, which it usually doesn't — so you'd shrink `dt` for a cell that doesn't exist.
 
 Called every 5 steps, not every step, since it's a full sweep over the grid and velocities don't change much in 5 steps.
 
@@ -2712,7 +3349,7 @@ uStar = uij − dt*(uij*dudx + vn*dudy) + dt*ν*(d2x + d2y);
 
 **Diffusion uses centred differences** — friction genuinely acts in both directions equally, no upwinding needed.
 
-`vn` is the vertical velocity *at the u-face*, which doesn't exist there, so it's the average of the four surrounding `v` faces. This is the one place staggering makes you interpolate.
+`vn` is the vertical velocity *at the u-face*, which doesn't exist there, so it's the average of the four surrounding `v` faces. This is the one place staggering makes you interpolate — and in a volume it happens twice, because the `u` face also needs a `w` there, averaged from the four `w` faces around it the same way. The `w` equation is the same expression again with the indices rotated; there is no third case, only a third axis.
 
 There is no gravity term in there, and that is deliberate — the next heading is
 about why. What the real line does carry is the mask multiply and the wall
@@ -2731,7 +3368,7 @@ approximately — exactly. Gravity is uniform, so it is the gradient of a
 potential:
 
 ```
-g = ∇Φ        with        Φ = gx·x + gy·y
+g = ∇Φ        with        Φ = gx·x + gy·y + gz·z
 ```
 
 which means `−∇p + g = −∇(p − Φ)`. Substitute `P = p − Φ` and the momentum
@@ -2745,8 +3382,13 @@ body-force term, the Poisson operator has no gravity in it, the outlet keeps
 its plain `p = 0`, and the multigrid never learns that gravity exists.
 `phiCell()` adds `Φ` back in the one place that writes pressure out — the VTK
 scalar, which is also what the restart reads back — and `setInitialState()`
-takes it off again when a frame is read back in. `gx` and `gy` appear nowhere
-else.
+takes it off again when a frame is read back in. `gx`, `gy` and `gz` appear
+nowhere else.
+
+The potential is measured from `(Lx, Ly/2, Lz/2)` — the outlet plane, at the
+middle of the height and the middle of the depth — so the `gz` term is
+`gz·(z − Lz/2)` and is identically zero at `gravityTilt = 0`, which is what
+makes a plane run's pressure field the pressure field it always was.
 
 Measured. 128×64, `nu=0.005`, `g = 9.81` straight down, 98 steps:
 
@@ -2806,22 +3448,25 @@ gravity quietly left out of it.
 The RHS is one line of physics per cell:
 
 ```cpp
-div = (u*[i+1,j] − u*[i,j])·invDx + (v*[i,j+1] − v*[i,j])·invDy;
+div = (u*[i+1,j,k] − u*[i,j,k])·invDx
+    + (v*[i,j+1,k] − v*[i,j,k])·invDy
+    + (w*[i,j,k+1] − w*[i,j,k])·invDz;
 rhs = div / dt;
 ```
 
-Flux out the right face minus flux in the left, plus top minus bottom. That's net mass creation. Divide by `dt`.
+Flux out the right face minus flux in the left, plus top minus bottom, plus back minus front. That's net mass creation. Divide by `dt`. At `nz = 1` both `w` faces are shut at zero, the third line is `0 − 0`, and what is summed is the two terms it always was.
 
 Then hand it to the multigrid, which is §5.
 
 ### `corrector` — apply the fix
 
 ```cpp
-u[i,j] = u*[i,j] − dt·(p[i,j] − p[i−1,j])·invDx;
-v[i,j] = v*[i,j] − dt·(p[i,j] − p[i,j−1])·invDy;
+u[i,j,k] = u*[i,j,k] − dt·(p[i,j,k] − p[i−1,j,k])·invDx;
+v[i,j,k] = v*[i,j,k] − dt·(p[i,j,k] − p[i,j−1,k])·invDy;
+w[i,j,k] = w*[i,j,k] − dt·(p[i,j,k] − p[i,j,k−1])·invDz;
 ```
 
-Two adjacent pressures, subtract, scale. Done. Notice how clean this is *because* of staggering.
+Two adjacent pressures, subtract, scale. Done, three times. Notice how clean this is *because* of staggering — and that the third line is the first line with a different stride, which is the whole reason the third dimension was cheap to write.
 
 The outlet face is the exception, since it is the one place with a prescribed pressure rather than a prescribed velocity — see §5, and *Gravity* above for what changes there when gravity is on.
 
@@ -2842,17 +3487,22 @@ If they disagree at even one face, then at that cell `∇·uⁿ⁺¹ ≠ 0` no m
 The trick is that **boundary conditions live in the coefficients**, not in a separate fix-up pass. The operator for each cell is:
 
 ```
-(L p)ᵢⱼ = cW·p(i−1,j) + cE·p(i+1,j) + cS·p(i,j−1) + cN·p(i,j+1) − diag·pᵢⱼ
+(L p)ᵢⱼₖ = cW·p(i−1,j,k) + cE·p(i+1,j,k)
+         + cS·p(i,j−1,k) + cN·p(i,j+1,k)
+         + cF·p(i,j,k−1) + cB·p(i,j,k+1) − diag·pᵢⱼₖ
 ```
 
-and each coefficient answers one question: **is this face something the corrector will update?**
+Seven points in a volume, and the same five it always was in a plane: at `nz = 1` the front and back faces are shut, `coefF` and `coefB` are zero everywhere, and the two extra terms contribute nothing to the sum or to the diagonal. That is the level at which "bit for bit" is decided — a coefficient that is exactly zero costs the answer nothing, whereas one that is merely small does not.
+
+Each coefficient answers one question: **is this face something the corrector will update?**
 
 | Face | Is velocity there prescribed? | Coefficient |
 |---|---|---|
-| between two fluid cells | no, corrector owns it | `1/dx²` or `1/dy²` |
+| between two fluid cells | no, corrector owns it | `1/dx²`, `1/dy²` or `1/dz²` |
 | touching a solid cell | yes — it's 0 | **0** |
 | inlet, `i=0` | yes — it's `U0` | **0** |
 | walls, `j=0` and `j=ny` | yes — it's 0 | **0** |
+| front and back, `k=0` and `k=nz` | yes — closed, or whatever `bcFront`/`bcBack` prescribe | **0** |
 | outlet, `i=nx` | no — free to adjust | Dirichlet, see below |
 
 The logic is beautifully simple: **if the corrector can't change the velocity on a face, that face contributes nothing to the Laplacian.** A closed coefficient and a prescribed velocity are the same statement.
@@ -2879,13 +3529,17 @@ with exactly that `L`. Set `rhs = ∇·u*/dt`, solve `L p = rhs`, and you get `�
 
 ### What's actually stored
 
-Six float arrays per grid: `cW, cE, cS, cN, diag, invDiag`. Built once in `buildCoefficients()`, because the geometry never changes during a run. The solver loop becomes:
+Eight float arrays per grid: `cW, cE, cS, cN, cF, cB, diag, invDiag`. Built once in `buildCoefficients()`, because the geometry never changes during a run. The solver loop becomes:
 
 ```cpp
-num  = cW[id]*p[id−1] + cE[id]*p[id+1] + cS[id]*p[id−nx] + cN[id]*p[id+nx];
+num  = cW[id]*p[id−1]     + cE[id]*p[id+1]
+     + cS[id]*p[id−nx]    + cN[id]*p[id+nx]
+     + cF[id]*p[id−nx*ny] + cB[id]*p[id+nx*ny];
 pNew = (num − rhs[id]) * invDiag[id];
 p[id] += omega * (pNew − p[id]);
 ```
+
+`cF` and `cB` are read unconditionally, and in a plane they are all zero, so the two extra multiply-adds happen and contribute exactly nothing. That is the same trade the wall arrays in §8 make and it is made for the same reason: two more loads and two more `_mm256_fmadd_ps` per cell beat a branch, and a multiply by a hard zero is exact.
 
 No branches. No "is this solid?" tests. No division — `invDiag` is precomputed, and division is ~20 cycles in the innermost loop of the whole program.
 
@@ -2921,9 +3575,9 @@ at level L:
 
 At the coarsest level the grid is tiny, so just hammer it with 50+ sweeps until it's solved.
 
-Cost: each level is 4× smaller, and `1 + ¼ + ¹⁄₁₆ + … = ⁴⁄₃`, so a whole V-cycle costs about the same as ~3 fine-grid sweeps. And each cycle cuts the error by **~10×, independent of grid size**. That's the whole point: `O(N²)` becomes `O(N)`, and the iteration count stops caring how big your grid is.
+Cost in a plane: each level is 4× smaller, and `1 + ¼ + ¹⁄₁₆ + … = ⁴⁄₃`, so a whole V-cycle costs about the same as ~3 fine-grid sweeps. In a volume, where all three axes coarsen, each level is 8× smaller and the series is `1 + ⅛ + ¹⁄₆₄ + … = ⁸⁄₇` — the cycle gets *relatively* cheaper as the dimension goes up, which does not make a volume cheap but does mean the hierarchy is not where a volume's cost goes. And each cycle cuts the error by **~10×, independent of grid size**. That's the whole point: `O(N²)` becomes `O(N)`, and the iteration count stops caring how big your grid is.
 
-Two V-cycles per time step is usually enough.
+Two V-cycles per time step is usually enough, in a plane and in a volume alike — at `nz = 1` the solve returns the 2D field bit for bit, with the same level count and the same cycle count as before the port.
 
 ### Restriction and prolongation must match
 
@@ -2933,32 +3587,36 @@ When that holds, the coarse-grid correction is an orthogonal projection in the e
 
 So `P` is cell-centred bilinear (a fine cell sits ¼ of a coarse cell off-centre, giving weights ¾ and ¼ per axis), and `R` is computed as its literal transpose — implemented as a gather so OpenMP doesn't need atomics.
 
-Two extra wrinkles:
+In a volume it is trilinear, and that word is doing less work than it sounds like: the 3D transfers are the **tensor product** of the same 1D transfer this solver already had, applied once per axis. There is no new interpolation stencil to get wrong, no new weights, and nothing that has to be kept in step with the 2D version — the 2D one *is* the 3D one with the third factor omitted, which is exactly what happens when an axis does not coarsen. The requirement `R = Pᵀ / (cells per coarse cell)` survives the product, because it holds factor by factor.
+
+Three extra wrinkles:
 
 - **Only coarsen even cell counts.** An odd count leaves the last coarse cell covering one fine cell instead of two, its column of `P` carries half the weight of the others, and the coarse grid gets a residual that's half as big as it should be. Inconsistent → divergence.
 - **Semi-coarsening.** A point smoother only damps error in the direction it's strongly coupled to. On a grid with `dx ≪ dy` the `y` coupling (`1/dy²`) is tiny, so `y` error survives and the cycle stalls. So when the aspect ratio is worse than 2:1, only the over-resolved axis gets coarsened, driving the coarse grids toward isotropy.
+- **Each axis coarsens independently**, which is the same rule as the one above and is what makes a plane fall out of it for free: `nz = 1` is odd, and it is also as anisotropic as a grid gets, so `z` never coarsens, the hierarchy is the 2D hierarchy, and the level count is the level count it always was. A volume 256×256×16 does the same thing for the same reason — it coarsens x and y for a while before z joins in.
 
 ---
 
 ## 7. The solid body
 
-The obstacle isn't a mesh — it's a **mask**. `Mesh` rasterises the geometry (a circle, or a slice through an STL/OBJ) into a per-cell `solid` array of 0s and 1s. Immersed boundary, simplest flavour.
+The obstacle isn't a mesh — it's a **mask**. `Mesh` rasterises the geometry into a per-cell `solid` array of 0s and 1s: a slice through an STL/OBJ at `nz = 1`, the voxelised model at `nz > 1`, or the verification circle-or-sphere when no file is given. Immersed boundary, simplest flavour, and the rest of this section does not care which of those filled the array.
 
 From that, `buildFaceMasks()` derives which faces are open:
 
 ```cpp
-uOpen[idxU(i,j)] = !solid[j*nx+i] && !solid[j*nx+i−1];
+uOpen[idxU(i,j,k)] = !solid[idxP(i,j,k)] && !solid[idxP(i−1,j,k)];
+wOpen[idxW(i,j,k)] = !solid[idxP(i,j,k)] && !solid[idxP(i,j,k−1)];
 ```
 
-A face is open only if fluid sits on both sides. The corrector zeroes velocity on every closed face, which enforces no-slip, and the same mask closes the corresponding Poisson coefficient — so the operator and the boundary condition are automatically consistent. One mask, two uses, no way for them to drift apart.
+A face is open only if fluid sits on both sides — and `w` faces are the same statement one stride further out, `nx*ny` instead of `1`. The corrector zeroes velocity on every closed face, which enforces no-slip, and the same mask closes the corresponding Poisson coefficient — so the operator and the boundary condition are automatically consistent. One mask, two uses, no way for them to drift apart.
 
 On coarse multigrid levels, a cell is solid only if **all** the fine cells it covers are solid, so a partially-blocked coarse cell still carries fluid and the body stays visible at every level.
 
 ### Numbering the bodies
 
-Nothing above cares how many obstacles there are — the mask is just cells. Wall motion does, because two bodies can spin differently, so the mask is flood-filled once into numbered components before the run starts, 8-connected. Diagonal connectivity is the right choice here for the same reason the mask works at all: two cells meeting at a corner leave no face for the flow to pass through, so calling them two obstacles would be a lie about the geometry as well as a nuisance to configure. The fill is an explicit stack, not recursion, because a body can be the whole grid.
+Nothing above cares how many obstacles there are — the mask is just cells. Wall motion does, because two bodies can spin differently, so the mask is flood-filled once into numbered components before the run starts: **8-connected in a plane, 26-connected in a volume**. Diagonal connectivity is the right choice here for the same reason the mask works at all: two cells meeting at a corner leave no face for the flow to pass through, so calling them two obstacles would be a lie about the geometry as well as a nuisance to configure. 26 is that same argument counted over the neighbours a cell in a volume actually has — the 6 across faces, the 12 across edges and the 8 across corners — and nothing about it is a new rule. The fill is an explicit stack, not recursion, because a body can be the whole grid.
 
-Each component keeps its cell count, its centroid — the axis rotation turns about — and the distance to its farthest cell, which is the radius `rot` is turned into a rim speed at.
+Each component keeps its cell count, its centroid — the axis rotation turns about — the distance to its farthest cell, which is the radius `rot` is turned into a rim speed at, and, since the port, its **volume** and its **full inertia tensor about that centroid**. The last two are what a free body needs and they come out of the same pass, so they are always the inertia of the shape that is in the grid rather than of the shape somebody meant to put there.
 
 ### Wall behaviour, discretely
 
@@ -2979,7 +3637,7 @@ It costs no stability. The mirror raises the diagonal of the viscous operator at
 
 The predictor and corrector write `uMask*(...) + uWall`, which resets the buried faces to the plain wall value every step, and the mirror is re-applied at the top of the next one from the field as it then stands. Same lifecycle as free-slip, same place in the loop.
 
-So a horizontal stretch of wall is driven through the `u` faces inside the body, a vertical stretch through the `v` faces, and every staircase in between gets both. The predictor and corrector change by one term:
+So a horizontal stretch of wall is driven through the `u` faces inside the body, a vertical stretch through the `v` faces, a stretch lying across the depth through the `w` faces, and every staircase in between gets whichever of the three it presents. Nothing about the argument changes with the third axis: it is the same table, the same mirror, and one more kind of buried face. The predictor and corrector change by one term:
 
 ```cpp
 uStar = uMask*( ... ) + uWall;     // uWall is nonzero only on the buried faces
@@ -2990,7 +3648,7 @@ u     = uMask*( ... ) + uWall;
 
 **Why the Poisson operator does not change.** A coefficient is zero when the corrector does not own the face — and it still does not own it, whatever value that face now holds. So `L` is the same matrix, the identity `L = div ∘ grad` is untouched, the projection still projects, and the CUDA path needed no changes at all. The RHS in *fluid* cells does not move either: every face a fluid cell owns that touches solid is a face normal to a wall, and those are still zero.
 
-**Why nothing leaks.** A rigid-body velocity is discretely divergence-free, exactly, with no truncation error. `u = slideX − ω(y − cy)` depends only on `y`, and both vertical faces of a cell sit at the same `y`, so `∂u/∂x` differences to a hard zero; `v` depends only on `x` and the same happens vertically. Filling a body with its own motion therefore creates no mass anywhere inside it, and by the discrete divergence theorem none crosses its boundary either. This is also the discrete version of *why the normal component is dropped*: keeping it would be the statement that the mask moves, and the mask does not.
+**Why nothing leaks.** A rigid-body velocity is discretely divergence-free, exactly, with no truncation error. In a plane, `u = slideX − ω(y − cy)` depends only on `y`, and both vertical faces of a cell sit at the same `y`, so `∂u/∂x` differences to a hard zero; `v` depends only on `x` and the same happens vertically. In a volume the same thing holds for the same reason: **v = slide + ω × (x − centre)** has no component that depends on its own coordinate — `u` is built from `y` and `z`, `v` from `z` and `x`, `w` from `x` and `y` — so every one of the three differences to a hard zero across the faces it is measured between, and `∇·v` is exactly nought cell by cell. That is a property of a cross product, not of the discretisation, which is why it survives the extra axis untouched. Filling a body with its own motion therefore creates no mass anywhere inside it, and by the discrete divergence theorem none crosses its boundary either. This is also the discrete version of *why the normal component is dropped*: keeping it would be the statement that the mask moves, and the mask does not.
 
 **Free-slip is the same table with one entry changed.** No-slip mirrors the buried face about the wall's own velocity. Free-slip wants the opposite — no tangential stress, `∂u_t/∂n = 0` — which discretely means the buried face has to hold *whatever the fluid face across the wall currently holds*, so the difference the viscous stencil takes across the wall is zero and the upwind term through it is zero too. It is exactly the treatment the domain's own top and bottom walls have always had (`u_bot = u_ij` at `j = 0`), applied to a body.
 
@@ -3014,7 +3672,7 @@ That add is unconditional, which is the deliberate part: one extra load and one 
 
 **Red/black SOR with masked stores.** Every neighbour of a red cell is black, so all red cells can update simultaneously. The naive version strides by 2, which kills SIMD. Instead: compute the update for all 8 lanes, then store only the current colour with `_mm256_maskstore_ps`. Half the arithmetic is discarded, but every load and store stays contiguous — a big net win on a memory-bound kernel. Since vectors always start at even `i`, the lane mask is one of exactly two constants.
 
-**OpenMP.** Rows go to different threads. Red/black makes this race-free with no locks. One fork/join per `smooth()` call, and levels under 32 rows run serially — they're a few hundred cells visited by every cycle, and barrier traffic there costs more than the arithmetic.
+**OpenMP.** Rows go to different threads, and in a volume it is `(k, j)` pairs that go to different threads — the directives carry `collapse(2)`, which is the one thing in the port that costs something outside the solver itself, because `collapse` is OpenMP 3.0 and the *Requirements* section says what that means for MSVC. The reason it is there is a plane: at `nz = 1` the `k` loop has exactly one trip, so parallelising the outermost loop alone would hand the whole grid to one thread and quietly make every existing 2D run single-threaded. Collapsed, a plane parallelises over its rows exactly as it used to and a volume parallelises over both. Red/black makes this race-free with no locks. One fork/join per `smooth()` call, and levels under 32 rows run serially — they're a few hundred cells visited by every cycle, and barrier traffic there costs more than the arithmetic.
 
 **And all of it is optional.** Every vector kernel in here already had a scalar
 loop after it, for the last `nx % 8` cells of a row — so the fallback for a CPU
@@ -3029,9 +3687,13 @@ rounding from a different summation order, not a different algorithm.
 
 **CUDA.** Same algorithm, one thread per cell. The whole hierarchy is allocated once, the stencil is uploaded once (it's a function of geometry, and geometry is static), and the pressure field **stays resident on the GPU between time steps** — which means last step's solution is a free warm start. Only the RHS crosses the bus each step. Kernels run on the default stream, which serialises them, so the chain `smooth → residual → restrict → recurse → prolongate → smooth` needs no explicit synchronisation.
 
+The volume version mirrors the CPU one **kernel for kernel**: a 2D block over `(i, j)` and one grid layer per `k`, which keeps the coalesced reads along `i` that the 2D launch already had and adds depth in the one place that costs nothing. Every kernel was checked against the CPU path with the GPU out of the picture and is **bit-identical** to it. That is the standard this codebase holds the backends to and the reason `BackendAgreementTests` exists: two implementations of the same solver that agree to five digits are two solvers.
+
 ---
 
 ## 9. Output
+
+A frame is written as `DIMENSIONS nx+1 ny+1 nz+1` with a real `SPACING dz` and `CELL_DATA nx*ny*nz`, and `VECTORS velocity` whose third component is now an actual `w` rather than a column of zeroes kept for ParaView's benefit. A plane writes `nz+1 == 2`, which is the same file it always wrote: one cell deep, third component zero.
 
 `saveVTK` byte-swaps values into a 16 KB stack buffer and writes binary legacy VTK straight out — no temporary arrays, no per-cell copies. Pressure is stored internally as `p/ρ` (kinematic), so it's multiplied by `ro` on the way out to give Pascals. Btw kinematic pressure is much easier to use cause if u divide regular pressure by density u get m^2/s^2, not some kg/(m*s^2)
 
@@ -3046,10 +3708,12 @@ About 19 bytes a cell, and nothing in it is stored twice.
 | Array | Bytes/cell | |
 |---|---|---|
 | `pressure`, float, Pa | 4 | what ParaView colours |
-| `velocity`, 3×float | 12 | what ParaView glyphs |
+| `velocity`, 3×float | 12 | what ParaView glyphs; the third component is real now, and was always taking up the space |
 | `solid`, `unsigned_char` | 1 | the mask holds 0 or 1, and `bit` is not a type ParaView reads reliably |
-| `facePack` | ~2.2 | the staggered face velocities |
+| `facePack` | ~2.2 | the staggered face velocities — `u`, `v` and, in a volume, `w` |
 | `configText` | ~0.1 | the run's own settings |
+
+The `facePack` figure is measured on a plane. A volume carries a third face array through the same predictor and the same varint, and the block stays **lossless to the bit** either way; what it comes to per cell for a given volume is a property of that flow, and there is no measured number for it here to quote.
 
 There is no pressure array for the restart to read: `SCALARS pressure` is the same field multiplied by `ro`, bit for bit, so the reader divides `ro` back out — taking the density from the frame's own configuration text rather than from the run being started, in case that changed.
 
@@ -3063,4 +3727,8 @@ Three things make it safe to rely on:
 - The two lines the march starts from, `u` at `i = 0` and `v` at `j = 0`, are written out in full rather than derived. That is one column and one row, a fraction of a percent, and the reader never has to reproduce how the inlet or the bottom wall were set on the run that wrote the frame.
 - A 32-bit FNV-1a over the faces goes in the block header. On a mismatch — a truncated file, a bad byte — the reader says so and falls back to rebuilding the faces from the cell averages with one projection. It cannot silently restart from something subtly wrong.
 
-**Frames carry a `formatVersion`, currently 2.** A build reads every frame at or below its own version: version 1 spelled `uFace`, `vFace` and `pRaw` out as plain float arrays and had `solid` as `int32`, and those load as they always did. The reverse does not hold — a version 1 reader takes four bytes a cell for `solid`, desynchronises inside the file, and cannot be rescued after the fact, because the configuration text that carries the version sits at the *end* of the frame. The version is there so that a reader can name the problem instead of reporting whatever binary garbage it lands on.
+**Frames carry a `formatVersion`, currently 3.** A build reads every frame at or below its own version: version 1 spelled `uFace`, `vFace` and `pRaw` out as plain float arrays and had `solid` as `int32`; version 2 introduced the packed face block; version 3 is the volume — three `DIMENSIONS` tokens that can each exceed 1, a real `dz`, `w` faces inside the packed block, and `bodyState` as a key/value record rather than a fixed run of seven numbers.
+
+**Every one of them still loads.** A version 1 or version 2 frame comes back as a volume one cell deep with `w` zero — which is not a conversion, it is what those frames always were — a version-2 packed block still unpacks, and the old seven-number `bodyState` is still read. That is the whole point of having spent a version number on this: an old run can be continued by a new build, and the run does not have to know which era it came from.
+
+The reverse does not hold, and it did not before either — a version 1 reader takes four bytes a cell for `solid`, desynchronises inside the file, and cannot be rescued after the fact, because the configuration text that carries the version sits at the *end* of the frame. The version is there so that a reader can name the problem instead of reporting whatever binary garbage it lands on.

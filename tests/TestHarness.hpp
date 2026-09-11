@@ -116,19 +116,27 @@ inline bool runCase(Config cfg,
 }
 
 inline float maxDivergence(const RestartData& frame) {
-    const int nx = frame.nx, ny = frame.ny;
+    const int nx = frame.nx, ny = frame.ny, nz = std::max(1, frame.nz);
     const float invDx = 1.0f / frame.dx;
     const float invDy = 1.0f / frame.dy;
+    const float invDz = frame.dz > 0.0f ? 1.0f / frame.dz : 0.0f;
+    const bool volumetric = nz > 1;
     float worst = 0.0f;
-    for (int j = 0; j < ny; ++j)
-        for (int i = 0; i < nx; ++i) {
-            if (frame.solid[j * nx + i])
-                continue;
-            const float div =
-                (frame.u[j * (nx + 1) + i + 1] - frame.u[j * (nx + 1) + i]) * invDx +
-                (frame.v[(j + 1) * nx + i] - frame.v[j * nx + i]) * invDy;
-            worst = std::max(worst, std::fabs(div));
-        }
+    for (int k = 0; k < nz; ++k)
+        for (int j = 0; j < ny; ++j)
+            for (int i = 0; i < nx; ++i) {
+                if (frame.solid[(k * ny + j) * nx + i])
+                    continue;
+                float div =
+                    (frame.u[(k * ny + j) * (nx + 1) + i + 1] -
+                     frame.u[(k * ny + j) * (nx + 1) + i]) * invDx +
+                    (frame.v[(k * (ny + 1) + j + 1) * nx + i] -
+                     frame.v[(k * (ny + 1) + j) * nx + i]) * invDy;
+                if (volumetric)
+                    div += (frame.w[((k + 1) * ny + j) * nx + i] -
+                            frame.w[(k * ny + j) * nx + i]) * invDz;
+                worst = std::max(worst, std::fabs(div));
+            }
     return worst;
 }
 

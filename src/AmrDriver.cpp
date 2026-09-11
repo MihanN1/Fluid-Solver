@@ -29,10 +29,14 @@ BlockBoundaries AmrDriver::patchSides(int which,
     out.right.interior = patch.box.i1() < here.nx;
     out.bottom.interior = patch.box.j0 > 0;
     out.top.interior = patch.box.j1() < here.ny;
+    out.front.interior = tree_.spans() && patch.box.k0 > 0;
+    out.back.interior = tree_.spans() && patch.box.k1() < here.nz;
     out.spanI0 = patch.box.i0;
     out.spanJ0 = patch.box.j0;
+    out.spanK0 = patch.box.k0;
     out.spanNx = here.nx;
     out.spanNy = here.ny;
+    out.spanNz = here.nz;
     return out;
 }
 
@@ -60,7 +64,8 @@ float AmrDriver::finestRate(const Block& base, float cfl) const {
         const float subcycles = static_cast<float>(1 << (which + 1));
         for (const AmrPatch& patch : here.patches) {
             Block block =
-                const_cast<AmrPatch&>(patch).view(0, here.dx, here.dy);
+                const_cast<AmrPatch&>(patch).view(0, here.dx, here.dy,
+                                                  here.dz);
             const float step = blockTimeStep(block, gas_, cfl) * subcycles;
             if (!(step > 0.0f))
                 continue;
@@ -82,6 +87,7 @@ void AmrDriver::advance(Block& base,
     AmrBox whole;
     whole.nx = base.nx;
     whole.ny = base.ny;
+    whole.nz = base.nz;
     advanceChildren(0, -1, base, whole, dt);
 }
 
@@ -108,13 +114,13 @@ void AmrDriver::advanceChildren(int which,
 
         for (std::size_t index : mine) {
             AmrPatch& patch = here.patches[index];
-            Block current = patch.view(0, here.dx, here.dy);
-            Block stage1 = patch.view(1, here.dx, here.dy);
-            Block stage2 = patch.view(2, here.dx, here.dy);
+            Block current = patch.view(0, here.dx, here.dy, here.dz);
+            Block stage1 = patch.view(1, here.dx, here.dy, here.dz);
+            Block stage2 = patch.view(2, here.dx, here.dy, here.dz);
             const BlockBoundaries local = patchSides(which, patch);
             stageBlock(current, stage1, stage2, patch.work, local, dtFine);
 
-            Block block = patch.view(0, here.dx, here.dy);
+            Block block = patch.view(0, here.dx, here.dy, here.dz);
             advanceChildren(which + 1, static_cast<int>(index), block,
                             patch.box, dtFine);
         }

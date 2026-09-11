@@ -1004,7 +1004,7 @@ int main() {
         settings.criterion = AmrCriterion::Density;
 
         AmrHierarchy tree;
-        tree.build(settings, nx, ny, base.dx, base.dy, false);
+        tree.build(settings, nx, ny, 1, base.dx, base.dy, base.dx, false);
 
         std::vector<uint8_t> tags;
         tree.tagFrom(base, gas, settings, tags);
@@ -1039,7 +1039,7 @@ int main() {
             const AmrLevel& here = tree.level(which);
             for (const AmrPatch& patch : here.patches) {
                 Block fine =
-                    const_cast<AmrPatch&>(patch).view(0, here.dx, here.dy);
+                    const_cast<AmrPatch&>(patch).view(0, here.dx, here.dy, here.dz);
                 for (int j = -ghost; j < patch.box.ny + ghost; ++j)
                     for (int i = -ghost; i < patch.box.nx + ghost; ++i) {
                         const int at = fine.index(i, j);

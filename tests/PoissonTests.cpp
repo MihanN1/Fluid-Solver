@@ -24,7 +24,7 @@ double solveAndMeasure(int n) {
     const float dx = static_cast<float>(Lx / n);
     const float dy = static_cast<float>(Ly / n);
 
-    Multigrid multigrid(n, n, dx, dy, 4);
+    Multigrid multigrid(n, n, 1, dx, dy, dx, 4);
     multigrid.setGeometry(std::vector<uint8_t>(static_cast<size_t>(n) * n, 0));
 
     std::vector<float> pressure(static_cast<size_t>(n) * n, 0.0f);
@@ -65,11 +65,11 @@ int checkCoefficientScaling() {
     std::vector<float> plain(rhs.size(), 0.0f);
     std::vector<float> scaled(rhs.size(), 0.0f);
 
-    Multigrid a(n, n, d, d, 4);
+    Multigrid a(n, n, 1, d, d, d, 4);
     a.setGeometry(solid);
     a.solve(plain, rhs, 1.15f, 1.85f, 400, 1e-10f);
 
-    Multigrid b(n, n, d, d, 4);
+    Multigrid b(n, n, 1, d, d, d, 4);
     b.setGeometry(solid);
     b.setCoefficients(
         std::vector<float>(static_cast<size_t>(n + 1) * n, 2.0f),
@@ -97,7 +97,7 @@ int checkSingularCase() {
     const int n = 32;
     const float d = 1.0f / n;
 
-    Multigrid multigrid(n, n, d, d, 4);
+    Multigrid multigrid(n, n, 1, d, d, d, 4);
     MultigridBC closed;
     closed.left = closed.right = PressureSideBC::Neumann;
     closed.bottom = closed.top = PressureSideBC::Neumann;
@@ -138,7 +138,7 @@ int checkJumpCoefficients() {
     const float dx = 0.6f / nx, dy = 0.4f / ny;
     const size_t cells = static_cast<size_t>(nx) * ny;
 
-    Multigrid multigrid(nx, ny, dx, dy, 8);
+    Multigrid multigrid(nx, ny, 1, dx, dy, dx, 8);
     MultigridBC bc;
     bc.left = bc.right = bc.bottom = PressureSideBC::Neumann;
     bc.top = PressureSideBC::Dirichlet;

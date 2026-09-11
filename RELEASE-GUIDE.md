@@ -3,9 +3,9 @@
 **Short answer: take the installer.** It reads your machine and picks for you.
 
 ```
-Windows    Fluid Solver 0.2 windows setup.exe
-Linux      Fluid-Solver-0.2-linux.run
-macOS      Fluid Solver 0.2 macos.pkg
+Windows    Fluid Solver 1.0 windows setup.exe
+Linux      Fluid-Solver-1.0-linux.run
+macOS      Fluid Solver 1.0 macos.pkg
 ```
 
 One file per system. Each one contains every build there is and installs only
@@ -39,7 +39,7 @@ This machine
 
 Download this row:
 
-    Fluid Solver 0.2 windows-x64 avx2-omp-cuda
+    Fluid Solver 1.0 windows-x64 avx2-omp-cuda
 ```
 
 Copy that line into the search box on the releases page, or Ctrl+F for it, and
@@ -53,7 +53,7 @@ what those words mean.
 ## Reading the filename
 
 ```
-Fluid Solver 0.2 windows-x64 avx2-omp-cuda.zip
+Fluid Solver 1.0 windows-x64 avx2-omp-cuda.zip
              ^^^ ^^^^^^^^^^^ ^^^^^^^^^^^^^^
           version   system     what is turned on
 ```
@@ -175,7 +175,7 @@ oversight.
   to be careful.
 - **macOS** refuses to open an unsigned package on a double-click. Right-click
   it → Open, then confirm.
-- **Linux** `.run` installer: `chmod +x Fluid-Solver-0.2-linux.run`, then run
+- **Linux** `.run` installer: `chmod +x Fluid-Solver-1.0-linux.run`, then run
   it. `--help` lists its options.
 
 Portable zips write their frames into the `output/` folder next to the

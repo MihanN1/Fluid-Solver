@@ -25,19 +25,20 @@ private:
     Multigrid multigrid;
 
     // Fields on staggered grid
-    // Pressure (cell centres): size nx * ny
+    // Pressure (cell centres): size nx * ny * nz
     std::vector<float> p;
     // Right-hand side of Poisson equation
     std::vector<float> rhs;
-    // u on vertical faces: size (nx+1) * ny
+    // u on vertical faces: size (nx+1) * ny * nz
     std::vector<float> u, u_star;
-    std::vector<float> uPrev, vPrev;
+    std::vector<float> uPrev, vPrev, wPrev;
 
-    std::vector<float> uSteady, vSteady;
+    std::vector<float> uSteady, vSteady, wSteady;
     double steadyStamp = 0.0;
     float steadyRate = 0.0f;
-    // v on horizontal faces: size nx * (ny+1)
+    // v on horizontal faces: size nx * (ny+1) * nz
     std::vector<float> v, v_star;
+    std::vector<float> w, w_star;
 
     double currentTime = 0.0;
     int step = 0;
@@ -56,7 +57,7 @@ private:
     float poissonWorstResidual = 0.0f;
 
     bool hasRestartState = false;
-    bool needsProjection = false;   // u/v were rebuilt from cell averages
+    bool needsProjection = false;   // u/v/w were rebuilt from cell averages
     float restartDt = 0.0f;         // dt that was in flight when the frame was written
     std::string framePrefix = "solution";   // <framePrefix>_<step>.vtk
     std::filesystem::path outputPath;
@@ -64,8 +65,10 @@ private:
 
     std::vector<uint8_t> uFluidMask;
     std::vector<uint8_t> vFluidMask;
+    std::vector<uint8_t> wFluidMask;
     std::vector<float> uFluidMaskF;
     std::vector<float> vFluidMaskF;
+    std::vector<float> wFluidMaskF;
     std::vector<uint8_t> solidMask;
     std::vector<float> fluidCellMaskF;
 
@@ -74,12 +77,14 @@ private:
     // no wall moves, so every expression below degenerates to the old one.
     std::vector<float> uWall;
     std::vector<float> vWall;
+    std::vector<float> wWall;
 
     // Rigid surface velocity of one object: u = slide + omega x (x - centre).
     struct WallField {
         float omega = 0.0f;   // rad/s, counter-clockwise
-        float cx = 0.0f, cy = 0.0f;
-        float slideX = 0.0f, slideY = 0.0f;
+        float omegaX = 0.0f, omegaY = 0.0f;
+        float cx = 0.0f, cy = 0.0f, cz = 0.0f;
+        float slideX = 0.0f, slideY = 0.0f, slideZ = 0.0f;
         bool slip = false;
     };
     std::vector<WallField> wallField;   // indexed by mesh object id, 0 unused
@@ -90,7 +95,7 @@ private:
     bool bodiesMove = false;
     bool bodiesFree = false;
     std::vector<uint8_t> prevSolidMask;
-    std::vector<uint8_t> prevUFluidMask, prevVFluidMask;
+    std::vector<uint8_t> prevUFluidMask, prevVFluidMask, prevWFluidMask;
     std::vector<int> prevObjectId;
     std::vector<float> bodyForceScratch;
     int freshCells = 0;
@@ -117,9 +122,12 @@ private:
         int face;
         int first;
         int second;
+        int third = -1;
+        int fourth = -1;
     };
     std::vector<SlipFace> uSlipFaces;
     std::vector<SlipFace> vSlipFaces;
+    std::vector<SlipFace> wSlipFaces;
 
     // The same pairing for a no-slip wall, which needs the opposite value on
     // the buried face. The wall lies halfway between it and the open one, so
@@ -132,38 +140,44 @@ private:
         int first;
         int second;
         float wall;
+        int third = -1;
+        int fourth = -1;
+        float wallSpan = 0.0f;
     };
     std::vector<MirrorFace> uMirrorFaces;
     std::vector<MirrorFace> vMirrorFaces;
+    std::vector<MirrorFace> wMirrorFaces;
 
     struct SideData {
         BoundaryKind kind = BoundaryKind::Slip;
         float ghostSign = 1.0f;
         float ghostOffset = 0.0f;
+        float spanOffset = 0.0f;
         bool outlet = false;
         bool inlet = false;
     };
 
-    SideData sideLeft, sideRight, sideBottom, sideTop;
+    SideData sideLeft, sideRight, sideBottom, sideTop, sideFront, sideBack;
     std::vector<float> uInletLeft, uInletRight;
     std::vector<float> vInletBottom, vInletTop;
+    std::vector<float> wInletFront, wInletBack;
 
     void resolveBoundaries();
     void applyOutletFaces();
 
     PhaseField phase;
     bool multiphase = false;
-    std::vector<float> coeffX, coeffY;
+    std::vector<float> coeffX, coeffY, coeffZ;
     void refreshPhaseCoefficients();
     void advectPhase();
 
     bool hasTension = false;
-    std::vector<float> tensionX, tensionY;
+    std::vector<float> tensionX, tensionY, tensionZ;
     void refreshSurfaceTension();
 
     std::vector<float> sourceRate;
     std::vector<float> sourcePhase;
-    std::vector<float> sourceU, sourceV;
+    std::vector<float> sourceU, sourceV, sourceW;
 
     std::vector<int> sourceCells;
     bool hasSources = false;
@@ -174,13 +188,15 @@ private:
     void buildSources();
     void applySources();
 
-    float dx = 0.0f, dy = 0.0f;
-    float invDx = 0.0f, invDy = 0.0f;
-    float invDx2 = 0.0f, invDy2 = 0.0f;
+    float dx = 0.0f, dy = 0.0f, dz = 0.0f;
+    float invDx = 0.0f, invDy = 0.0f, invDz = 0.0f;
+    float invDx2 = 0.0f, invDy2 = 0.0f, invDz2 = 0.0f;
+    bool volumetric = false;
 
-    // Gravity as a vector, resolved once in the constructor. Both stay at zero
-    // when gravity is off, so every expression below degenerates to the old one.
-    float gx = 0.0f, gy = 0.0f;
+    // Gravity as a vector, resolved once in the constructor. All three stay
+    // at zero when gravity is off, so every expression below degenerates to
+    // the old one.
+    float gx = 0.0f, gy = 0.0f, gz = 0.0f;
     bool bodyGravity = false;
 
     void initFields();
@@ -193,7 +209,7 @@ private:
     bool variableViscosity = false;
     std::vector<float> nuCell;
     std::vector<float> nuNode;
-    std::vector<float> viscX, viscY;
+    std::vector<float> viscX, viscY, viscZ;
     void refreshViscosity();
     void computeViscousStress();
 
@@ -213,6 +229,7 @@ private:
     void applyBC();
     void applyBoundaryVelocities(std::vector<float>& uf,
                                  std::vector<float>& vf,
+                                 std::vector<float>& wf,
                                  bool extrapolateOutlet) const;
     void buildFaceMasks();
     void projectRestartState(); // one projection after an approximate restart
@@ -245,10 +262,12 @@ private:
     struct ExtraField {
         std::string name;
         std::vector<float> values;
+        int components = 1;
     };
     std::vector<ExtraField> buildExtraFields(
         const std::vector<float>& uCell,
-        const std::vector<float>& vCell) const;
+        const std::vector<float>& vCell,
+        const std::vector<float>& wCell) const;
 
     // Gravity potential, phi = g . x, i.e. the hydrostatic pressure. At
     // constant density it is an exact solution of the discrete pressure
@@ -256,41 +275,75 @@ private:
     // this is added on output. Identically zero when gravity is off. The
     // reference point is the outlet at mid-height, which keeps phi small.
 
-    inline float headCell(int i, int j) const {
-        return gx * ((i + 0.5f - cfg.nx) * dx) +
-               gy * ((j + 0.5f - 0.5f * cfg.ny) * dy);
+    inline float spanHead(int k) const {
+        return volumetric ? gz * ((k + 0.5f - 0.5f * cfg.nz) * dz) : 0.0f;
     }
 
-    inline float phiCell(int i, int j) const {
+    inline float headCell(int i, int j, int k) const {
+        const float head = gx * ((i + 0.5f - cfg.nx) * dx) +
+                           gy * ((j + 0.5f - 0.5f * cfg.ny) * dy);
+        if (!volumetric)
+            return head;
+        return head + spanHead(k);
+    }
+
+    inline float phiCell(int i, int j, int k) const {
         if (bodyGravity)
             return 0.0f;
-        return gx * ((i + 0.5f - cfg.nx) * dx) +
-               gy * ((j + 0.5f - 0.5f * cfg.ny) * dy);
+        return headCell(i, j, k);
     }
 
-    inline float phiFace(BoundarySide side, int k) const {
+    inline float phiFace(BoundarySide side, int a, int b) const {
         if (!bodyGravity)
             return 0.0f;
         switch (side) {
-        case BoundarySide::Left:
-            return gx * (-static_cast<float>(cfg.nx) * dx) +
-                   gy * ((k + 0.5f - 0.5f * cfg.ny) * dy);
-        case BoundarySide::Right:
-            return gy * ((k + 0.5f - 0.5f * cfg.ny) * dy);
-        case BoundarySide::Bottom:
-            return gx * ((k + 0.5f - cfg.nx) * dx) +
-                   gy * (-0.5f * static_cast<float>(cfg.ny) * dy);
-        case BoundarySide::Top:
-            return gx * ((k + 0.5f - cfg.nx) * dx) +
-                   gy * (0.5f * static_cast<float>(cfg.ny) * dy);
+        case BoundarySide::Left: {
+            const float head = gx * (-static_cast<float>(cfg.nx) * dx) +
+                               gy * ((a + 0.5f - 0.5f * cfg.ny) * dy);
+            return volumetric ? head + spanHead(b) : head;
+        }
+        case BoundarySide::Right: {
+            const float head = gy * ((a + 0.5f - 0.5f * cfg.ny) * dy);
+            return volumetric ? head + spanHead(b) : head;
+        }
+        case BoundarySide::Bottom: {
+            const float head = gx * ((a + 0.5f - cfg.nx) * dx) +
+                               gy * (-0.5f * static_cast<float>(cfg.ny) * dy);
+            return volumetric ? head + spanHead(b) : head;
+        }
+        case BoundarySide::Top: {
+            const float head = gx * ((a + 0.5f - cfg.nx) * dx) +
+                               gy * (0.5f * static_cast<float>(cfg.ny) * dy);
+            return volumetric ? head + spanHead(b) : head;
+        }
+        case BoundarySide::Front:
+            return gx * ((a + 0.5f - cfg.nx) * dx) +
+                   gy * ((b + 0.5f - 0.5f * cfg.ny) * dy) +
+                   gz * (-0.5f * static_cast<float>(cfg.nz) * dz);
+        case BoundarySide::Back:
+            return gx * ((a + 0.5f - cfg.nx) * dx) +
+                   gy * ((b + 0.5f - 0.5f * cfg.ny) * dy) +
+                   gz * (0.5f * static_cast<float>(cfg.nz) * dz);
         }
         return 0.0f;
     }
 
-    float phiOutside(BoundarySide side, int k) const;
+    float phiOutside(BoundarySide side, int a, int b) const;
 
     // Inline index helpers (for readability)
-    inline int idxP(int i, int j) const { return j * cfg.nx + i; }
-    inline int idxU(int i, int j) const { return j * (cfg.nx + 1) + i; }
-    inline int idxV(int i, int j) const { return j * cfg.nx + i; } // v has nx columns
+    inline int idxP(int i, int j, int k) const {
+        return (k * cfg.ny + j) * cfg.nx + i;
+    }
+    inline int idxU(int i, int j, int k) const {
+        return (k * cfg.ny + j) * (cfg.nx + 1) + i;
+    }
+    inline int idxV(int i, int j, int k) const {
+        return (k * (cfg.ny + 1) + j) * cfg.nx + i; // v has nx columns
+    }
+    inline int idxW(int i, int j, int k) const {
+        return (k * cfg.ny + j) * cfg.nx + i;
+    }
+    inline int idxN(int i, int j, int k) const {
+        return (k * (cfg.ny + 1) + j) * (cfg.nx + 1) + i;
+    }
 };

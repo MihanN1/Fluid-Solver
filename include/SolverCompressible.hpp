@@ -45,44 +45,61 @@ struct GasModel {
 struct Block {
     int nx = 0;
     int ny = 0;
+    int nz = 1;
     int ghost = 2;
     int stride = 0;
     int rows = 0;
     float dx = 1.0f;
     float dy = 1.0f;
+    float dz = 1.0f;
     float x0 = 0.0f;
     float y0 = 0.0f;
+    float z0 = 0.0f;
 
     float* rho = nullptr;
     float* rhou = nullptr;
     float* rhov = nullptr;
+    float* rhow = nullptr;
     float* rhoE = nullptr;
     float* rhoY = nullptr;
 
     const uint8_t* solid = nullptr;
     const float* solidU = nullptr;
     const float* solidV = nullptr;
+    const float* solidW = nullptr;
 
     const float* widths = nullptr;
     const float* heights = nullptr;
+    const float* depths = nullptr;
     const float* centresX = nullptr;
     const float* centresY = nullptr;
+    const float* centresZ = nullptr;
 
-    CFD_HD int index(int i, int j) const {
-        return (j + ghost) * stride + (i + ghost);
+    CFD_HD bool spans() const { return nz > 1; }
+    CFD_HD int ghostZ() const { return nz > 1 ? ghost : 0; }
+    CFD_HD int plane() const { return stride * rows; }
+    CFD_HD int layers() const { return nz + 2 * ghostZ(); }
+    CFD_HD int index(int i, int j, int k = 0) const {
+        return (k + ghostZ()) * plane() + (j + ghost) * stride + (i + ghost);
     }
-    CFD_HD int cells() const { return stride * rows; }
+    CFD_HD int cells() const { return plane() * layers(); }
     CFD_HD float widthAt(int i) const {
         return widths ? widths[i + ghost] : dx;
     }
     CFD_HD float heightAt(int j) const {
         return heights ? heights[j + ghost] : dy;
     }
+    CFD_HD float depthAt(int k) const {
+        return depths ? depths[k + ghost] : dz;
+    }
     CFD_HD float cellX(int i) const {
         return centresX ? centresX[i + ghost] : x0 + (i + 0.5f) * dx;
     }
     CFD_HD float cellY(int j) const {
         return centresY ? centresY[j + ghost] : y0 + (j + 0.5f) * dy;
+    }
+    CFD_HD float cellZ(int k) const {
+        return centresZ ? centresZ[k + ghost] : z0 + (k + 0.5f) * dz;
     }
     CFD_HD bool stretched() const { return widths != nullptr; }
 };
@@ -93,26 +110,32 @@ struct SideState {
     float speed = 0.0f;
     float from = 0.0f;
     float to = 1.0f;
+    float from2 = 0.0f;
+    float to2 = 1.0f;
     bool banded = false;
     bool interior = false;
 };
 
 struct BlockBoundaries {
-    SideState left, right, bottom, top;
+    SideState left, right, bottom, top, front, back;
     float pInf = 101325.0f;
     float T0 = 288.15f;
     float mach = 0.5f;
     float inletY = 0.0f;
+    float inletZ = 0.5f;
     int spanI0 = 0;
     int spanJ0 = 0;
+    int spanK0 = 0;
     int spanNx = 0;
     int spanNy = 0;
+    int spanNz = 0;
 };
 
 struct Workspace {
     std::vector<float> fluxX;
     std::vector<float> fluxY;
-    std::vector<float> primitive[6];
+    std::vector<float> fluxZ;
+    std::vector<float> primitive[7];
     void fit(const Block& block, int components);
 };
 
@@ -140,13 +163,14 @@ void advanceStage(Block& in,
 struct CompressibleDevice;
 
 bool compressibleCudaAvailable();
-CompressibleDevice* compressibleCudaCreate(int nx, int ny, int ghost,
+CompressibleDevice* compressibleCudaCreate(int nx, int ny, int nz, int ghost,
                                            bool species);
 void compressibleCudaDestroy(CompressibleDevice* device);
 void compressibleCudaUploadSolid(CompressibleDevice* device,
                                  const uint8_t* mask,
                                  const float* velX,
-                                 const float* velY);
+                                 const float* velY,
+                                 const float* velZ);
 void compressibleCudaUpload(CompressibleDevice* device, int set,
                             const float* const* host);
 void compressibleCudaDownload(CompressibleDevice* device, int set,
@@ -176,8 +200,9 @@ private:
     const Config& cfg;
     Mesh& mesh;
 
-    int nx = 0, ny = 0, ghost = 2;
-    float dx = 0.0f, dy = 0.0f;
+    int nx = 0, ny = 0, nz = 1, ghost = 2;
+    float dx = 0.0f, dy = 0.0f, dz = 0.0f;
+    bool volumetric = false;
     double currentTime = 0.0;
     int step = 0;
     float dt = 0.0f;
@@ -188,12 +213,13 @@ private:
     GasModel gas;
     BlockBoundaries sides;
     std::vector<uint8_t> solidMask;
-    std::vector<float> faceX, faceY;
-    std::vector<float> cellWidths, cellHeights;
-    std::vector<float> cellCentresX, cellCentresY;
+    std::vector<float> faceX, faceY, faceZ;
+    std::vector<float> cellWidths, cellHeights, cellDepths;
+    std::vector<float> cellCentresX, cellCentresY, cellCentresZ;
     bool stretched = false;
     std::vector<float> solidVelX;
     std::vector<float> solidVelY;
+    std::vector<float> solidVelZ;
 
     std::vector<RigidBody> bodies;
     std::vector<RestartData::BodyState> restartBodies;
@@ -202,9 +228,9 @@ private:
     bool bodyCollisions = false;
     int contactsReported = 0;
 
-    std::vector<float> rho, rhou, rhov, rhoE, rhoY;
-    std::vector<float> rho1, rhou1, rhov1, rhoE1, rhoY1;
-    std::vector<float> rho2, rhou2, rhov2, rhoE2, rhoY2;
+    std::vector<float> rho, rhou, rhov, rhow, rhoE, rhoY;
+    std::vector<float> rho1, rhou1, rhov1, rhow1, rhoE1, rhoY1;
+    std::vector<float> rho2, rhou2, rhov2, rhow2, rhoE2, rhoY2;
 
     std::vector<float> pressureMean;
     std::vector<float> pressureFast;
@@ -229,6 +255,7 @@ private:
     Block view(std::vector<float>& r,
                std::vector<float>& ru,
                std::vector<float>& rv,
+               std::vector<float>& rw,
                std::vector<float>& re,
                std::vector<float>& ry);
 
@@ -241,6 +268,7 @@ private:
     void applyGridToBlock(Block& block) const;
     int columnAt(float x) const;
     int rowAt(float y) const;
+    int planeAt(float z) const;
     void initialise();
     void computeStep();
     float timeStep(const Block& block);

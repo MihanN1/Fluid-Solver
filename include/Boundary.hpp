@@ -12,15 +12,20 @@ enum class BoundaryKind {
 
 enum class InletProfile {
     Uniform,
-    Parabolic
+    Parabolic,
+    ParabolicSpan
 };
 
 enum class BoundarySide {
     Left = 0,
     Right = 1,
     Bottom = 2,
-    Top = 3
+    Top = 3,
+    Front = 4,
+    Back = 5
 };
+
+constexpr int kBoundarySides = 6;
 
 struct BoundarySpec {
     BoundaryKind kind = BoundaryKind::Slip;
@@ -32,10 +37,13 @@ struct BoundarySpec {
 
     float from = 0.0f;
     float to = 1.0f;
+
+    float from2 = 0.0f;
+    float to2 = 1.0f;
 };
 
 struct BoundarySet {
-    BoundarySpec side[4];
+    BoundarySpec side[kBoundarySides];
 
     const BoundarySpec& operator[](BoundarySide s) const {
         return side[static_cast<int>(s)];
@@ -64,7 +72,24 @@ void inletBandCells(const BoundarySpec& spec,
                     int& first,
                     int& last);
 
+// The same band along the second tangential axis of the face. Left and right
+// span (y, z), bottom and top span (x, z), front and back span (x, y), so the
+// second axis is z everywhere except on front and back.
+void inletBandCellsSpan(const BoundarySpec& spec,
+                        int cellsAlongSide,
+                        int& first,
+                        int& last);
+
 float inletVelocityAt(const BoundarySpec& spec, float t);
+
+// t runs along the first tangential axis, s along the second. spanResolved is
+// false when that second axis holds a single cell, which is what makes a
+// nz = 1 run reproduce the plane case exactly instead of picking up the peak
+// of a parabola it cannot resolve.
+float inletVelocityAt(const BoundarySpec& spec,
+                      float t,
+                      float s,
+                      bool spanResolved);
 
 enum class CaseType {
     Channel,
@@ -83,8 +108,10 @@ BoundarySet closedBoundaries();
 struct DomainExtent {
     float Lx = 1.0f;
     float Ly = 1.0f;
+    float Lz = 1.0f;
     int nx = 0;
     int ny = 0;
+    int nz = 1;
 };
 
 bool checkBoundaryMassBalance(const BoundarySet& sides,

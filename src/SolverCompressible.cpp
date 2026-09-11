@@ -26,17 +26,22 @@ using namespace cfd;
 }
 
 void Workspace::fit(const Block& block, int components) {
-    const std::size_t faceX =
-        static_cast<std::size_t>(block.nx + 1) * block.ny * components;
-    const std::size_t faceY =
-        static_cast<std::size_t>(block.nx) * (block.ny + 1) * components;
+    const std::size_t faceX = static_cast<std::size_t>(block.nx + 1) *
+                              block.ny * block.nz * components;
+    const std::size_t faceY = static_cast<std::size_t>(block.nx) *
+                              (block.ny + 1) * block.nz * components;
+    const std::size_t faceZ =
+        block.spans() ? static_cast<std::size_t>(block.nx) * block.ny *
+                            (block.nz + 1) * components
+                      : 0;
     if (fluxX.size() != faceX)
         fluxX.assign(faceX, 0.0f);
     if (fluxY.size() != faceY)
         fluxY.assign(faceY, 0.0f);
+    if (fluxZ.size() != faceZ)
+        fluxZ.assign(faceZ, 0.0f);
 
-    const std::size_t cells =
-        static_cast<std::size_t>(block.stride) * block.rows;
+    const std::size_t cells = static_cast<std::size_t>(block.cells());
     for (std::vector<float>& field : primitive)
         if (field.size() != cells)
             field.assign(cells, 0.0f);
@@ -53,61 +58,106 @@ void fillGhostCells(Block& block,
                     const BlockBoundaries& sides,
                     const GasModel& gas) {
     const int g = block.ghost;
+    const int gz = block.ghostZ();
     const float rowsTotal = static_cast<float>(
         sides.spanNy > 0 ? sides.spanNy : block.ny);
     const float columnsTotal = static_cast<float>(
         sides.spanNx > 0 ? sides.spanNx : block.nx);
+    const float planesTotal = static_cast<float>(
+        sides.spanNz > 0 ? sides.spanNz : block.nz);
     const float rowFirst = static_cast<float>(sides.spanJ0);
     const float columnFirst = static_cast<float>(sides.spanI0);
+    const float planeFirst = static_cast<float>(sides.spanK0);
 
-    #pragma omp parallel for schedule(static) if (block.ny >= 64)
+    #pragma omp parallel for collapse(2) schedule(static) \
+        if (block.nz * block.ny >= 64)
+    for (int k = 0; k < block.nz; ++k)
     for (int j = 0; j < block.ny; ++j) {
         BlockBoundaries local = sides;
         local.inletY = (rowFirst + j + 0.5f) / rowsTotal;
-        for (int k = 1; k <= g; ++k) {
-            mirrorSide(block, gas, sides.left, -k, j, k - 1, j, true, local);
-            mirrorSide(block, gas, sides.right, block.nx - 1 + k, j,
-                       block.nx - k, j, true, local);
+        local.inletZ = (planeFirst + k + 0.5f) / planesTotal;
+        for (int m = 1; m <= g; ++m) {
+            mirrorSide(block, gas, sides.left, -m, j, k, m - 1, j, k, true,
+                       local);
+            mirrorSide(block, gas, sides.right, block.nx - 1 + m, j, k,
+                       block.nx - m, j, k, true, local);
         }
     }
 
-    #pragma omp parallel for schedule(static) if (block.nx >= 64)
+    #pragma omp parallel for collapse(2) schedule(static) \
+        if (block.nz * block.nx >= 64)
+    for (int k = 0; k < block.nz; ++k)
     for (int i = 0; i < block.nx; ++i) {
         BlockBoundaries local = sides;
         local.inletY = (columnFirst + i + 0.5f) / columnsTotal;
-        for (int k = 1; k <= g; ++k) {
-            mirrorSide(block, gas, sides.bottom, i, -k, i, k - 1, false, local);
-            mirrorSide(block, gas, sides.top, i, block.ny - 1 + k, i,
-                       block.ny - k, false, local);
+        local.inletZ = (planeFirst + k + 0.5f) / planesTotal;
+        for (int m = 1; m <= g; ++m) {
+            mirrorSide(block, gas, sides.bottom, i, -m, k, i, m - 1, k, false,
+                       local);
+            mirrorSide(block, gas, sides.top, i, block.ny - 1 + m, k, i,
+                       block.ny - m, k, false, local);
         }
     }
 
-    const bool corner[4] = {
-        !sides.left.interior && !sides.bottom.interior,
-        !sides.right.interior && !sides.bottom.interior,
-        !sides.left.interior && !sides.top.interior,
-        !sides.right.interior && !sides.top.interior};
-
-    for (int k = 1; k <= g; ++k)
-        for (int m = 1; m <= g; ++m) {
-            const int corners[4][2] = {{-k, -m},
-                                       {block.nx - 1 + k, -m},
-                                       {-k, block.ny - 1 + m},
-                                       {block.nx - 1 + k, block.ny - 1 + m}};
-            const int sourceIndex[4][2] = {
-                {0, 0},
-                {block.nx - 1, 0},
-                {0, block.ny - 1},
-                {block.nx - 1, block.ny - 1}};
-            for (int c = 0; c < 4; ++c) {
-                if (!corner[c])
-                    continue;
-                const Primitive q = primitiveOf(
-                    block, gas, block.index(sourceIndex[c][0],
-                                            sourceIndex[c][1]));
-                writeState(block, block.index(corners[c][0], corners[c][1]), q);
+    if (block.spans()) {
+        #pragma omp parallel for collapse(2) schedule(static) \
+            if (block.ny * block.nx >= 64)
+        for (int j = 0; j < block.ny; ++j)
+        for (int i = 0; i < block.nx; ++i) {
+            BlockBoundaries local = sides;
+            local.inletY = (columnFirst + i + 0.5f) / columnsTotal;
+            local.inletZ = (rowFirst + j + 0.5f) / rowsTotal;
+            for (int m = 1; m <= g; ++m) {
+                mirrorSpan(block, gas, sides.front, i, j, -m, i, j, m - 1,
+                           local);
+                mirrorSpan(block, gas, sides.back, i, j, block.nz - 1 + m, i, j,
+                           block.nz - m, local);
             }
         }
+    }
+
+    const bool open[3][2] = {
+        {!sides.left.interior, !sides.right.interior},
+        {!sides.bottom.interior, !sides.top.interior},
+        {!sides.front.interior, !sides.back.interior}};
+
+    for (int sz = -1; sz <= 1; ++sz)
+        for (int sy = -1; sy <= 1; ++sy)
+            for (int sx = -1; sx <= 1; ++sx) {
+                if ((sx != 0) + (sy != 0) + (sz != 0) < 2)
+                    continue;
+                if (sx < 0 && !open[0][0]) continue;
+                if (sx > 0 && !open[0][1]) continue;
+                if (sy < 0 && !open[1][0]) continue;
+                if (sy > 0 && !open[1][1]) continue;
+                if (sz < 0 && !open[2][0]) continue;
+                if (sz > 0 && !open[2][1]) continue;
+
+                const int firstI = sx < 0 ? -g : (sx > 0 ? block.nx : 0);
+                const int lastI =
+                    sx < 0 ? -1 : (sx > 0 ? block.nx + g - 1 : block.nx - 1);
+                const int firstJ = sy < 0 ? -g : (sy > 0 ? block.ny : 0);
+                const int lastJ =
+                    sy < 0 ? -1 : (sy > 0 ? block.ny + g - 1 : block.ny - 1);
+                const int firstK = sz < 0 ? -gz : (sz > 0 ? block.nz : 0);
+                const int lastK =
+                    sz < 0 ? -1 : (sz > 0 ? block.nz + gz - 1 : block.nz - 1);
+
+                for (int k = firstK; k <= lastK; ++k)
+                    for (int j = firstJ; j <= lastJ; ++j)
+                        for (int i = firstI; i <= lastI; ++i) {
+                            const int sourceI =
+                                sx < 0 ? 0 : (sx > 0 ? block.nx - 1 : i);
+                            const int sourceJ =
+                                sy < 0 ? 0 : (sy > 0 ? block.ny - 1 : j);
+                            const int sourceK =
+                                sz < 0 ? 0 : (sz > 0 ? block.nz - 1 : k);
+                            const Primitive q = primitiveOf(
+                                block, gas,
+                                block.index(sourceI, sourceJ, sourceK));
+                            writeState(block, block.index(i, j, k), q);
+                        }
+            }
 }
 
 void fillSolidCells(Block& block, const GasModel& gas) {
@@ -115,24 +165,27 @@ void fillSolidCells(Block& block, const GasModel& gas) {
         return;
 
     for (int layer = 0; layer < 2; ++layer) {
-        #pragma omp parallel for schedule(static) if (block.ny >= 64)
+        #pragma omp parallel for collapse(2) schedule(static) \
+            if (block.nz * block.ny >= 64)
+        for (int k = 0; k < block.nz; ++k)
         for (int j = 0; j < block.ny; ++j)
             for (int i = 0; i < block.nx; ++i)
-                solidCell(block, gas, i, j, layer);
+                solidCell(block, gas, i, j, k, layer);
     }
 }
 
 float blockTimeStep(const Block& block, const GasModel& gas, float cfl) {
     float worst = 0.0f;
 
-    #pragma omp parallel if (block.ny >= 64)
+    #pragma omp parallel if (block.nz * block.ny >= 64)
     {
         float local = 0.0f;
 
-        #pragma omp for schedule(static) nowait
+        #pragma omp for collapse(2) schedule(static) nowait
+        for (int k = 0; k < block.nz; ++k)
         for (int j = 0; j < block.ny; ++j)
             for (int i = 0; i < block.nx; ++i)
-                local = std::max(local, cellRate(block, gas, i, j));
+                local = std::max(local, cellRate(block, gas, i, j, k));
 
         #pragma omp critical
         worst = std::max(worst, local);
@@ -160,52 +213,72 @@ void advanceStage(Block& in,
 
     const int nx = in.nx;
     const int ny = in.ny;
+    const int nz = in.nz;
+    const int gz = in.ghostZ();
     float* __restrict fx = work.fluxX.data();
     float* __restrict fy = work.fluxY.data();
+    float* __restrict fz = work.fluxZ.data();
 
     const int limiterCode = static_cast<int>(limiter);
 
     float* __restrict pRho = work.primitive[0].data();
     float* __restrict pU = work.primitive[1].data();
     float* __restrict pV = work.primitive[2].data();
-    float* __restrict pP = work.primitive[3].data();
-    float* __restrict pY = work.primitive[4].data();
-    float* __restrict pGamma = work.primitive[5].data();
+    float* __restrict pW = work.primitive[3].data();
+    float* __restrict pP = work.primitive[4].data();
+    float* __restrict pY = work.primitive[5].data();
+    float* __restrict pGamma = work.primitive[6].data();
 
-    #pragma omp parallel for schedule(static) if (ny >= 32)
+    #pragma omp parallel for collapse(2) schedule(static) if (nz * ny >= 32)
+    for (int k = -gz; k < nz + gz; ++k)
     for (int j = -in.ghost; j < ny + in.ghost; ++j) {
-        const int row = in.index(-in.ghost, j);
+        const int row = in.index(-in.ghost, j, k);
         const int width = nx + 2 * in.ghost;
-        for (int k = 0; k < width; ++k)
-            fillPrimitive(in, gas, row + k, pRho, pU, pV, pP, pY, pGamma);
+        for (int m = 0; m < width; ++m)
+            fillPrimitive(in, gas, row + m, pRho, pU, pV, pW, pP, pY, pGamma);
     }
 
     PrimitiveField prim;
     prim.rho = pRho;
     prim.u = pU;
     prim.v = pV;
+    prim.w = pW;
     prim.p = pP;
     prim.y = pY;
     prim.gamma = pGamma;
 
-    #pragma omp parallel for schedule(static) if (ny >= 32)
+    #pragma omp parallel for collapse(2) schedule(static) if (nz * ny >= 32)
+    for (int k = 0; k < nz; ++k)
     for (int j = 0; j < ny; ++j)
         for (int i = 0; i <= nx; ++i)
-            faceFluxX(in, prim, gas, sides, limiterCode, i, j,
-                      fx + (static_cast<std::size_t>(j) * (nx + 1) + i) *
-                               kComponents);
+            faceFluxX(in, prim, gas, sides, limiterCode, i, j, k,
+                      fx + ((static_cast<std::size_t>(k) * ny + j) * (nx + 1) +
+                            i) * kComponents);
 
-    #pragma omp parallel for schedule(static) if (ny >= 32)
+    #pragma omp parallel for collapse(2) schedule(static) if (nz * ny >= 32)
+    for (int k = 0; k < nz; ++k)
     for (int j = 0; j <= ny; ++j)
         for (int i = 0; i < nx; ++i)
-            faceFluxY(in, prim, gas, sides, limiterCode, i, j,
-                      fy + (static_cast<std::size_t>(j) * nx + i) *
-                               kComponents);
+            faceFluxY(in, prim, gas, sides, limiterCode, i, j, k,
+                      fy + ((static_cast<std::size_t>(k) * (ny + 1) + j) * nx +
+                            i) * kComponents);
 
-    #pragma omp parallel for schedule(static) if (ny >= 32)
+    if (in.spans()) {
+        #pragma omp parallel for collapse(2) schedule(static) if (nz * ny >= 32)
+        for (int k = 0; k <= nz; ++k)
+        for (int j = 0; j < ny; ++j)
+            for (int i = 0; i < nx; ++i)
+                faceFluxZ(in, prim, gas, sides, limiterCode, i, j, k,
+                          fz + ((static_cast<std::size_t>(k) * ny + j) * nx +
+                                i) * kComponents);
+    }
+
+    #pragma omp parallel for collapse(2) schedule(static) if (nz * ny >= 32)
+    for (int k = 0; k < nz; ++k)
     for (int j = 0; j < ny; ++j)
         for (int i = 0; i < nx; ++i)
-            combine(in, keep, out, gas, fx, fy, i, j, dt, a, b, diffusivity);
+            combine(in, keep, out, gas, fx, fy, fz, i, j, k, dt, a, b,
+                    diffusivity);
 }
 
 namespace {
@@ -220,8 +293,11 @@ CompressibleRun::CompressibleRun(const Config& configuration, Mesh& meshIn)
     : cfg(configuration), mesh(meshIn) {
     nx = cfg.nx;
     ny = cfg.ny;
+    nz = cfg.nz;
+    volumetric = cfg.volumetric();
     dx = cfg.Lx / nx;
     dy = cfg.Ly / ny;
+    dz = cfg.Lz / nz;
     outputPath = narrowToPath(cfg.outputDir);
 
     gas.gamma1 = cfg.gamma;
@@ -240,21 +316,28 @@ CompressibleRun::CompressibleRun(const Config& configuration, Mesh& meshIn)
         state.speed = spec.speedSet ? spec.speed : 0.0f;
         state.from = spec.from;
         state.to = spec.to;
+        state.from2 = spec.from2;
+        state.to2 = spec.to2;
         state.banded = spec.kind == BoundaryKind::Inlet &&
-                       (spec.from > 0.0f || spec.to < 1.0f);
+                       (spec.from > 0.0f || spec.to < 1.0f ||
+                        spec.from2 > 0.0f || spec.to2 < 1.0f);
     };
     fill(sides.left, BoundarySide::Left);
     fill(sides.right, BoundarySide::Right);
     fill(sides.bottom, BoundarySide::Bottom);
     fill(sides.top, BoundarySide::Top);
+    fill(sides.front, BoundarySide::Front);
+    fill(sides.back, BoundarySide::Back);
     sides.pInf = cfg.pInf;
     sides.T0 = cfg.T0;
     sides.mach = cfg.machInlet;
 
-    solidMask.assign(static_cast<std::size_t>(nx) * ny, 0);
-    solidVelX.assign(static_cast<std::size_t>(nx) * ny, 0.0f);
-    solidVelY.assign(static_cast<std::size_t>(nx) * ny, 0.0f);
-    for (int id = 0; id < nx * ny; ++id)
+    const std::size_t cells = static_cast<std::size_t>(nx) * ny * nz;
+    solidMask.assign(cells, 0);
+    solidVelX.assign(cells, 0.0f);
+    solidVelY.assign(cells, 0.0f);
+    solidVelZ.assign(cells, 0.0f);
+    for (std::size_t id = 0; id < cells; ++id)
         solidMask[id] = mesh.solid[id] ? 1 : 0;
 
     allocate();
@@ -278,11 +361,12 @@ CompressibleRun::CompressibleRun(const Config& configuration, Mesh& meshIn)
     }
     if (cfg.useCuda && runtime::settings().useCuda && !stretched &&
         !cfg.adaptive() && compressibleCudaAvailable()) {
-        device = compressibleCudaCreate(nx, ny, ghost, cfg.twoSpecies());
+        device = compressibleCudaCreate(nx, ny, nz, ghost, cfg.twoSpecies());
         onDevice = device != nullptr;
         if (onDevice)
             compressibleCudaUploadSolid(device, solidMask.data(),
-                                        solidVelX.data(), solidVelY.data());
+                                        solidVelX.data(), solidVelY.data(),
+                                        solidVelZ.data());
     }
 #endif
 }
@@ -297,20 +381,23 @@ CompressibleRun::~CompressibleRun() {
 void CompressibleRun::allocate() {
     const std::size_t stride = static_cast<std::size_t>(nx) + 2 * ghost;
     const std::size_t rows = static_cast<std::size_t>(ny) + 2 * ghost;
-    const std::size_t total = stride * rows;
+    const std::size_t layers = volumetric
+                                   ? static_cast<std::size_t>(nz) + 2 * ghost
+                                   : 1;
+    const std::size_t total = stride * rows * layers;
     const bool species = cfg.twoSpecies();
 
     const auto give = [&](std::vector<float>& field) {
         field.assign(total, 0.0f);
     };
-    give(rho); give(rhou); give(rhov); give(rhoE);
-    give(rho1); give(rhou1); give(rhov1); give(rhoE1);
-    give(rho2); give(rhou2); give(rhov2); give(rhoE2);
+    give(rho); give(rhou); give(rhov); give(rhow); give(rhoE);
+    give(rho1); give(rhou1); give(rhov1); give(rhow1); give(rhoE1);
+    give(rho2); give(rhou2); give(rhov2); give(rhow2); give(rhoE2);
     if (species) {
         give(rhoY); give(rhoY1); give(rhoY2);
     }
 
-    const std::size_t cells = static_cast<std::size_t>(nx) * ny;
+    const std::size_t cells = static_cast<std::size_t>(nx) * ny * nz;
     if (cfg.acousticFields) {
         pressureMean.assign(cells, 0.0f);
         pressureFast.assign(cells, 0.0f);
@@ -325,26 +412,32 @@ void CompressibleRun::allocate() {
 Block CompressibleRun::view(std::vector<float>& r,
                             std::vector<float>& ru,
                             std::vector<float>& rv,
+                            std::vector<float>& rw,
                             std::vector<float>& re,
                             std::vector<float>& ry) {
     Block block;
     block.nx = nx;
     block.ny = ny;
+    block.nz = nz;
     block.ghost = ghost;
     block.stride = nx + 2 * ghost;
     block.rows = ny + 2 * ghost;
     block.dx = dx;
     block.dy = dy;
+    block.dz = dz;
     block.x0 = 0.0f;
     block.y0 = 0.0f;
+    block.z0 = 0.0f;
     block.rho = r.data();
     block.rhou = ru.data();
     block.rhov = rv.data();
+    block.rhow = rw.data();
     block.rhoE = re.data();
     block.rhoY = ry.empty() ? nullptr : ry.data();
     block.solid = solidMask.data();
     block.solidU = solidVelX.data();
     block.solidV = solidVelY.data();
+    block.solidW = solidVelZ.data();
     applyGridToBlock(block);
     return block;
 }
@@ -353,7 +446,7 @@ void CompressibleRun::initialise() {
     if (hasRestartState)
         return;
 
-    Block block = view(rho, rhou, rhov, rhoE, rhoY);
+    Block block = view(rho, rhou, rhov, rhow, rhoE, rhoY);
     const bool tube = cfg.caseType == CaseType::ShockTube;
     const float baseDensity = cfg.pInf / (cfg.R * cfg.T0);
     const float speedOfSound = std::sqrt(cfg.gamma * cfg.R * cfg.T0);
@@ -362,14 +455,17 @@ void CompressibleRun::initialise() {
     const float speed = tube ? 0.0f : (blows ? cfg.machInlet * speedOfSound
                                              : 0.0f);
 
+    for (int k = 0; k < nz; ++k)
     for (int j = 0; j < ny; ++j)
         for (int i = 0; i < nx; ++i) {
             const float fx = block.cellX(i) / cfg.Lx;
             const float fy = block.cellY(j) / cfg.Ly;
+            const float fz = block.cellZ(k) / cfg.Lz;
 
             Primitive q;
             q.u = speed;
             q.v = 0.0f;
+            q.w = 0.0f;
             q.y = 0.0f;
 
             if (cfg.twoSpecies()) {
@@ -384,9 +480,17 @@ void CompressibleRun::initialise() {
                 default: {
                     const float ddx = (fx - cfg.phaseX) * cfg.Lx;
                     const float ddy = (fy - cfg.phaseY) * cfg.Ly;
-                    const float radius = 0.5f * cfg.phaseLevel *
-                                         std::min(cfg.Lx, cfg.Ly);
-                    q.y = std::hypot(ddx, ddy) < radius ? 1.0f : 0.0f;
+                    if (volumetric) {
+                        const float ddz = (fz - cfg.phaseZ) * cfg.Lz;
+                        const float radius =
+                            0.5f * cfg.phaseLevel *
+                            std::min(std::min(cfg.Lx, cfg.Ly), cfg.Lz);
+                        q.y = std::hypot(ddx, ddy, ddz) < radius ? 1.0f : 0.0f;
+                    } else {
+                        const float radius = 0.5f * cfg.phaseLevel *
+                                             std::min(cfg.Lx, cfg.Ly);
+                        q.y = std::hypot(ddx, ddy) < radius ? 1.0f : 0.0f;
+                    }
                     break;
                 }
                 }
@@ -400,7 +504,7 @@ void CompressibleRun::initialise() {
             const float gasR = gas.gasConstantOf(q.y);
             q.p = cfg.pInf * pressureFactor;
             q.rho = cfg.pInf / (gasR * cfg.T0) * densityFactor;
-            writeState(block, block.index(i, j), q);
+            writeState(block, block.index(i, j, k), q);
         }
 
     fillSolidCells(block, gas);
@@ -409,7 +513,7 @@ void CompressibleRun::initialise() {
 
 bool CompressibleRun::setInitialState(RestartData&& state,
                                       const std::string& prefix) {
-    const std::size_t cells = static_cast<std::size_t>(nx) * ny;
+    const std::size_t cells = static_cast<std::size_t>(nx) * ny * nz;
     if (state.stateRho.size() != cells || state.stateRhoU.size() != cells ||
         state.stateRhoV.size() != cells || state.stateRhoE.size() != cells)
         return false;
@@ -419,6 +523,27 @@ bool CompressibleRun::setInitialState(RestartData&& state,
         state.gridFaceY.size() == faceY.size()) {
         faceX = state.gridFaceX;
         faceY = state.gridFaceY;
+        if (volumetric && state.gridFaceZ.size() == faceZ.size()) {
+            faceZ = state.gridFaceZ;
+            for (int k = 0; k < nz; ++k) {
+                const std::size_t at = static_cast<std::size_t>(k);
+                cellDepths[at + ghost] = faceZ[at + 1] - faceZ[at];
+                cellCentresZ[at + ghost] =
+                    0.5f * (faceZ[at] + faceZ[at + 1]);
+            }
+            for (int m = 1; m <= ghost; ++m) {
+                cellDepths[static_cast<std::size_t>(ghost - m)] =
+                    cellDepths[static_cast<std::size_t>(ghost)];
+                cellDepths[static_cast<std::size_t>(ghost + nz - 1 + m)] =
+                    cellDepths[static_cast<std::size_t>(ghost + nz - 1)];
+                cellCentresZ[static_cast<std::size_t>(ghost - m)] =
+                    cellCentresZ[static_cast<std::size_t>(ghost - m + 1)] -
+                    cellDepths[static_cast<std::size_t>(ghost - m)];
+                cellCentresZ[static_cast<std::size_t>(ghost + nz - 1 + m)] =
+                    cellCentresZ[static_cast<std::size_t>(ghost + nz - 2 + m)] +
+                    cellDepths[static_cast<std::size_t>(ghost + nz - 1 + m)];
+            }
+        }
         for (int i = 0; i < nx; ++i) {
             const std::size_t at = static_cast<std::size_t>(i);
             cellWidths[at + ghost] = faceX[at + 1] - faceX[at];
@@ -454,15 +579,19 @@ bool CompressibleRun::setInitialState(RestartData&& state,
                 cellHeights[static_cast<std::size_t>(ghost + ny - 1 + k)];
         }
     }
-    Block block = view(rho, rhou, rhov, rhoE, rhoY);
+    Block block = view(rho, rhou, rhov, rhow, rhoE, rhoY);
     const bool species = cfg.twoSpecies() && state.stateRhoY.size() == cells;
+    const bool spanwise = state.stateRhoW.size() == cells;
+    for (int k = 0; k < nz; ++k)
     for (int j = 0; j < ny; ++j)
         for (int i = 0; i < nx; ++i) {
-            const std::size_t flat = static_cast<std::size_t>(j) * nx + i;
-            const int id = block.index(i, j);
+            const std::size_t flat =
+                (static_cast<std::size_t>(k) * ny + j) * nx + i;
+            const int id = block.index(i, j, k);
             rho[id] = state.stateRho[flat];
             rhou[id] = state.stateRhoU[flat];
             rhov[id] = state.stateRhoV[flat];
+            rhow[id] = spanwise ? state.stateRhoW[flat] : 0.0f;
             rhoE[id] = state.stateRhoE[flat];
             if (block.rhoY)
                 rhoY[id] = species ? state.stateRhoY[flat] : 0.0f;
@@ -480,9 +609,9 @@ bool CompressibleRun::setInitialState(RestartData&& state,
 }
 
 void CompressibleRun::computeStep() {
-    Block current = view(rho, rhou, rhov, rhoE, rhoY);
-    Block stage1 = view(rho1, rhou1, rhov1, rhoE1, rhoY1);
-    Block stage2 = view(rho2, rhou2, rhov2, rhoE2, rhoY2);
+    Block current = view(rho, rhou, rhov, rhow, rhoE, rhoY);
+    Block stage1 = view(rho1, rhou1, rhov1, rhow1, rhoE1, rhoY1);
+    Block stage2 = view(rho2, rhou2, rhov2, rhow2, rhoE2, rhoY2);
 
     const float diffusivity = cfg.twoSpecies() ? cfg.diffusivity : 0.0f;
 
@@ -516,8 +645,8 @@ void CompressibleRun::syncFromDevice() {
 #ifdef USE_CUDA
     if (!onDevice)
         return;
-    float* host[5] = {rho.data(), rhou.data(), rhov.data(), rhoE.data(),
-                      rhoY.empty() ? nullptr : rhoY.data()};
+    float* host[6] = {rho.data(), rhou.data(), rhov.data(), rhow.data(),
+                      rhoE.data(), rhoY.empty() ? nullptr : rhoY.data()};
     compressibleCudaDownload(device, 0, host);
 #endif
 }
@@ -526,7 +655,8 @@ void CompressibleRun::syncToDevice() {
 #ifdef USE_CUDA
     if (!onDevice)
         return;
-    const float* host[5] = {rho.data(), rhou.data(), rhov.data(), rhoE.data(),
+    const float* host[6] = {rho.data(), rhou.data(), rhov.data(), rhow.data(),
+                            rhoE.data(),
                             rhoY.empty() ? nullptr : rhoY.data()};
     compressibleCudaUpload(device, 0, host);
 #endif
@@ -546,17 +676,19 @@ void CompressibleRun::updateAcoustics(float stepDt) {
     if (!cfg.acousticFields || stepDt <= 0.0f)
         return;
 
-    Block block = view(rho, rhou, rhov, rhoE, rhoY);
+    Block block = view(rho, rhou, rhov, rhow, rhoE, rhoY);
     const float window = std::max(cfg.acousticWindow, stepDt);
     const float alpha = std::min(1.0f, stepDt / window);
 
     const float alphaFast = std::min(1.0f, 16.0f * stepDt / window);
     const float rate = 1.0f / stepDt;
 
-    #pragma omp parallel for schedule(static) if (ny >= 64)
+    #pragma omp parallel for collapse(2) schedule(static) if (nz * ny >= 64)
+    for (int k = 0; k < nz; ++k)
     for (int j = 0; j < ny; ++j) {
         for (int i = 0; i < nx; ++i) {
-            const std::size_t flat = static_cast<std::size_t>(j) * nx + i;
+            const std::size_t flat =
+                (static_cast<std::size_t>(k) * ny + j) * nx + i;
             if (solidMask[flat]) {
                 pressureMean[flat] = 0.0f;
                 pressureFast[flat] = 0.0f;
@@ -564,7 +696,7 @@ void CompressibleRun::updateAcoustics(float stepDt) {
                 crossingRate[flat] = 0.0f;
                 continue;
             }
-            const Primitive q = primitiveOf(block, gas, block.index(i, j));
+            const Primitive q = primitiveOf(block, gas, block.index(i, j, k));
             if (!acousticsReady) {
                 pressureMean[flat] = q.p;
                 pressureFast[flat] = q.p;
@@ -590,12 +722,13 @@ void CompressibleRun::sampleMicrophones() {
     if (mics.empty() || (step % std::max(1, cfg.micInterval)) != 0)
         return;
 
-    Block block = view(rho, rhou, rhov, rhoE, rhoY);
+    Block block = view(rho, rhou, rhov, rhow, rhoE, rhoY);
     micTimes.push_back(static_cast<float>(currentTime));
     for (std::size_t m = 0; m < mics.size(); ++m) {
         const int i = columnAt(mics[m].x);
         const int j = rowAt(mics[m].y);
-        const Primitive q = primitiveOf(block, gas, block.index(i, j));
+        const int k = planeAt(mics[m].z);
+        const Primitive q = primitiveOf(block, gas, block.index(i, j, k));
         micSamples[m].push_back(q.p);
     }
 }
@@ -627,7 +760,10 @@ void CompressibleRun::writeMicrophones() const {
 
     std::cout << "\nMicrophones (" << samples << " samples at "
               << rate << " Hz):\n";
-    out << "#\n# summary: x y SPL_dB peak_Hz\n";
+    if (volumetric)
+        out << "#\n# summary: x y z SPL_dB peak_Hz\n";
+    else
+        out << "#\n# summary: x y SPL_dB peak_Hz\n";
 
     constexpr int kBins = 512;
     for (std::size_t m = 0; m < mics.size(); ++m) {
@@ -665,36 +801,51 @@ void CompressibleRun::writeMicrophones() const {
         }
 
         char line[200];
-        std::snprintf(line, sizeof(line),
-                      "  mic %zu at (%.4g, %.4g): %.1f dB, peak %.1f Hz",
-                      m + 1, static_cast<double>(mics[m].x),
-                      static_cast<double>(mics[m].y), spl, bestFrequency);
+        if (volumetric)
+            std::snprintf(line, sizeof(line),
+                          "  mic %zu at (%.4g, %.4g, %.4g): %.1f dB, peak "
+                          "%.1f Hz",
+                          m + 1, static_cast<double>(mics[m].x),
+                          static_cast<double>(mics[m].y),
+                          static_cast<double>(mics[m].z), spl, bestFrequency);
+        else
+            std::snprintf(line, sizeof(line),
+                          "  mic %zu at (%.4g, %.4g): %.1f dB, peak %.1f Hz",
+                          m + 1, static_cast<double>(mics[m].x),
+                          static_cast<double>(mics[m].y), spl, bestFrequency);
         std::cout << line << "\n";
-        out << "# " << mics[m].x << " " << mics[m].y << " " << spl << " "
-            << bestFrequency << "\n";
+        out << "# " << mics[m].x << " " << mics[m].y << " ";
+        if (volumetric)
+            out << mics[m].z << " ";
+        out << spl << " " << bestFrequency << "\n";
     }
     std::cout << "Written " << pathToConsole(outputPath / "microphones.txt")
               << "\n";
 }
 
 std::vector<float> CompressibleRun::primitive(const char* what) const {
-    const std::size_t cells = static_cast<std::size_t>(nx) * ny;
+    const std::size_t cells = static_cast<std::size_t>(nx) * ny * nz;
     std::vector<float> out(cells, 0.0f);
     Block block = const_cast<CompressibleRun*>(this)->view(
         const_cast<std::vector<float>&>(rho),
         const_cast<std::vector<float>&>(rhou),
         const_cast<std::vector<float>&>(rhov),
+        const_cast<std::vector<float>&>(rhow),
         const_cast<std::vector<float>&>(rhoE),
         const_cast<std::vector<float>&>(rhoY));
 
     const std::string key = what;
+    for (int k = 0; k < nz; ++k)
     for (int j = 0; j < ny; ++j)
         for (int i = 0; i < nx; ++i) {
-            const std::size_t flat = static_cast<std::size_t>(j) * nx + i;
-            const Primitive q = primitiveOf(block, gas, block.index(i, j));
+            const std::size_t flat =
+                (static_cast<std::size_t>(k) * ny + j) * nx + i;
+            const Primitive q = primitiveOf(block, gas, block.index(i, j, k));
             const float gasR = gas.gasConstantOf(q.y);
             const float temperature = q.p / (q.rho * gasR);
             const float speedOfSound = std::sqrt(q.gamma * q.p / q.rho);
+            const float speed = volumetric ? std::hypot(q.u, q.v, q.w)
+                                           : std::hypot(q.u, q.v);
             if (key == "pressure")
                 out[flat] = q.p;
             else if (key == "density")
@@ -702,7 +853,7 @@ std::vector<float> CompressibleRun::primitive(const char* what) const {
             else if (key == "temperature")
                 out[flat] = temperature;
             else if (key == "mach")
-                out[flat] = std::hypot(q.u, q.v) / speedOfSound;
+                out[flat] = speed / speedOfSound;
             else if (key == "speedofsound")
                 out[flat] = speedOfSound;
             else if (key == "species")
@@ -714,8 +865,10 @@ std::vector<float> CompressibleRun::primitive(const char* what) const {
                 out[flat] = q.u;
             else if (key == "v")
                 out[flat] = q.v;
+            else if (key == "w")
+                out[flat] = q.w;
             else if (key == "speed")
-                out[flat] = std::hypot(q.u, q.v);
+                out[flat] = speed;
             else if (key == "pfluct")
                 out[flat] = pressureMean.empty()
                                 ? 0.0f
@@ -767,26 +920,27 @@ void CompressibleRun::saveVTK(int stepNumber) const {
     };
 
     fout << "# vtk DataFile Version 3.0\n"
-         << "CFD-Solver-2D output, step " << stepNumber << "\n"
+         << "Fluid Solver output, step " << stepNumber << "\n"
          << "BINARY\n";
     if (stretched) {
-        std::vector<float> depth{0.0f};
         fout << "DATASET RECTILINEAR_GRID\n"
-             << "DIMENSIONS " << nx + 1 << " " << ny + 1 << " 1\n"
+             << "DIMENSIONS " << nx + 1 << " " << ny + 1 << " " << nz + 1
+             << "\n"
              << "X_COORDINATES " << nx + 1 << " float\n";
         writeArray(faceX.data(), faceX.size());
         fout << "\nY_COORDINATES " << ny + 1 << " float\n";
         writeArray(faceY.data(), faceY.size());
-        fout << "\nZ_COORDINATES 1 float\n";
-        writeArray(depth.data(), depth.size());
+        fout << "\nZ_COORDINATES " << nz + 1 << " float\n";
+        writeArray(faceZ.data(), faceZ.size());
         fout << "\n";
     } else {
         fout << "DATASET STRUCTURED_POINTS\n"
-             << "DIMENSIONS " << nx + 1 << " " << ny + 1 << " 1\n"
+             << "DIMENSIONS " << nx + 1 << " " << ny + 1 << " " << nz + 1
+             << "\n"
              << "ORIGIN 0 0 0\n"
-             << "SPACING " << dx << " " << dy << " 1\n";
+             << "SPACING " << dx << " " << dy << " " << dz << "\n";
     }
-    fout << "CELL_DATA " << nx * ny << "\n";
+    fout << "CELL_DATA " << nx * ny * nz << "\n";
 
 
     const auto writeScalar = [&](const char* name,
@@ -810,11 +964,13 @@ void CompressibleRun::saveVTK(int stepNumber) const {
 
     const std::vector<float> uCell = primitive("u");
     const std::vector<float> vCell = primitive("v");
-    const std::size_t cells = static_cast<std::size_t>(nx) * ny;
+    const std::vector<float> wCell = primitive("w");
+    const std::size_t cells = static_cast<std::size_t>(nx) * ny * nz;
     std::vector<float> interleaved(cells * 3, 0.0f);
     for (std::size_t id = 0; id < cells; ++id) {
         interleaved[3 * id] = uCell[id];
         interleaved[3 * id + 1] = vCell[id];
+        interleaved[3 * id + 2] = wCell[id];
     }
     fout << "VECTORS velocity float\n";
     writeArray(interleaved.data(), interleaved.size());
@@ -877,31 +1033,46 @@ void CompressibleRun::saveVTK(int stepNumber) const {
                 continue;
             bodyLine << std::setprecision(
                             std::numeric_limits<double>::max_digits10)
-                     << body.object << ":" << body.x << "," << body.y << ","
-                     << body.theta << ","
+                     << body.object << ":x=" << body.x << ",y=" << body.y
+                     << ",z=" << body.z << ",qw=" << body.qw
+                     << ",qx=" << body.qx << ",qy=" << body.qy
+                     << ",qz=" << body.qz
                      << std::setprecision(
                             std::numeric_limits<float>::max_digits10)
-                     << body.vx << "," << body.vy << "," << body.omega << ";";
+                     << ",vx=" << body.vx << ",vy=" << body.vy
+                     << ",vz=" << body.vz << ",omegaX=" << body.omegaX
+                     << ",omegaY=" << body.omegaY << ",omega=" << body.omega
+                     << ";";
         }
         bodyLine << "\n";
         configText += bodyLine.str();
     }
 
-    const int arrays = (cfg.twoSpecies() ? 6 : 5) + (stretched ? 2 : 0);
+    const int arrays = (cfg.twoSpecies() ? 7 : 6) +
+                       (stretched ? (volumetric ? 3 : 2) : 0);
     fout << "FIELD RestartData " << arrays << "\n";
     fout << "configText 1 " << configText.size() << " char\n";
     fout.write(configText.data(),
                static_cast<std::streamsize>(configText.size()));
     fout << "\n";
 
+    Block block = const_cast<CompressibleRun*>(this)->view(
+        const_cast<std::vector<float>&>(rho),
+        const_cast<std::vector<float>&>(rhou),
+        const_cast<std::vector<float>&>(rhov),
+        const_cast<std::vector<float>&>(rhow),
+        const_cast<std::vector<float>&>(rhoE),
+        const_cast<std::vector<float>&>(rhoY));
+
     const auto writeField = [&](const char* name,
                                 const std::vector<float>& source) {
         std::vector<float> packed(cells, 0.0f);
+        for (int k = 0; k < nz; ++k)
         for (int j = 0; j < ny; ++j)
             for (int i = 0; i < nx; ++i) {
-                const std::size_t flat = static_cast<std::size_t>(j) * nx + i;
-                packed[flat] = source[(j + ghost) * (nx + 2 * ghost) + i +
-                                      ghost];
+                const std::size_t flat =
+                    (static_cast<std::size_t>(k) * ny + j) * nx + i;
+                packed[flat] = source[block.index(i, j, k)];
             }
         fout << name << " 1 " << cells << " float\n";
         writeArray(packed.data(), packed.size());
@@ -913,12 +1084,17 @@ void CompressibleRun::saveVTK(int stepNumber) const {
         writeArray(faceX.data(), faceX.size());
         fout << "\ngridFaceY 1 " << faceY.size() << " float\n";
         writeArray(faceY.data(), faceY.size());
+        if (volumetric) {
+            fout << "\ngridFaceZ 1 " << faceZ.size() << " float\n";
+            writeArray(faceZ.data(), faceZ.size());
+        }
         fout << "\n";
     }
 
     writeField("stateRho", rho);
     writeField("stateRhoU", rhou);
     writeField("stateRhoV", rhov);
+    writeField("stateRhoW", rhow);
     writeField("stateRhoE", rhoE);
     if (cfg.twoSpecies())
         writeField("stateRhoY", rhoY);
@@ -933,18 +1109,22 @@ void CompressibleRun::reportStep() const {
         const_cast<std::vector<float>&>(rho),
         const_cast<std::vector<float>&>(rhou),
         const_cast<std::vector<float>&>(rhov),
+        const_cast<std::vector<float>&>(rhow),
         const_cast<std::vector<float>&>(rhoE),
         const_cast<std::vector<float>&>(rhoY));
 
     float peakMach = 0.0f, lowPressure = std::numeric_limits<float>::max();
     float highPressure = 0.0f;
+    for (int k = 0; k < nz; ++k)
     for (int j = 0; j < ny; ++j)
         for (int i = 0; i < nx; ++i) {
-            if (solidMask[static_cast<std::size_t>(j) * nx + i])
+            if (solidMask[(static_cast<std::size_t>(k) * ny + j) * nx + i])
                 continue;
-            const Primitive q = primitiveOf(block, gas, block.index(i, j));
+            const Primitive q = primitiveOf(block, gas, block.index(i, j, k));
             const float speedOfSound = std::sqrt(q.gamma * q.p / q.rho);
-            peakMach = std::max(peakMach, std::hypot(q.u, q.v) / speedOfSound);
+            const float speed = volumetric ? std::hypot(q.u, q.v, q.w)
+                                           : std::hypot(q.u, q.v);
+            peakMach = std::max(peakMach, speed / speedOfSound);
             lowPressure = std::min(lowPressure, q.p);
             highPressure = std::max(highPressure, q.p);
         }
@@ -970,7 +1150,7 @@ void CompressibleRun::run() {
     std::error_code directoryError;
     std::filesystem::create_directories(outputPath, directoryError);
 
-    Block block = view(rho, rhou, rhov, rhoE, rhoY);
+    Block block = view(rho, rhou, rhov, rhow, rhoE, rhoY);
     syncToDevice();
     if (dt <= 0.0f)
         dt = timeStep(block) * cfg.dtSafety;
@@ -1085,8 +1265,12 @@ void CompressibleRun::resolveBodyMotion() {
         const Mesh::SolidObject& body = mesh.objects[id - 1];
         geometry[id].cx = static_cast<float>(body.cx);
         geometry[id].cy = static_cast<float>(body.cy);
+        geometry[id].cz = static_cast<float>(body.cz);
         geometry[id].radius = static_cast<float>(body.radius);
-        geometry[id].area = static_cast<float>(body.area);
+        geometry[id].volume = static_cast<float>(body.volume);
+        for (int term = 0; term < 9; ++term)
+            geometry[id].inertia[term] =
+                static_cast<float>(body.inertia[term]);
     }
 
     const float fluidDensity = cfg.pInf / (cfg.R * cfg.T0);
@@ -1108,7 +1292,8 @@ void CompressibleRun::resolveBodyMotion() {
     if (cfg.bodyCoupling == BodyCoupling::Weak)
         for (RigidBody& body : bodies) {
             body.addedMass = 0.0f;
-            body.addedInertia = 0.0f;
+            for (int term = 0; term < 9; ++term)
+                body.addedInertia[term] = 0.0f;
         }
 
     for (RigidBody& body : bodies)
@@ -1121,10 +1306,17 @@ void CompressibleRun::resolveBodyMotion() {
         RigidBody& body = bodies[saved.object];
         body.x = saved.x;
         body.y = saved.y;
-        body.theta = saved.theta;
+        body.z = saved.z;
+        body.qw = saved.qw;
+        body.qx = saved.qx;
+        body.qy = saved.qy;
+        body.qz = saved.qz;
         if (body.free) {
             body.vx = saved.vx;
             body.vy = saved.vy;
+            body.vz = saved.vz;
+            body.omegaX = saved.omegaX;
+            body.omegaY = saved.omegaY;
             body.omega = saved.omega;
         }
     }
@@ -1135,7 +1327,7 @@ void CompressibleRun::resolveBodyMotion() {
         for (int which = 0; which < tree->depth(); ++which) {
             if (tree->level(which).patches.empty())
                 break;
-            tree->setSolidFromPoint(which, solidMask, nx, ny);
+            tree->setSolidFromPoint(which, solidMask, nx, ny, nz);
         }
 }
 
@@ -1149,16 +1341,23 @@ void CompressibleRun::reportBodies() const {
         if (!body.everFree && !body.prescribed)
             continue;
         std::cout << "  object " << body.object << " at (" << body.cx << ", "
-                  << body.cy << ") m, ";
+                  << body.cy;
+        if (volumetric)
+            std::cout << ", " << body.cz;
+        std::cout << ") m, ";
         if (body.free)
             std::cout << "free, mass " << body.mass << " kg, added "
                       << body.addedMass << " kg";
         else
             std::cout << "on rails";
-        if (body.pinX || body.pinY || body.pinRot) {
+        if (body.pinX || body.pinY || body.pinZ || body.pinRotX ||
+            body.pinRotY || body.pinRot) {
             std::cout << ", pinned in";
             if (body.pinX) std::cout << " x";
             if (body.pinY) std::cout << " y";
+            if (body.pinZ) std::cout << " z";
+            if (body.pinRotX) std::cout << " rotation about x";
+            if (body.pinRotY) std::cout << " rotation about y";
             if (body.pinRot) std::cout << " rotation";
         }
         std::cout << "\n";
@@ -1181,13 +1380,17 @@ void CompressibleRun::applyBodyPoses() {
         Mesh::BodyPose pose;
         pose.x = body.x;
         pose.y = body.y;
-        pose.theta = body.theta;
+        pose.z = body.z;
+        pose.qw = body.qw;
+        pose.qx = body.qx;
+        pose.qy = body.qy;
+        pose.qz = body.qz;
         mesh.setPose(body.object, pose);
     }
 }
 
 void CompressibleRun::refreshSolidMask() {
-    const std::size_t cells = static_cast<std::size_t>(nx) * ny;
+    const std::size_t cells = static_cast<std::size_t>(nx) * ny * nz;
     std::vector<uint8_t> before = solidMask;
 
     mesh.updateSolid();
@@ -1197,9 +1400,12 @@ void CompressibleRun::refreshSolidMask() {
     const std::vector<int>& owner = mesh.ownership();
     std::fill(solidVelX.begin(), solidVelX.end(), 0.0f);
     std::fill(solidVelY.begin(), solidVelY.end(), 0.0f);
+    std::fill(solidVelZ.begin(), solidVelZ.end(), 0.0f);
+    for (int k = 0; k < nz; ++k)
     for (int j = 0; j < ny; ++j)
         for (int i = 0; i < nx; ++i) {
-            const std::size_t flat = static_cast<std::size_t>(j) * nx + i;
+            const std::size_t flat =
+                (static_cast<std::size_t>(k) * ny + j) * nx + i;
             if (!solidMask[flat])
                 continue;
             const int id = owner.empty() ? 0 : owner[flat];
@@ -1210,29 +1416,38 @@ void CompressibleRun::refreshSolidMask() {
                 (i + 0.5f) * dx - (body.cx + static_cast<float>(body.x));
             const float armY =
                 (j + 0.5f) * dy - (body.cy + static_cast<float>(body.y));
-            solidVelX[flat] = body.vx - body.omega * armY;
-            solidVelY[flat] = body.vy + body.omega * armX;
+            const float armZ =
+                (k + 0.5f) * dz - (body.cz + static_cast<float>(body.z));
+            solidVelX[flat] = body.vx - body.omega * armY + body.omegaY * armZ;
+            solidVelY[flat] = body.vy + body.omega * armX - body.omegaX * armZ;
+            solidVelZ[flat] = body.vz + body.omegaX * armY - body.omegaY * armX;
         }
 
-    Block block = view(rho, rhou, rhov, rhoE, rhoY);
+    Block block = view(rho, rhou, rhov, rhow, rhoE, rhoY);
+    for (int k = 0; k < nz; ++k)
     for (int j = 0; j < ny; ++j)
         for (int i = 0; i < nx; ++i) {
-            const std::size_t flat = static_cast<std::size_t>(j) * nx + i;
+            const std::size_t flat =
+                (static_cast<std::size_t>(k) * ny + j) * nx + i;
             if (solidMask[flat] || !before[flat])
                 continue;
 
             float sumRho = 0.0f, sumP = 0.0f, sumY = 0.0f;
             int count = 0;
-            const int offsets[4][2] = {{-1, 0}, {1, 0}, {0, -1}, {0, 1}};
-            for (int k = 0; k < 4; ++k) {
-                const int ni = i + offsets[k][0];
-                const int nj = j + offsets[k][1];
-                if (ni < 0 || ni >= nx || nj < 0 || nj >= ny)
+            const int offsets[6][3] = {{-1, 0, 0}, {1, 0, 0}, {0, -1, 0},
+                                       {0, 1, 0},  {0, 0, -1}, {0, 0, 1}};
+            for (int m = 0; m < 6; ++m) {
+                const int ni = i + offsets[m][0];
+                const int nj = j + offsets[m][1];
+                const int nk = k + offsets[m][2];
+                if (ni < 0 || ni >= nx || nj < 0 || nj >= ny || nk < 0 ||
+                    nk >= nz)
                     continue;
-                if (solidMask[static_cast<std::size_t>(nj) * nx + ni])
+                if (solidMask[(static_cast<std::size_t>(nk) * ny + nj) * nx +
+                              ni])
                     continue;
                 const Primitive n =
-                    primitiveOf(block, gas, block.index(ni, nj));
+                    primitiveOf(block, gas, block.index(ni, nj, nk));
                 sumRho += n.rho;
                 sumP += n.p;
                 sumY += n.y;
@@ -1252,14 +1467,16 @@ void CompressibleRun::refreshSolidMask() {
             }
             q.u = solidVelX[flat];
             q.v = solidVelY[flat];
+            q.w = solidVelZ[flat];
             q.gamma = gammaOf(gas, q.y);
-            writeState(block, block.index(i, j), q);
+            writeState(block, block.index(i, j, k), q);
         }
 
 #ifdef USE_CUDA
     if (onDevice)
         compressibleCudaUploadSolid(device, solidMask.data(),
-                                    solidVelX.data(), solidVelY.data());
+                                    solidVelX.data(), solidVelY.data(),
+                                    solidVelZ.data());
 #endif
 }
 
@@ -1270,6 +1487,9 @@ void CompressibleRun::bodyForces() {
     for (RigidBody& body : bodies) {
         body.forceX = 0.0f;
         body.forceY = 0.0f;
+        body.forceZ = 0.0f;
+        body.torqueX = 0.0f;
+        body.torqueY = 0.0f;
         body.torque = 0.0f;
     }
     if (!bodiesFree)
@@ -1279,25 +1499,33 @@ void CompressibleRun::bodyForces() {
     if (owner.empty())
         return;
 
-    Block block = view(rho, rhou, rhov, rhoE, rhoY);
-    const float faceX = dy;
-    const float faceY = dx;
+    Block block = view(rho, rhou, rhov, rhow, rhoE, rhoY);
+    const int plane = nx * ny;
+    const float faceX = dy * dz;
+    const float faceY = dx * dz;
+    const float faceZ = dx * dy;
 
-    const auto push = [&](int solidIndex, float fx, float fy, float px,
-                          float py) {
+    const auto push = [&](int solidIndex, float fx, float fy, float fz,
+                          float px, float py, float pz) {
         const int id = owner[solidIndex];
         if (id <= 0 || static_cast<std::size_t>(id) >= bodies.size())
             return;
         RigidBody& body = bodies[id];
         const float armX = px - (body.cx + static_cast<float>(body.x));
         const float armY = py - (body.cy + static_cast<float>(body.y));
+        const float armZ = pz - (body.cz + static_cast<float>(body.z));
         body.forceX += fx;
         body.forceY += fy;
+        body.forceZ += fz;
+        body.torqueX += armY * fz - armZ * fy;
+        body.torqueY += armZ * fx - armX * fz;
         body.torque += armX * fy - armY * fx;
     };
 
-    for (int j = 0; j < ny; ++j) {
-        const int row = j * nx;
+    for (int k = 0; k < nz; ++k) {
+        const float z = (k + 0.5f) * dz;
+        for (int j = 0; j < ny; ++j) {
+        const int row = (k * ny + j) * nx;
         const float y = (j + 0.5f) * dy;
         for (int i = 1; i < nx; ++i) {
             const bool left = solidMask[row + i - 1] != 0;
@@ -1305,24 +1533,50 @@ void CompressibleRun::bodyForces() {
             if (left == right)
                 continue;
             const int fluid = left ? i : i - 1;
-            const Primitive q = primitiveOf(block, gas, block.index(fluid, j));
+            const Primitive q =
+                primitiveOf(block, gas, block.index(fluid, j, k));
             const float force = q.p * faceX * (left ? -1.0f : 1.0f);
-            push(row + (left ? i - 1 : i), force, 0.0f, i * dx, y);
+            push(row + (left ? i - 1 : i), force, 0.0f, 0.0f, i * dx, y, z);
+        }
         }
     }
 
-    for (int j = 1; j < ny; ++j) {
-        const int row = j * nx;
+    for (int k = 0; k < nz; ++k) {
+        const float z = (k + 0.5f) * dz;
+        for (int j = 1; j < ny; ++j) {
+        const int row = (k * ny + j) * nx;
         for (int i = 0; i < nx; ++i) {
             const bool low = solidMask[row - nx + i] != 0;
             const bool high = solidMask[row + i] != 0;
             if (low == high)
                 continue;
             const int fluid = low ? j : j - 1;
-            const Primitive q = primitiveOf(block, gas, block.index(i, fluid));
+            const Primitive q =
+                primitiveOf(block, gas, block.index(i, fluid, k));
             const float force = q.p * faceY * (low ? -1.0f : 1.0f);
-            push((low ? row - nx : row) + i, 0.0f, force, (i + 0.5f) * dx,
-                 j * dy);
+            push((low ? row - nx : row) + i, 0.0f, force, 0.0f,
+                 (i + 0.5f) * dx, j * dy, z);
+        }
+        }
+    }
+
+    for (int k = 1; k < nz; ++k) {
+        const float z = k * dz;
+        for (int j = 0; j < ny; ++j) {
+        const int row = (k * ny + j) * nx;
+        const float y = (j + 0.5f) * dy;
+        for (int i = 0; i < nx; ++i) {
+            const bool front = solidMask[row - plane + i] != 0;
+            const bool back = solidMask[row + i] != 0;
+            if (front == back)
+                continue;
+            const int fluid = front ? k : k - 1;
+            const Primitive q =
+                primitiveOf(block, gas, block.index(i, j, fluid));
+            const float force = q.p * faceZ * (front ? -1.0f : 1.0f);
+            push((front ? row - plane : row) + i, 0.0f, 0.0f, force,
+                 (i + 0.5f) * dx, y, z);
+        }
         }
     }
 }
@@ -1344,9 +1598,9 @@ void CompressibleRun::advanceBodies(float stepDt) {
             body.step(middle, stepDt);
 
     if (bodyCollisions)
-        resolveBodyCollisions(bodies, mesh.ownership(), mesh.contested(), nx,
-                              ny, cfg.Lx, cfg.Ly, cfg.bodyRestitution, stepDt,
-                              contactsReported);
+        resolveBodyCollisions(bodies, mesh.ownership(), mesh.contested(),
+                              cfg.nx, cfg.ny, cfg.nz, cfg.Lx, cfg.Ly, cfg.Lz,
+                              cfg.bodyRestitution, stepDt, contactsReported);
 
     for (RigidBody& body : bodies)
         if (body.prescribed || body.everFree)
@@ -1563,29 +1817,38 @@ void CompressibleRun::buildGrid() {
 
     const std::size_t across = static_cast<std::size_t>(nx) + 2 * ghost;
     const std::size_t along = static_cast<std::size_t>(ny) + 2 * ghost;
+    const std::size_t through = static_cast<std::size_t>(nz) + 2 * ghost;
     cellWidths.assign(across, dx);
     cellHeights.assign(along, dy);
+    cellDepths.assign(through, dz);
     cellCentresX.assign(across, 0.0f);
     cellCentresY.assign(along, 0.0f);
+    cellCentresZ.assign(through, 0.0f);
     faceX.assign(static_cast<std::size_t>(nx) + 1, 0.0f);
     faceY.assign(static_cast<std::size_t>(ny) + 1, 0.0f);
+    faceZ.assign(static_cast<std::size_t>(nz) + 1, 0.0f);
 
     std::vector<float> widths(static_cast<std::size_t>(nx), dx);
     std::vector<float> heights(static_cast<std::size_t>(ny), dy);
+    std::vector<float> depths(static_cast<std::size_t>(nz), dz);
 
     if (stretched) {
         double lowX = 0.5 * cfg.Lx, highX = 0.5 * cfg.Lx;
         double lowY = 0.5 * cfg.Ly, highY = 0.5 * cfg.Ly;
+        double lowZ = 0.5 * cfg.Lz, highZ = 0.5 * cfg.Lz;
         bool found = false;
+        for (int k = 0; k < nz; ++k)
         for (int j = 0; j < ny; ++j)
             for (int i = 0; i < nx; ++i) {
-                if (!solidMask[static_cast<std::size_t>(j) * nx + i])
+                if (!solidMask[(static_cast<std::size_t>(k) * ny + j) * nx + i])
                     continue;
                 const double x = (i + 0.5) * dx;
                 const double y = (j + 0.5) * dy;
+                const double z = (k + 0.5) * dz;
                 if (!found) {
                     lowX = highX = x;
                     lowY = highY = y;
+                    lowZ = highZ = z;
                     found = true;
                     continue;
                 }
@@ -1593,16 +1856,21 @@ void CompressibleRun::buildGrid() {
                 highX = std::max(highX, x);
                 lowY = std::min(lowY, y);
                 highY = std::max(highY, y);
+                lowZ = std::min(lowZ, z);
+                highZ = std::max(highZ, z);
             }
 
         const double padX = 0.5 * cfg.refineNear * cfg.Lx;
         const double padY = 0.5 * cfg.refineNear * cfg.Ly;
+        const double padZ = 0.5 * cfg.refineNear * cfg.Lz;
         const double ratio = cfg.stretchRatio;
 
         switch (cfg.gridStretch) {
         case StretchKind::Edges:
             widths = edgeAxis(nx, cfg.Lx, ratio);
             heights = edgeAxis(ny, cfg.Ly, ratio);
+            if (volumetric)
+                depths = edgeAxis(nz, cfg.Lz, ratio);
             break;
         case StretchKind::Wake:
             widths = stretchAxis(nx, cfg.Lx, ratio,
@@ -1610,6 +1878,10 @@ void CompressibleRun::buildGrid() {
             heights = stretchAxis(ny, cfg.Ly, ratio,
                                   std::max(0.0, lowY - padY),
                                   std::min<double>(cfg.Ly, highY + padY));
+            if (volumetric)
+                depths = stretchAxis(nz, cfg.Lz, ratio,
+                                     std::max(0.0, lowZ - padZ),
+                                     std::min<double>(cfg.Lz, highZ + padZ));
             break;
         case StretchKind::Body:
         default:
@@ -1619,6 +1891,10 @@ void CompressibleRun::buildGrid() {
             heights = stretchAxis(ny, cfg.Ly, ratio,
                                   std::max(0.0, lowY - padY),
                                   std::min<double>(cfg.Ly, highY + padY));
+            if (volumetric)
+                depths = stretchAxis(nz, cfg.Lz, ratio,
+                                     std::max(0.0, lowZ - padZ),
+                                     std::min<double>(cfg.Lz, highZ + padZ));
             break;
         }
     }
@@ -1646,6 +1922,18 @@ void CompressibleRun::buildGrid() {
     }
     faceY[static_cast<std::size_t>(ny)] = static_cast<float>(walkY);
 
+    double walkZ = 0.0;
+    for (int k = 0; k < nz; ++k) {
+        faceZ[static_cast<std::size_t>(k)] = static_cast<float>(walkZ);
+        cellDepths[static_cast<std::size_t>(k) + ghost] =
+            depths[static_cast<std::size_t>(k)];
+        cellCentresZ[static_cast<std::size_t>(k) + ghost] =
+            static_cast<float>(walkZ +
+                               0.5 * depths[static_cast<std::size_t>(k)]);
+        walkZ += depths[static_cast<std::size_t>(k)];
+    }
+    faceZ[static_cast<std::size_t>(nz)] = static_cast<float>(walkZ);
+
     for (int k = 1; k <= ghost; ++k) {
         cellWidths[static_cast<std::size_t>(ghost - k)] =
             cellWidths[static_cast<std::size_t>(ghost)];
@@ -1655,6 +1943,10 @@ void CompressibleRun::buildGrid() {
             cellHeights[static_cast<std::size_t>(ghost)];
         cellHeights[static_cast<std::size_t>(ghost + ny - 1 + k)] =
             cellHeights[static_cast<std::size_t>(ghost + ny - 1)];
+        cellDepths[static_cast<std::size_t>(ghost - k)] =
+            cellDepths[static_cast<std::size_t>(ghost)];
+        cellDepths[static_cast<std::size_t>(ghost + nz - 1 + k)] =
+            cellDepths[static_cast<std::size_t>(ghost + nz - 1)];
 
         cellCentresX[static_cast<std::size_t>(ghost - k)] =
             cellCentresX[static_cast<std::size_t>(ghost - k + 1)] -
@@ -1668,6 +1960,12 @@ void CompressibleRun::buildGrid() {
         cellCentresY[static_cast<std::size_t>(ghost + ny - 1 + k)] =
             cellCentresY[static_cast<std::size_t>(ghost + ny - 2 + k)] +
             cellHeights[static_cast<std::size_t>(ghost + ny - 1 + k)];
+        cellCentresZ[static_cast<std::size_t>(ghost - k)] =
+            cellCentresZ[static_cast<std::size_t>(ghost - k + 1)] -
+            cellDepths[static_cast<std::size_t>(ghost - k)];
+        cellCentresZ[static_cast<std::size_t>(ghost + nz - 1 + k)] =
+            cellCentresZ[static_cast<std::size_t>(ghost + nz - 2 + k)] +
+            cellDepths[static_cast<std::size_t>(ghost + nz - 1 + k)];
     }
 }
 
@@ -1678,6 +1976,10 @@ void CompressibleRun::applyGridToBlock(Block& block) const {
     block.heights = cellHeights.data();
     block.centresX = cellCentresX.data();
     block.centresY = cellCentresY.data();
+    if (volumetric) {
+        block.depths = cellDepths.data();
+        block.centresZ = cellCentresZ.data();
+    }
 }
 
 int CompressibleRun::columnAt(float x) const {
@@ -1698,6 +2000,17 @@ int CompressibleRun::rowAt(float y) const {
     return ny - 1;
 }
 
+int CompressibleRun::planeAt(float z) const {
+    if (!volumetric)
+        return 0;
+    if (!stretched)
+        return std::clamp(static_cast<int>(z / dz), 0, nz - 1);
+    for (int k = 0; k < nz; ++k)
+        if (z < faceZ[static_cast<std::size_t>(k) + 1])
+            return k;
+    return nz - 1;
+}
+
 void CompressibleRun::setUpAmr() {
     if (!cfg.adaptive())
         return;
@@ -1712,7 +2025,7 @@ void CompressibleRun::setUpAmr() {
     parseAmrCriterion(cfg.amrCriterion, amr->criterion);
 
     tree = std::make_unique<AmrHierarchy>();
-    tree->build(*amr, nx, ny, dx, dy, cfg.twoSpecies());
+    tree->build(*amr, nx, ny, nz, dx, dy, dz, cfg.twoSpecies());
 
     driver = std::make_unique<AmrDriver>(
         *tree, gas, sides, cfg.limiter,
@@ -1728,7 +2041,7 @@ void CompressibleRun::regridIfDue() {
     }
     sinceRegrid = 1;
 
-    Block current = view(rho, rhou, rhov, rhoE, rhoY);
+    Block current = view(rho, rhou, rhov, rhow, rhoE, rhoY);
     tree->regrid(current, gas, *amr, solidMask);
 }
 
@@ -1738,10 +2051,12 @@ void CompressibleRun::reportAmr() const {
     std::vector<int> patches;
     std::vector<long long> cells;
     tree->describe(patches, cells);
-    const long long base = static_cast<long long>(nx) * ny;
+    const long long base = static_cast<long long>(nx) * ny * nz;
     long long total = base;
-    std::cout << "Adaptive mesh: base " << nx << " x " << ny << " = " << base
-              << " cells\n";
+    std::cout << "Adaptive mesh: base " << nx << " x " << ny;
+    if (volumetric)
+        std::cout << " x " << nz;
+    std::cout << " = " << base << " cells\n";
     for (std::size_t which = 0; which < patches.size(); ++which) {
         total += cells[which];
         std::cout << "  level " << (which + 1) << ": " << patches[which]
@@ -1750,7 +2065,8 @@ void CompressibleRun::reportAmr() const {
     }
     const double equivalent =
         static_cast<double>(base) *
-        std::pow(4.0, static_cast<double>(patches.size()));
+        std::pow(volumetric ? 8.0 : 4.0,
+                 static_cast<double>(patches.size()));
     std::cout << "  " << total << " cells against " << equivalent
               << " for the same resolution everywhere";
     if (equivalent > 0.0)
@@ -1788,51 +2104,63 @@ void CompressibleRun::writeAmrFrame(int stepNumber) const {
             if (!out.is_open())
                 continue;
 
-            Block block = patch.view(0, here.dx, here.dy);
+            Block block = patch.view(0, here.dx, here.dy, here.dz);
             const int pnx = patch.box.nx;
             const int pny = patch.box.ny;
+            const int pnz = patch.box.nz;
+            const int extentZ = volumetric ? pnz : 0;
             out << "<?xml version=\"1.0\"?>\n"
                 << "<VTKFile type=\"RectilinearGrid\" version=\"0.1\" "
                    "byte_order=\"LittleEndian\">\n"
                 << "  <RectilinearGrid WholeExtent=\"0 " << pnx << " 0 " << pny
-                << " 0 0\">\n"
-                << "    <Piece Extent=\"0 " << pnx << " 0 " << pny
-                << " 0 0\">\n"
+                << " 0 " << extentZ << "\">\n"
+                << "    <Piece Extent=\"0 " << pnx << " 0 " << pny << " 0 "
+                << extentZ << "\">\n"
                 << "      <Coordinates>\n";
             writeAxis(out, "DataArray", pnx, patch.box.i0 * here.dx, here.dx);
             writeAxis(out, "DataArray", pny, patch.box.j0 * here.dy, here.dy);
-            out << "        <DataArray type=\"Float32\" format=\"ascii\" "
-                   "NumberOfComponents=\"1\">\n           0 0\n"
-                   "        </DataArray>\n"
-                << "      </Coordinates>\n"
+            if (volumetric)
+                writeAxis(out, "DataArray", pnz, patch.box.k0 * here.dz,
+                          here.dz);
+            else
+                out << "        <DataArray type=\"Float32\" format=\"ascii\" "
+                       "NumberOfComponents=\"1\">\n           0 0\n"
+                       "        </DataArray>\n";
+            out << "      </Coordinates>\n"
                 << "      <CellData Scalars=\"density\">\n";
 
             const auto field = [&](const char* label, auto value) {
                 out << "        <DataArray type=\"Float32\" Name=\"" << label
                     << "\" format=\"ascii\">\n         ";
-                for (int j = 0; j < pny; ++j)
-                    for (int i = 0; i < pnx; ++i)
-                        out << ' ' << value(i, j);
+                for (int k = 0; k < pnz; ++k)
+                    for (int j = 0; j < pny; ++j)
+                        for (int i = 0; i < pnx; ++i)
+                            out << ' ' << value(i, j, k);
                 out << "\n        </DataArray>\n";
             };
 
-            field("density", [&](int i, int j) {
-                return primitiveOf(block, gas, block.index(i, j)).rho;
+            field("density", [&](int i, int j, int k) {
+                return primitiveOf(block, gas, block.index(i, j, k)).rho;
             });
-            field("pressure", [&](int i, int j) {
-                return primitiveOf(block, gas, block.index(i, j)).p;
+            field("pressure", [&](int i, int j, int k) {
+                return primitiveOf(block, gas, block.index(i, j, k)).p;
             });
-            field("velocityX", [&](int i, int j) {
-                return primitiveOf(block, gas, block.index(i, j)).u;
+            field("velocityX", [&](int i, int j, int k) {
+                return primitiveOf(block, gas, block.index(i, j, k)).u;
             });
-            field("velocityY", [&](int i, int j) {
-                return primitiveOf(block, gas, block.index(i, j)).v;
+            field("velocityY", [&](int i, int j, int k) {
+                return primitiveOf(block, gas, block.index(i, j, k)).v;
             });
-            field("solid", [&](int i, int j) {
+            if (volumetric)
+                field("velocityZ", [&](int i, int j, int k) {
+                    return primitiveOf(block, gas, block.index(i, j, k)).w;
+                });
+            field("solid", [&](int i, int j, int k) {
                 return static_cast<int>(
-                    patch.solid[static_cast<std::size_t>(j) * pnx + i]);
+                    patch.solid[(static_cast<std::size_t>(k) * pny + j) * pnx +
+                                i]);
             });
-            field("level", [&](int, int) { return which + 1; });
+            field("level", [&](int, int, int) { return which + 1; });
 
             out << "      </CellData>\n    </Piece>\n  </RectilinearGrid>\n"
                 << "</VTKFile>\n";

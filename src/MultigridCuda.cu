@@ -16,8 +16,9 @@ static const int COARSE_SMOOTH_SWEEPS = 50;
 namespace {
 // Same rule as on the CPU: the coarsest level needs enough sweeps to act as a
 // solver rather than a smoother
-int coarseSweeps(int nx, int ny) {
-    const int wanted = 2 * (nx > ny ? nx : ny);
+int coarseSweeps(int nx, int ny, int nz) {
+    const int planar = (nx > ny) ? nx : ny;
+    const int wanted = 2 * ((planar > nz) ? planar : nz);
     if (wanted < COARSE_SMOOTH_SWEEPS) return COARSE_SMOOTH_SWEEPS;
     return (wanted > 400) ? 400 : wanted;
 }
@@ -41,29 +42,36 @@ void checkLaunch(const char* what, const char* file, int line) {
 __global__ void smoothSORKernel(
     int nx,
     int ny,
+    int nz,
     float* __restrict__ pressure,
     const float* __restrict__ rhs,
     const float* __restrict__ coefW,
     const float* __restrict__ coefE,
     const float* __restrict__ coefS,
     const float* __restrict__ coefN,
+    const float* __restrict__ coefF,
+    const float* __restrict__ coefB,
     const float* __restrict__ invDiag,
     float omega,
     int color)
 {
     const int i = blockIdx.x * blockDim.x + threadIdx.x;
     const int j = blockIdx.y * blockDim.y + threadIdx.y;
-    if (i >= nx || j >= ny)
+    const int k = blockIdx.z;
+    if (i >= nx || j >= ny || k >= nz)
         return;
-    if (((i + j) & 1) != color)
+    if (((i + j + k) & 1) != color)
         return;
 
-    const int id = j * nx + i;
+    const int plane = nx * ny;
+    const int id = (k * ny + j) * nx + i;
     const float sum =
         coefW[id] * pressure[id - 1] +
         coefE[id] * pressure[id + 1] +
         coefS[id] * pressure[id - nx] +
-        coefN[id] * pressure[id + nx];
+        coefN[id] * pressure[id + nx] +
+        coefF[id] * pressure[id - plane] +
+        coefB[id] * pressure[id + plane];
 
     const float pNew = (sum - rhs[id]) * invDiag[id];
     pressure[id] += omega * (pNew - pressure[id]);
@@ -72,26 +80,33 @@ __global__ void smoothSORKernel(
 __global__ void computeResidualKernel(
     int nx,
     int ny,
+    int nz,
     const float* __restrict__ pressure,
     const float* __restrict__ rhs,
     const float* __restrict__ coefW,
     const float* __restrict__ coefE,
     const float* __restrict__ coefS,
     const float* __restrict__ coefN,
+    const float* __restrict__ coefF,
+    const float* __restrict__ coefB,
     const float* __restrict__ diag,
     float* __restrict__ residual)
 {
     const int i = blockIdx.x * blockDim.x + threadIdx.x;
     const int j = blockIdx.y * blockDim.y + threadIdx.y;
-    if (i >= nx || j >= ny)
+    const int k = blockIdx.z;
+    if (i >= nx || j >= ny || k >= nz)
         return;
 
-    const int id = j * nx + i;
+    const int plane = nx * ny;
+    const int id = (k * ny + j) * nx + i;
     const float sum =
         coefW[id] * pressure[id - 1] +
         coefE[id] * pressure[id + 1] +
         coefS[id] * pressure[id - nx] +
-        coefN[id] * pressure[id + nx];
+        coefN[id] * pressure[id + nx] +
+        coefF[id] * pressure[id - plane] +
+        coefB[id] * pressure[id + plane];
 
     residual[id] = rhs[id] - (sum - diag[id] * pressure[id]);
 }
@@ -130,10 +145,13 @@ static __device__ inline Stencil1D transferStencil(int i, int refine, int coarse
 __global__ void restrictKernel(
     int fineNx,
     int fineNy,
+    int fineNz,
     int coarseNx,
     int coarseNy,
+    int coarseNz,
     int refineX,
     int refineY,
+    int refineZ,
     const float* __restrict__ fineSrc,
     const float* __restrict__ fineProlongWeight,
     const uint8_t* __restrict__ coarseSolid,
@@ -142,10 +160,11 @@ __global__ void restrictKernel(
 {
     const int i = blockIdx.x * blockDim.x + threadIdx.x;
     const int j = blockIdx.y * blockDim.y + threadIdx.y;
-    if (i >= coarseNx || j >= coarseNy)
+    const int k = blockIdx.z;
+    if (i >= coarseNx || j >= coarseNy || k >= coarseNz)
         return;
 
-    const int coarseId = j * coarseNx + i;
+    const int coarseId = (k * coarseNy + j) * coarseNx + i;
 
     if (coarseSolid[coarseId] || coarseDiag[coarseId] == 0.0f) {
         coarseRhs[coarseId] = 0.0f;
@@ -157,44 +176,62 @@ __global__ void restrictKernel(
     const int i1 = (refineX == 1) ? i : min(fineNx - 1, 2 * i + 2);
     const int j0 = (refineY == 1) ? j : max(0, 2 * j - 1);
     const int j1 = (refineY == 1) ? j : min(fineNy - 1, 2 * j + 2);
+    const int k0 = (refineZ == 1) ? k : max(0, 2 * k - 1);
+    const int k1 = (refineZ == 1) ? k : min(fineNz - 1, 2 * k + 2);
+    const int finePlane = fineNx * fineNy;
 
     float sum = 0.0f;
-    for (int jj = j0; jj <= j1; ++jj) {
-        const Stencil1D sy = transferStencil(jj, refineY, coarseNy);
-        float wy = 0.0f;
-        if (sy.coarse0 == j) wy += sy.weight0;
-        if (sy.coarse1 == j) wy += sy.weight1;
-        if (wy == 0.0f)
+    for (int kk = k0; kk <= k1; ++kk) {
+        const Stencil1D sz = transferStencil(kk, refineZ, coarseNz);
+        float wz = 0.0f;
+        if (sz.coarse0 == k) wz += sz.weight0;
+        if (sz.coarse1 == k) wz += sz.weight1;
+        if (wz == 0.0f)
             continue;
 
-        const int fineRow = jj * fineNx;
-        for (int ii = i0; ii <= i1; ++ii) {
-            const int fineId = fineRow + ii;
-            const float norm = fineProlongWeight[fineId];
-            if (norm <= 0.0f)
+        const int finePage = kk * finePlane;
+        for (int jj = j0; jj <= j1; ++jj) {
+            const Stencil1D sy = transferStencil(jj, refineY, coarseNy);
+            float wy = 0.0f;
+            if (sy.coarse0 == j) wy += sy.weight0;
+            if (sy.coarse1 == j) wy += sy.weight1;
+            if (wy == 0.0f)
                 continue;
+            wy *= wz;
 
-            const Stencil1D sx = transferStencil(ii, refineX, coarseNx);
-            float wx = 0.0f;
-            if (sx.coarse0 == i) wx += sx.weight0;
-            if (sx.coarse1 == i) wx += sx.weight1;
-            if (wx == 0.0f)
-                continue;
+            const int fineRow = finePage + jj * fineNx;
+            for (int ii = i0; ii <= i1; ++ii) {
+                const int fineId = fineRow + ii;
+                const float norm = fineProlongWeight[fineId];
+                if (norm <= 0.0f)
+                    continue;
 
-            sum += (wx * wy / norm) * fineSrc[fineId];
+                const Stencil1D sx = transferStencil(ii, refineX, coarseNx);
+                float wx = 0.0f;
+                if (sx.coarse0 == i) wx += sx.weight0;
+                if (sx.coarse1 == i) wx += sx.weight1;
+                if (wx == 0.0f)
+                    continue;
+
+                sum += (wx * wy / norm) * fineSrc[fineId];
+            }
         }
     }
 
-    coarseRhs[coarseId] = sum / static_cast<float>(refineX * refineY);
+    coarseRhs[coarseId] =
+        sum / static_cast<float>(refineX * refineY * refineZ);
 }
 
 __global__ void prolongateKernel(
     int fineNx,
     int fineNy,
+    int fineNz,
     int coarseNx,
     int coarseNy,
+    int coarseNz,
     int refineX,
     int refineY,
+    int refineZ,
     float* __restrict__ finePressure,
     const float* __restrict__ coarsePressure,
     const float* __restrict__ fineProlongWeight,
@@ -203,10 +240,11 @@ __global__ void prolongateKernel(
 {
     const int i = blockIdx.x * blockDim.x + threadIdx.x;
     const int j = blockIdx.y * blockDim.y + threadIdx.y;
-    if (i >= fineNx || j >= fineNy)
+    const int k = blockIdx.z;
+    if (i >= fineNx || j >= fineNy || k >= fineNz)
         return;
 
-    const int fineId = j * fineNx + i;
+    const int fineId = (k * fineNy + j) * fineNx + i;
     const float norm = fineProlongWeight[fineId];
     if (norm <= 0.0f) {
         if (!addMode)
@@ -216,21 +254,37 @@ __global__ void prolongateKernel(
 
     const Stencil1D sx = transferStencil(i, refineX, coarseNx);
     const Stencil1D sy = transferStencil(j, refineY, coarseNy);
+    const Stencil1D sz = transferStencil(k, refineZ, coarseNz);
 
-    const int coarseX[4] = {sx.coarse0, sx.coarse1, sx.coarse0, sx.coarse1};
-    const int coarseY[4] = {sy.coarse0, sy.coarse0, sy.coarse1, sy.coarse1};
-    const float weights[4] = {
-        sx.weight0 * sy.weight0, sx.weight1 * sy.weight0,
-        sx.weight0 * sy.weight1, sx.weight1 * sy.weight1};
+    const int coarseX[8] = {
+        sx.coarse0, sx.coarse1, sx.coarse0, sx.coarse1,
+        sx.coarse0, sx.coarse1, sx.coarse0, sx.coarse1};
+    const int coarseY[8] = {
+        sy.coarse0, sy.coarse0, sy.coarse1, sy.coarse1,
+        sy.coarse0, sy.coarse0, sy.coarse1, sy.coarse1};
+    const int coarseZ[8] = {
+        sz.coarse0, sz.coarse0, sz.coarse0, sz.coarse0,
+        sz.coarse1, sz.coarse1, sz.coarse1, sz.coarse1};
+    const float weights[8] = {
+        sx.weight0 * sy.weight0 * sz.weight0,
+        sx.weight1 * sy.weight0 * sz.weight0,
+        sx.weight0 * sy.weight1 * sz.weight0,
+        sx.weight1 * sy.weight1 * sz.weight0,
+        sx.weight0 * sy.weight0 * sz.weight1,
+        sx.weight1 * sy.weight0 * sz.weight1,
+        sx.weight0 * sy.weight1 * sz.weight1,
+        sx.weight1 * sy.weight1 * sz.weight1};
+    const int coarsePlane = coarseNx * coarseNy;
 
     float value = 0.0f;
     #pragma unroll
-    for (int k = 0; k < 4; ++k) {
-        if (weights[k] == 0.0f)
+    for (int c = 0; c < 8; ++c) {
+        if (weights[c] == 0.0f)
             continue;
-        const int coarseId = coarseY[k] * coarseNx + coarseX[k];
+        const int coarseId = coarseZ[c] * coarsePlane +
+                             coarseY[c] * coarseNx + coarseX[c];
         if (!coarseSolid[coarseId])
-            value += weights[k] * coarsePressure[coarseId];
+            value += weights[c] * coarsePressure[coarseId];
     }
 
     if (addMode)
@@ -285,22 +339,28 @@ __global__ void computeNormKernel(
 __global__ void applyOperatorKernel(
     int nx,
     int ny,
+    int nz,
     const float* __restrict__ x,
     const float* __restrict__ coefW,
     const float* __restrict__ coefE,
     const float* __restrict__ coefS,
     const float* __restrict__ coefN,
+    const float* __restrict__ coefF,
+    const float* __restrict__ coefB,
     const float* __restrict__ diag,
     float* __restrict__ out)
 {
     const int i = blockIdx.x * blockDim.x + threadIdx.x;
     const int j = blockIdx.y * blockDim.y + threadIdx.y;
-    if (i >= nx || j >= ny)
+    const int k = blockIdx.z;
+    if (i >= nx || j >= ny || k >= nz)
         return;
-    const int id = j * nx + i;
+    const int plane = nx * ny;
+    const int id = (k * ny + j) * nx + i;
     const float sum =
         coefW[id] * x[id - 1] + coefE[id] * x[id + 1] +
-        coefS[id] * x[id - nx] + coefN[id] * x[id + nx];
+        coefS[id] * x[id - nx] + coefN[id] * x[id + nx] +
+        coefF[id] * x[id - plane] + coefB[id] * x[id + plane];
     out[id] = diag[id] * x[id] - sum;
 }
 
@@ -430,6 +490,8 @@ void Multigrid::freeDevice() {
         if (d.coefE)         cudaFree(d.coefE);
         if (d.coefS)         cudaFree(d.coefS);
         if (d.coefN)         cudaFree(d.coefN);
+        if (d.coefF)         cudaFree(d.coefF);
+        if (d.coefB)         cudaFree(d.coefB);
         if (d.diag)          cudaFree(d.diag);
         if (d.invDiag)       cudaFree(d.invDiag);
         if (d.solid)         cudaFree(d.solid);
@@ -466,7 +528,7 @@ void Multigrid::allocateDevice() {
         const Level& grid = gridLevels[l];
         DeviceLevel& d = deviceLevels[l];
 
-        d.halo = (grid.nx > 8) ? grid.nx : 8;
+        d.halo = (grid.nx * grid.ny > 8) ? grid.nx * grid.ny : 8;
         const size_t padded =
             static_cast<size_t>(grid.cellCount) + 2u * d.halo + 16u;
         const size_t plain = static_cast<size_t>(grid.cellCount) + 16u;
@@ -483,6 +545,8 @@ void Multigrid::allocateDevice() {
         CUDA_CHECK(cudaMalloc(&d.coefE, plain * sizeof(float)));
         CUDA_CHECK(cudaMalloc(&d.coefS, plain * sizeof(float)));
         CUDA_CHECK(cudaMalloc(&d.coefN, plain * sizeof(float)));
+        CUDA_CHECK(cudaMalloc(&d.coefF, plain * sizeof(float)));
+        CUDA_CHECK(cudaMalloc(&d.coefB, plain * sizeof(float)));
         CUDA_CHECK(cudaMalloc(&d.diag, plain * sizeof(float)));
         CUDA_CHECK(cudaMalloc(&d.invDiag, plain * sizeof(float)));
         CUDA_CHECK(cudaMalloc(&d.solid,
@@ -521,6 +585,10 @@ void Multigrid::setGeometryCuda(bool keepSolution) {
                               plain * sizeof(float), cudaMemcpyHostToDevice));
         CUDA_CHECK(cudaMemcpy(d.coefN, grid.coefN.data(),
                               plain * sizeof(float), cudaMemcpyHostToDevice));
+        CUDA_CHECK(cudaMemcpy(d.coefF, grid.coefF.data(),
+                              plain * sizeof(float), cudaMemcpyHostToDevice));
+        CUDA_CHECK(cudaMemcpy(d.coefB, grid.coefB.data(),
+                              plain * sizeof(float), cudaMemcpyHostToDevice));
         CUDA_CHECK(cudaMemcpy(d.diag, grid.diag.data(),
                               plain * sizeof(float), cudaMemcpyHostToDevice));
         CUDA_CHECK(cudaMemcpy(d.invDiag, grid.invDiag.data(),
@@ -557,6 +625,10 @@ void Multigrid::uploadCoefficientsCuda() {
                               plain * sizeof(float), cudaMemcpyHostToDevice));
         CUDA_CHECK(cudaMemcpy(d.coefN, grid.coefN.data(),
                               plain * sizeof(float), cudaMemcpyHostToDevice));
+        CUDA_CHECK(cudaMemcpy(d.coefF, grid.coefF.data(),
+                              plain * sizeof(float), cudaMemcpyHostToDevice));
+        CUDA_CHECK(cudaMemcpy(d.coefB, grid.coefB.data(),
+                              plain * sizeof(float), cudaMemcpyHostToDevice));
         CUDA_CHECK(cudaMemcpy(d.diag, grid.diag.data(),
                               plain * sizeof(float), cudaMemcpyHostToDevice));
         CUDA_CHECK(cudaMemcpy(d.invDiag, grid.invDiag.data(),
@@ -574,7 +646,8 @@ void Multigrid::smoothSORCuda(
 
     const dim3 block(BLOCK_X, BLOCK_Y);
     const dim3 launchGrid((grid.nx + BLOCK_X - 1) / BLOCK_X,
-                          (grid.ny + BLOCK_Y - 1) / BLOCK_Y);
+                          (grid.ny + BLOCK_Y - 1) / BLOCK_Y,
+                          grid.nz);
 
     for (int sweep = 0; sweep < sweeps; ++sweep) {
         for (int color = 0; color < 2; ++color) {
@@ -584,9 +657,9 @@ void Multigrid::smoothSORCuda(
             // that wrote the cells its neighbours were reading, which is exactly
             // where the GPU and CPU results used to diverge.
             smoothSORKernel<<<launchGrid, block>>>(
-                grid.nx, grid.ny, d.pressure, d.rhs,
-                d.coefW, d.coefE, d.coefS, d.coefN, d.invDiag,
-                omega, color);
+                grid.nx, grid.ny, grid.nz, d.pressure, d.rhs,
+                d.coefW, d.coefE, d.coefS, d.coefN, d.coefF, d.coefB,
+                d.invDiag, omega, color);
             CUDA_CHECK_LAUNCH("smoothSORKernel");
         }
     }
@@ -598,11 +671,13 @@ void Multigrid::computeResidualCuda(int level) {
 
     const dim3 block(BLOCK_X, BLOCK_Y);
     const dim3 launchGrid((grid.nx + BLOCK_X - 1) / BLOCK_X,
-                          (grid.ny + BLOCK_Y - 1) / BLOCK_Y);
+                          (grid.ny + BLOCK_Y - 1) / BLOCK_Y,
+                          grid.nz);
 
     computeResidualKernel<<<launchGrid, block>>>(
-        grid.nx, grid.ny, d.pressure, d.rhs,
-        d.coefW, d.coefE, d.coefS, d.coefN, d.diag, d.residual);
+        grid.nx, grid.ny, grid.nz, d.pressure, d.rhs,
+        d.coefW, d.coefE, d.coefS, d.coefN, d.coefF, d.coefB,
+        d.diag, d.residual);
     CUDA_CHECK_LAUNCH("computeResidualKernel");
 }
 
@@ -658,10 +733,12 @@ void Multigrid::restrictResidualCuda(int fineLevel) {
 
     const dim3 block(BLOCK_X, BLOCK_Y);
     const dim3 launchGrid((coarse.nx + BLOCK_X - 1) / BLOCK_X,
-                          (coarse.ny + BLOCK_Y - 1) / BLOCK_Y);
+                          (coarse.ny + BLOCK_Y - 1) / BLOCK_Y,
+                          coarse.nz);
 
     restrictKernel<<<launchGrid, block>>>(
-        fine.nx, fine.ny, coarse.nx, coarse.ny, fine.refineX, fine.refineY,
+        fine.nx, fine.ny, fine.nz, coarse.nx, coarse.ny, coarse.nz,
+        fine.refineX, fine.refineY, fine.refineZ,
         dFine.residual, dFine.prolongWeight,
         dCoarse.solid, dCoarse.diag, dCoarse.rhs);
     CUDA_CHECK_LAUNCH("restrictKernel(residual)");
@@ -679,10 +756,12 @@ void Multigrid::restrictRHSCuda(int fineLevel) {
 
     const dim3 block(BLOCK_X, BLOCK_Y);
     const dim3 launchGrid((coarse.nx + BLOCK_X - 1) / BLOCK_X,
-                          (coarse.ny + BLOCK_Y - 1) / BLOCK_Y);
+                          (coarse.ny + BLOCK_Y - 1) / BLOCK_Y,
+                          coarse.nz);
 
     restrictKernel<<<launchGrid, block>>>(
-        fine.nx, fine.ny, coarse.nx, coarse.ny, fine.refineX, fine.refineY,
+        fine.nx, fine.ny, fine.nz, coarse.nx, coarse.ny, coarse.nz,
+        fine.refineX, fine.refineY, fine.refineZ,
         dFine.rhs, dFine.prolongWeight,
         dCoarse.solid, dCoarse.diag, dCoarse.rhs);
     CUDA_CHECK_LAUNCH("restrictKernel(rhs)");
@@ -700,10 +779,12 @@ void Multigrid::prolongateCorrectionCuda(int coarseLevel) {
 
     const dim3 block(BLOCK_X, BLOCK_Y);
     const dim3 launchGrid((fine.nx + BLOCK_X - 1) / BLOCK_X,
-                          (fine.ny + BLOCK_Y - 1) / BLOCK_Y);
+                          (fine.ny + BLOCK_Y - 1) / BLOCK_Y,
+                          fine.nz);
 
     prolongateKernel<<<launchGrid, block>>>(
-        fine.nx, fine.ny, coarse.nx, coarse.ny, fine.refineX, fine.refineY,
+        fine.nx, fine.ny, fine.nz, coarse.nx, coarse.ny, coarse.nz,
+        fine.refineX, fine.refineY, fine.refineZ,
         dFine.pressure, dCoarse.pressure, dFine.prolongWeight,
         dCoarse.solid, 1);
     CUDA_CHECK_LAUNCH("prolongateKernel(correction)");
@@ -721,10 +802,12 @@ void Multigrid::prolongateSolutionCuda(int coarseLevel) {
 
     const dim3 block(BLOCK_X, BLOCK_Y);
     const dim3 launchGrid((fine.nx + BLOCK_X - 1) / BLOCK_X,
-                          (fine.ny + BLOCK_Y - 1) / BLOCK_Y);
+                          (fine.ny + BLOCK_Y - 1) / BLOCK_Y,
+                          fine.nz);
 
     prolongateKernel<<<launchGrid, block>>>(
-        fine.nx, fine.ny, coarse.nx, coarse.ny, fine.refineX, fine.refineY,
+        fine.nx, fine.ny, fine.nz, coarse.nx, coarse.ny, coarse.nz,
+        fine.refineX, fine.refineY, fine.refineZ,
         dFine.pressure, dCoarse.pressure, dFine.prolongWeight,
         dCoarse.solid, 0);
     CUDA_CHECK_LAUNCH("prolongateKernel(solution)");
@@ -732,7 +815,7 @@ void Multigrid::prolongateSolutionCuda(int coarseLevel) {
 
 void Multigrid::allocateCgDevice() {
     const int count = gridLevels[0].cellCount;
-    const int halo = gridLevels[0].nx + 8;
+    const int halo = gridLevels[0].nx * gridLevels[0].ny + 8;
     if (deviceCgCells == count && deviceCgAlloc)
         return;
     if (deviceCgAlloc) {
@@ -809,7 +892,8 @@ void Multigrid::vCycleCuda(
 {
     if (level == levels - 1) {
         smoothSORCuda(level, coarseOmega,
-                      coarseSweeps(gridLevels[level].nx, gridLevels[level].ny));
+                      coarseSweeps(gridLevels[level].nx, gridLevels[level].ny,
+                                   gridLevels[level].nz));
         return;
     }
 
@@ -838,7 +922,8 @@ void Multigrid::fullMultigridCuda(float smootherOmega, float coarseOmega) {
     const int coarsest = levels - 1;
     if (coarsest == 0) {
         smoothSORCuda(0, coarseOmega,
-                      coarseSweeps(gridLevels[0].nx, gridLevels[0].ny));
+                      coarseSweeps(gridLevels[0].nx, gridLevels[0].ny,
+                                   gridLevels[0].nz));
         return;
     }
 
@@ -850,7 +935,8 @@ void Multigrid::fullMultigridCuda(float smootherOmega, float coarseOmega) {
         static_cast<size_t>(gridLevels[coarsest].cellCount) * sizeof(float)));
     smoothSORCuda(coarsest, coarseOmega,
                   coarseSweeps(gridLevels[coarsest].nx,
-                               gridLevels[coarsest].ny));
+                               gridLevels[coarsest].ny,
+                               gridLevels[coarsest].nz));
 
     for (int level = coarsest; level > 0; --level) {
         prolongateSolutionCuda(level);
@@ -874,7 +960,8 @@ float Multigrid::solvePCGCuda(
     const int blocks = (count + NORM_BLOCK - 1) / NORM_BLOCK;
     const dim3 block2(BLOCK_X, BLOCK_Y);
     const dim3 grid2((finest.nx + BLOCK_X - 1) / BLOCK_X,
-                     (finest.ny + BLOCK_Y - 1) / BLOCK_Y);
+                     (finest.ny + BLOCK_Y - 1) / BLOCK_Y,
+                     finest.nz);
 
     allocateCgDevice();
 
@@ -920,8 +1007,8 @@ float Multigrid::solvePCGCuda(
     }
 
     applyOperatorKernel<<<grid2, block2>>>(
-        finest.nx, finest.ny, deviceCgX, d0.coefW, d0.coefE, d0.coefS,
-        d0.coefN, d0.diag, deviceCgQ);
+        finest.nx, finest.ny, finest.nz, deviceCgX, d0.coefW, d0.coefE,
+        d0.coefS, d0.coefN, d0.coefF, d0.coefB, d0.diag, deviceCgQ);
     CUDA_CHECK_LAUNCH("applyOperatorKernel");
     residualFromOperatorKernel<<<blocks, NORM_BLOCK>>>(
         count, deviceCgB, deviceCgQ, d0.diag, deviceCgR);
@@ -959,8 +1046,8 @@ float Multigrid::solvePCGCuda(
         }
 
         applyOperatorKernel<<<grid2, block2>>>(
-            finest.nx, finest.ny, deviceCgD, d0.coefW, d0.coefE, d0.coefS,
-            d0.coefN, d0.diag, deviceCgQ);
+            finest.nx, finest.ny, finest.nz, deviceCgD, d0.coefW, d0.coefE,
+            d0.coefS, d0.coefN, d0.coefF, d0.coefB, d0.diag, deviceCgQ);
         CUDA_CHECK_LAUNCH("applyOperatorKernel");
         const double dq = dotCuda(count, deviceCgD, deviceCgQ);
         if (!(std::fabs(dq) > 1e-300))
