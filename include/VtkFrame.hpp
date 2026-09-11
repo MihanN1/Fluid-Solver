@@ -47,14 +47,19 @@ struct VtkFrame {
     VtkDataAssociation association = VtkDataAssociation::Point;
     std::size_t nx = 0;
     std::size_t ny = 0;
+    std::size_t nz = 1;
     double originX = 0.0;
     double originY = 0.0;
+    double originZ = 0.0;
     double spacingX = 0.0;
     double spacingY = 0.0;
+    double spacingZ = 0.0;
     std::vector<double> faceX;
     std::vector<double> faceY;
+    std::vector<double> faceZ;
 
     bool rectilinear() const { return !faceX.empty() && !faceY.empty(); }
+    bool volumetric() const { return nz > 1; }
     double cellLeft(std::size_t i) const {
         return rectilinear() ? faceX[i] : originX + i * spacingX;
     }
@@ -67,11 +72,20 @@ struct VtkFrame {
     double cellTop(std::size_t j) const {
         return rectilinear() ? faceY[j + 1] : originY + (j + 1) * spacingY;
     }
+    double cellFront(std::size_t k) const {
+        return faceZ.size() > 1 ? faceZ[k] : originZ + k * spacingZ;
+    }
+    double cellBack(std::size_t k) const {
+        return faceZ.size() > 1 ? faceZ[k + 1] : originZ + (k + 1) * spacingZ;
+    }
     double cellCentreX(std::size_t i) const {
         return 0.5 * (cellLeft(i) + cellRight(i));
     }
     double cellCentreY(std::size_t j) const {
         return 0.5 * (cellBottom(j) + cellTop(j));
+    }
+    double cellCentreZ(std::size_t k) const {
+        return 0.5 * (cellFront(k) + cellBack(k));
     }
     double spanX() const {
         return rectilinear() ? faceX.back() - faceX.front() : nx * spacingX;
@@ -79,8 +93,12 @@ struct VtkFrame {
     double spanY() const {
         return rectilinear() ? faceY.back() - faceY.front() : ny * spacingY;
     }
+    double spanZ() const {
+        return faceZ.size() > 1 ? faceZ.back() - faceZ.front() : nz * spacingZ;
+    }
     std::size_t columnAt(double x) const;
     std::size_t rowAt(double y) const;
+    std::size_t planeAt(double z) const;
     std::vector<float> pressure;
     std::vector<std::uint8_t> solid;
     std::vector<Velocity> velocity;
@@ -106,8 +124,17 @@ struct VtkFrame {
     std::vector<std::string> warnings;
 
     std::size_t cellIndex(std::size_t i, std::size_t j) const;
+    std::size_t cellIndex(std::size_t i, std::size_t j, std::size_t k) const;
     std::size_t decodedByteSize() const;
 };
+
+enum class SliceAxis {
+    X,
+    Y,
+    Z
+};
+
+VtkFrame extractSlice(const VtkFrame& volume, SliceAxis axis, std::size_t index);
 
 struct ResultImageTransform {
     double screenOriginX = 0.0;

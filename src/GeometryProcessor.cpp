@@ -125,6 +125,7 @@ bool finiteParameters(const MaskParameters& parameters) {
     return std::isfinite(parameters.Lx) &&
            std::isfinite(parameters.Ly) &&
            std::isfinite(parameters.sliceAngleX) &&
+           std::isfinite(parameters.sliceAngleY) &&
            std::isfinite(parameters.sliceAngleZ) &&
            std::isfinite(parameters.sliceRotation);
 }
@@ -423,28 +424,32 @@ SectionFrame GeometryProcessor::sectionFrame(
     SectionFrame frame;
     if (!bounds_.valid ||
         !std::isfinite(parameters.sliceAngleX) ||
+        !std::isfinite(parameters.sliceAngleY) ||
         !std::isfinite(parameters.sliceAngleZ)) {
         return frame;
     }
 
     const double angleX = toRadians(parameters.sliceAngleX);
+    const double angleY = toRadians(parameters.sliceAngleY);
     const double angleZ = toRadians(parameters.sliceAngleZ);
     const double cosineX = std::cos(angleX);
     const double sineX = std::sin(angleX);
+    const double cosineY = std::cos(angleY);
+    const double sineY = std::sin(angleY);
     const double cosineZ = std::cos(angleZ);
     const double sineZ = std::sin(angleZ);
 
     frame.centre = bounds_.centre;
-    frame.axisX = {cosineZ, sineZ, 0.0};
+    frame.axisX = {cosineZ * cosineY, sineZ * cosineY, -sineY};
     frame.axisY = {
-        -sineZ * cosineX,
-        cosineZ * cosineX,
-        sineX
+        cosineZ * sineY * sineX - sineZ * cosineX,
+        sineZ * sineY * sineX + cosineZ * cosineX,
+        cosineY * sineX
     };
     frame.normal = {
-        sineZ * sineX,
-        -cosineZ * sineX,
-        cosineX
+        cosineZ * sineY * cosineX + sineZ * sineX,
+        sineZ * sineY * cosineX - cosineZ * sineX,
+        cosineY * cosineX
     };
     frame.extent = 0.65 * bounds_.characteristicLength;
     frame.tolerance =

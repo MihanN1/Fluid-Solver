@@ -52,6 +52,7 @@ struct MaskParameters {
     int nx = 50;
     int ny = 50;
     double sliceAngleX = 0.0;
+    double sliceAngleY = 0.0;
     double sliceAngleZ = 0.0;
     double sliceRotation = 0.0;
     bool invertSection = false;

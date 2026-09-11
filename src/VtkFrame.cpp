@@ -350,16 +350,21 @@ void parseRestartConfig(VtkFrame& frame, const std::string& configText) {
 std::size_t checkedGridCount(
     int nx,
     int ny,
+    int nz,
     const std::string& context) {
-    if (nx <= 0 || ny <= 0) {
+    if (nx <= 0 || ny <= 0 || nz <= 0) {
         throw VtkParseError(context + " dimensions must be positive");
     }
     const std::size_t x = static_cast<std::size_t>(nx);
     const std::size_t y = static_cast<std::size_t>(ny);
+    const std::size_t z = static_cast<std::size_t>(nz);
     if (x > std::numeric_limits<std::size_t>::max() / y) {
         throw VtkParseError(context + " dimensions overflow the sample count");
     }
-    return x * y;
+    if (x * y > std::numeric_limits<std::size_t>::max() / z) {
+        throw VtkParseError(context + " dimensions overflow the sample count");
+    }
+    return x * y * z;
 }
 
 void includeValue(DataRange& range, double value) {
@@ -374,6 +379,29 @@ void includeValue(DataRange& range, double value) {
     }
     range.minimum = std::min(range.minimum, value);
     range.maximum = std::max(range.maximum, value);
+}
+
+DataRange trimmedRange(std::vector<float>& values) {
+    DataRange range;
+    if (values.empty()) {
+        return range;
+    }
+    const std::size_t last = values.size() - 1u;
+    // Half a percent at each end, and never the whole thing: a frame
+    // of forty cells still has a low and a high.
+    const std::size_t low =
+        static_cast<std::size_t>(static_cast<double>(last) * 0.005);
+    const std::size_t high =
+        static_cast<std::size_t>(static_cast<double>(last) * 0.995);
+    std::nth_element(values.begin(), values.begin() + low, values.end());
+    range.minimum = static_cast<double>(values[low]);
+    std::nth_element(values.begin() + low, values.begin() + high, values.end());
+    range.maximum = static_cast<double>(values[high]);
+    range.available = true;
+    if (range.maximum < range.minimum) {
+        std::swap(range.minimum, range.maximum);
+    }
+    return range;
 }
 
 bool allRequiredArraysPresent(
@@ -452,10 +480,17 @@ std::optional<int> titleFrameNumber(const std::string& title) {
 } // namespace
 
 std::size_t VtkFrame::cellIndex(std::size_t i, std::size_t j) const {
-    if (i >= nx || j >= ny) {
+    return cellIndex(i, j, 0);
+}
+
+std::size_t VtkFrame::cellIndex(
+    std::size_t i,
+    std::size_t j,
+    std::size_t k) const {
+    if (i >= nx || j >= ny || k >= nz) {
         throw std::out_of_range("VTK cell index is outside the logical grid");
     }
-    return j * nx + i;
+    return (k * ny + j) * nx + i;
 }
 
 std::size_t VtkFrame::decodedByteSize() const {
@@ -539,6 +574,170 @@ std::optional<VtkPixelSample> sampleVtkPixel(
     sample.pressureFinite = frame.pressureFinite[index] != 0;
     sample.speedFinite = frame.velocityFinite[index] != 0;
     return sample;
+}
+
+VtkFrame extractSlice(
+    const VtkFrame& volume,
+    SliceAxis axis,
+    std::size_t index) {
+    if (volume.nx == 0 || volume.ny == 0 || volume.nz == 0) {
+        throw std::out_of_range("VTK slice source has no cells");
+    }
+    const int removed = axis == SliceAxis::X ? 0 : (axis == SliceAxis::Y ? 1 : 2);
+    const int first = axis == SliceAxis::X ? 1 : 0;
+    const int second = axis == SliceAxis::Z ? 1 : 2;
+
+    const auto axisCount = [&volume](int which) -> std::size_t {
+        return which == 0 ? volume.nx : (which == 1 ? volume.ny : volume.nz);
+    };
+    const auto axisOrigin = [&volume](int which) -> double {
+        return which == 0
+            ? volume.originX
+            : (which == 1 ? volume.originY : volume.originZ);
+    };
+    const auto axisSpacing = [&volume](int which) -> double {
+        return which == 0
+            ? volume.spacingX
+            : (which == 1 ? volume.spacingY : volume.spacingZ);
+    };
+    const auto axisFaceCount = [&volume](int which) -> std::size_t {
+        return which == 0
+            ? volume.faceX.size()
+            : (which == 1 ? volume.faceY.size() : volume.faceZ.size());
+    };
+    const auto axisLow = [&volume](int which, std::size_t cell) -> double {
+        return which == 0
+            ? volume.cellLeft(cell)
+            : (which == 1 ? volume.cellBottom(cell) : volume.cellFront(cell));
+    };
+    const auto axisHigh = [&volume](int which, std::size_t cell) -> double {
+        return which == 0
+            ? volume.cellRight(cell)
+            : (which == 1 ? volume.cellTop(cell) : volume.cellBack(cell));
+    };
+
+    if (index >= axisCount(removed)) {
+        throw std::out_of_range("VTK slice index is outside the volume");
+    }
+
+    VtkFrame slice;
+    slice.sourcePath = volume.sourcePath;
+    slice.title = volume.title;
+    slice.frameNumber = volume.frameNumber;
+    slice.association = volume.association;
+    slice.nx = axisCount(first);
+    slice.ny = axisCount(second);
+    slice.nz = 1;
+    slice.originX = axisOrigin(first);
+    slice.originY = axisOrigin(second);
+    slice.originZ = axisLow(removed, index);
+    slice.spacingX = axisSpacing(first);
+    slice.spacingY = axisSpacing(second);
+    slice.spacingZ = axisHigh(removed, index) - axisLow(removed, index);
+
+    if (axisFaceCount(first) > 1 || axisFaceCount(second) > 1) {
+        const auto faces = [&](int which, std::vector<double>& out) {
+            const std::size_t count = axisCount(which);
+            out.resize(count + 1u);
+            for (std::size_t cell = 0; cell < count; ++cell) {
+                out[cell] = axisLow(which, cell);
+            }
+            out[count] = axisHigh(which, count - 1u);
+        };
+        faces(first, slice.faceX);
+        faces(second, slice.faceY);
+    }
+    if (axisFaceCount(removed) > 1) {
+        slice.faceZ = {
+            axisLow(removed, index),
+            axisHigh(removed, index)
+        };
+    }
+
+    const std::size_t sampleCount = slice.nx * slice.ny;
+    slice.pressure.resize(sampleCount);
+    slice.solid.resize(sampleCount);
+    slice.velocity.resize(sampleCount);
+    slice.velocityMagnitude.resize(sampleCount);
+    slice.pressureFinite.resize(sampleCount);
+    slice.velocityFinite.resize(sampleCount);
+    slice.scalarNames = volume.scalarNames;
+    for (const std::string& name : slice.scalarNames) {
+        slice.scalars.emplace(name, std::vector<float>(sampleCount));
+    }
+
+    for (std::size_t q = 0; q < slice.ny; ++q) {
+        for (std::size_t p = 0; p < slice.nx; ++p) {
+            std::size_t cell[3] = {0, 0, 0};
+            cell[static_cast<std::size_t>(first)] = p;
+            cell[static_cast<std::size_t>(second)] = q;
+            cell[static_cast<std::size_t>(removed)] = index;
+            const std::size_t source =
+                volume.cellIndex(cell[0], cell[1], cell[2]);
+            const std::size_t target = q * slice.nx + p;
+
+            slice.pressure[target] = volume.pressure[source];
+            slice.solid[target] = volume.solid[source];
+            slice.velocityMagnitude[target] = volume.velocityMagnitude[source];
+            slice.pressureFinite[target] = volume.pressureFinite[source];
+            slice.velocityFinite[target] = volume.velocityFinite[source];
+
+            const Velocity value = volume.velocity[source];
+            const float components[3] = {value.x, value.y, value.z};
+            slice.velocity[target] = {
+                components[first],
+                components[second],
+                components[removed]
+            };
+
+            for (const std::string& name : slice.scalarNames) {
+                slice.scalars.at(name)[target] =
+                    volume.scalars.at(name)[source];
+            }
+        }
+    }
+
+    std::vector<float> pressureSamples;
+    std::vector<float> magnitudeSamples;
+    pressureSamples.reserve(sampleCount);
+    magnitudeSamples.reserve(sampleCount);
+    for (std::size_t cell = 0; cell < sampleCount; ++cell) {
+        if (slice.solid[cell] != 0) {
+            continue;
+        }
+        if (slice.pressureFinite[cell] != 0) {
+            includeValue(slice.pressureRange, slice.pressure[cell]);
+            pressureSamples.push_back(slice.pressure[cell]);
+        }
+        includeValue(slice.velocityXRange, slice.velocity[cell].x);
+        includeValue(slice.velocityYRange, slice.velocity[cell].y);
+        if (slice.velocityFinite[cell] != 0) {
+            includeValue(
+                slice.velocityMagnitudeRange, slice.velocityMagnitude[cell]);
+            magnitudeSamples.push_back(slice.velocityMagnitude[cell]);
+        }
+    }
+    slice.pressureTrimmedRange = trimmedRange(pressureSamples);
+    slice.velocityMagnitudeTrimmedRange = trimmedRange(magnitudeSamples);
+
+    for (const std::string& name : slice.scalarNames) {
+        const std::vector<float>& values = slice.scalars.at(name);
+        DataRange full;
+        std::vector<float> finite;
+        finite.reserve(values.size());
+        for (float value : values) {
+            if (!std::isfinite(value))
+                continue;
+            includeValue(full, value);
+            finite.push_back(value);
+        }
+        slice.scalarRanges[name] = full;
+        slice.scalarTrimmedRanges[name] = trimmedRange(finite);
+    }
+
+    slice.restart = volume.restart;
+    slice.warnings = volume.warnings;
+    return slice;
 }
 
 AdaptiveFrameWindow planAdaptiveFrameWindow(
@@ -772,19 +971,19 @@ VtkFrame VtkFrameParser::parse(const std::filesystem::path& path) {
     cursor.expect("DIMENSIONS");
     const int pointNx = parseInteger(cursor.take(), "DIMENSIONS nx");
     const int pointNy = parseInteger(cursor.take(), "DIMENSIONS ny");
-    const int nz = parseInteger(cursor.take(), "DIMENSIONS nz");
-    if (nz != 1) {
-        throw VtkParseError("Only two-dimensional VTK frames with nz = 1 are supported");
-    }
+    const int pointNz = parseInteger(cursor.take(), "DIMENSIONS nz");
     const std::size_t pointCount =
-        checkedGridCount(pointNx, pointNy, "POINT");
+        checkedGridCount(pointNx, pointNy, pointNz, "POINT");
 
     double originX = 0.0;
     double originY = 0.0;
+    double originZ = 0.0;
     double spacingX = 0.0;
     double spacingY = 0.0;
+    double spacingZ = 0.0;
     std::vector<double> faceX;
     std::vector<double> faceY;
+    std::vector<double> faceZ;
 
     if (rectilinear) {
         const auto axis = [&](const char* keyword,
@@ -822,8 +1021,7 @@ VtkFrame VtkFrameParser::parse(const std::filesystem::path& path) {
 
         axis("X_COORDINATES", pointNx, faceX);
         axis("Y_COORDINATES", pointNy, faceY);
-        std::vector<double> depth;
-        axis("Z_COORDINATES", nz, depth);
+        axis("Z_COORDINATES", pointNz, faceZ);
 
         const auto rising = [](const std::vector<double>& values,
                                const char* what) {
@@ -840,18 +1038,26 @@ VtkFrame VtkFrameParser::parse(const std::filesystem::path& path) {
         };
         rising(faceX, "X_COORDINATES");
         rising(faceY, "Y_COORDINATES");
+        rising(faceZ, "Z_COORDINATES");
 
         originX = faceX.front();
         originY = faceY.front();
+        originZ = faceZ.front();
         spacingX = (faceX.back() - faceX.front()) /
                    std::max<std::size_t>(1, faceX.size() - 1);
         spacingY = (faceY.back() - faceY.front()) /
                    std::max<std::size_t>(1, faceY.size() - 1);
+        spacingZ = (faceZ.back() - faceZ.front()) /
+                   std::max<std::size_t>(1, faceZ.size() - 1);
+        if (faceZ.size() < 2) {
+            faceZ.clear();
+            spacingZ = 1.0;
+        }
     } else {
         cursor.expect("ORIGIN");
         originX = parseNumber(cursor.take(), "ORIGIN x");
         originY = parseNumber(cursor.take(), "ORIGIN y");
-        const double originZ = parseNumber(cursor.take(), "ORIGIN z");
+        originZ = parseNumber(cursor.take(), "ORIGIN z");
         if (!std::isfinite(originX) ||
             !std::isfinite(originY) ||
             !std::isfinite(originZ)) {
@@ -861,14 +1067,20 @@ VtkFrame VtkFrameParser::parse(const std::filesystem::path& path) {
         cursor.expect("SPACING");
         spacingX = parseNumber(cursor.take(), "SPACING x");
         spacingY = parseNumber(cursor.take(), "SPACING y");
-        const double spacingZ = parseNumber(cursor.take(), "SPACING z");
+        spacingZ = parseNumber(cursor.take(), "SPACING z");
         if (!std::isfinite(spacingX) ||
             !std::isfinite(spacingY) ||
             !std::isfinite(spacingZ) ||
             spacingX <= 0.0 ||
-            spacingY <= 0.0) {
+            spacingY <= 0.0 ||
+            (pointNz > 1 && spacingZ <= 0.0)) {
             throw VtkParseError(
-                "SPACING x and y must be positive and all spacing values must be finite");
+                "SPACING x and y must be positive, SPACING z must be positive "
+                "on a frame more than one plane deep, and all spacing values "
+                "must be finite");
+        }
+        if (spacingZ <= 0.0) {
+            spacingZ = 1.0;
         }
     }
 
@@ -876,6 +1088,7 @@ VtkFrame VtkFrameParser::parse(const std::filesystem::path& path) {
     VtkDataAssociation association = VtkDataAssociation::Point;
     int logicalNx = pointNx;
     int logicalNy = pointNy;
+    int logicalNz = pointNz;
     std::size_t sampleCount = pointCount;
     if (associationToken == "CELL_DATA") {
         if (pointNx < 2 || pointNy < 2) {
@@ -885,8 +1098,9 @@ VtkFrame VtkFrameParser::parse(const std::filesystem::path& path) {
         association = VtkDataAssociation::Cell;
         logicalNx = pointNx - 1;
         logicalNy = pointNy - 1;
+        logicalNz = pointNz > 1 ? pointNz - 1 : 1;
         sampleCount =
-            checkedGridCount(logicalNx, logicalNy, "CELL");
+            checkedGridCount(logicalNx, logicalNy, logicalNz, "CELL");
     } else if (associationToken != "POINT_DATA") {
         throw VtkParseError(
             "Expected POINT_DATA or CELL_DATA, found '" +
@@ -909,13 +1123,17 @@ VtkFrame VtkFrameParser::parse(const std::filesystem::path& path) {
     frame.association = association;
     frame.nx = static_cast<std::size_t>(logicalNx);
     frame.ny = static_cast<std::size_t>(logicalNy);
+    frame.nz = static_cast<std::size_t>(logicalNz);
     frame.originX = originX;
     frame.originY = originY;
+    frame.originZ = originZ;
     frame.spacingX = spacingX;
     frame.spacingY = spacingY;
+    frame.spacingZ = spacingZ;
     if (rectilinear) {
         frame.faceX = std::move(faceX);
         frame.faceY = std::move(faceY);
+        frame.faceZ = std::move(faceZ);
     }
     frame.frameNumber = frameNumberFromFilename(path).value_or(-1);
 
@@ -1276,10 +1494,11 @@ VtkFrame VtkFrameParser::parse(const std::filesystem::path& path) {
             if (componentsAreFinite) {
                 const float ax = std::fabs(velocity.x);
                 const float ay = std::fabs(velocity.y);
+                const float az = std::fabs(velocity.z);
                 constexpr float safeLimit = 1.0e18f;
-                magnitude = (ax < safeLimit && ay < safeLimit)
-                    ? std::sqrt(ax * ax + ay * ay)
-                    : std::hypot(velocity.x, velocity.y);
+                magnitude = (ax < safeLimit && ay < safeLimit && az < safeLimit)
+                    ? std::sqrt(ax * ax + ay * ay + az * az)
+                    : std::hypot(velocity.x, velocity.y, velocity.z);
             }
             const bool magnitudeIsFinite = std::isfinite(magnitude);
             if (magnitudeIsFinite) {
@@ -1357,33 +1576,8 @@ VtkFrame VtkFrameParser::parse(const std::filesystem::path& path) {
             }
         }
 
-        const auto trimmed = [](std::vector<float>& values) {
-            DataRange range;
-            if (values.empty()) {
-                return range;
-            }
-            const std::size_t last = values.size() - 1u;
-            // Half a percent at each end, and never the whole thing: a frame
-            // of forty cells still has a low and a high.
-            const std::size_t low =
-                static_cast<std::size_t>(static_cast<double>(last) * 0.005);
-            const std::size_t high =
-                static_cast<std::size_t>(static_cast<double>(last) * 0.995);
-            std::nth_element(
-                values.begin(), values.begin() + low, values.end());
-            range.minimum = static_cast<double>(values[low]);
-            std::nth_element(
-                values.begin() + low, values.begin() + high, values.end());
-            range.maximum = static_cast<double>(values[high]);
-            range.available = true;
-            if (range.maximum < range.minimum) {
-                std::swap(range.minimum, range.maximum);
-            }
-            return range;
-        };
-
-        frame.pressureTrimmedRange = trimmed(pressureSamples);
-        frame.velocityMagnitudeTrimmedRange = trimmed(magnitudeSamples);
+        frame.pressureTrimmedRange = trimmedRange(pressureSamples);
+        frame.velocityMagnitudeTrimmedRange = trimmedRange(magnitudeSamples);
 
         for (const std::string& name : frame.scalarNames) {
             const std::vector<float>& values = frame.scalars.at(name);
@@ -1397,7 +1591,7 @@ VtkFrame VtkFrameParser::parse(const std::filesystem::path& path) {
                 finite.push_back(value);
             }
             frame.scalarRanges[name] = full;
-            frame.scalarTrimmedRanges[name] = trimmed(finite);
+            frame.scalarTrimmedRanges[name] = trimmedRange(finite);
         }
     }
 
@@ -1501,12 +1695,16 @@ bool sameSeriesLayout(
     return frame.association == reference.association &&
         frame.nx == reference.nx &&
         frame.ny == reference.ny &&
+        frame.nz == reference.nz &&
         frame.originX == reference.originX &&
         frame.originY == reference.originY &&
+        frame.originZ == reference.originZ &&
         frame.faceX == reference.faceX &&
         frame.faceY == reference.faceY &&
+        frame.faceZ == reference.faceZ &&
         frame.spacingX == reference.spacingX &&
         frame.spacingY == reference.spacingY &&
+        frame.spacingZ == reference.spacingZ &&
         frame.solid == reference.solid;
 }
 
@@ -1527,10 +1725,16 @@ VtkFrame layoutOf(const VtkFrame& frame) {
     layout.association = frame.association;
     layout.nx = frame.nx;
     layout.ny = frame.ny;
+    layout.nz = frame.nz;
     layout.originX = frame.originX;
     layout.originY = frame.originY;
+    layout.originZ = frame.originZ;
+    layout.faceX = frame.faceX;
+    layout.faceY = frame.faceY;
+    layout.faceZ = frame.faceZ;
     layout.spacingX = frame.spacingX;
     layout.spacingY = frame.spacingY;
+    layout.spacingZ = frame.spacingZ;
     layout.solid = frame.solid;
     return layout;
 }
@@ -1929,6 +2133,28 @@ std::size_t VtkFrame::rowAt(double y) const {
     const std::size_t index =
         static_cast<std::size_t>(found - faceY.begin());
     return index == 0 ? 0 : std::min(ny - 1, index - 1);
+}
+
+std::size_t VtkFrame::planeAt(double z) const {
+    if (nz == 0)
+        return 0;
+    if (faceZ.size() < 2) {
+        if (spacingZ <= 0.0)
+            return 0;
+        const double cell = (z - originZ) / spacingZ;
+        if (cell <= 0.0)
+            return 0;
+        const std::size_t index = static_cast<std::size_t>(cell);
+        return index >= nz ? nz - 1 : index;
+    }
+    if (z <= faceZ.front())
+        return 0;
+    if (z >= faceZ.back())
+        return nz - 1;
+    const auto found = std::upper_bound(faceZ.begin(), faceZ.end(), z);
+    const std::size_t index =
+        static_cast<std::size_t>(found - faceZ.begin());
+    return index == 0 ? 0 : std::min(nz - 1, index - 1);
 }
 
 } // namespace maskui

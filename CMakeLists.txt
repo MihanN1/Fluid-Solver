@@ -102,18 +102,24 @@ if(MSVC)
 endif()
 
 add_library(mask_ui_core STATIC
+    src/BodyRows.cpp
     src/BodyTrack.cpp
+    src/ConfigurationFile.cpp
     src/ExplorerTarget.cpp
     src/FluidSolverRun.cpp
     src/GeometryProcessor.cpp
     src/NumericInput.cpp
     src/ParameterInfo.cpp
+    src/ResultView.cpp
     src/SectionAdapter.cpp
     src/tiny_obj_loader_impl.cpp
     src/TrayIcon.cpp
     src/VtkFrame.cpp
     src/VelocityOverlay.cpp
+    src/Viewport3D.cpp
 )
+
+target_link_libraries(mask_ui_core PUBLIC SFML::Graphics)
 
 target_include_directories(mask_ui_core
     PUBLIC
@@ -319,6 +325,7 @@ if(BUILD_TESTING)
     foreach(MASK_UI_TEST
         ExplorerTargetTests
         VtkFrameTests
+        VolumeFrameTests
         FluidSolverRunTests
         NumericInputTests
         VelocityOverlayTests
@@ -326,6 +333,9 @@ if(BUILD_TESTING)
         GeometryProcessorTests
         ContinuationTests
         BodyTrackTests
+        BodyRowsTests
+        ConfigurationFileTests
+        ResultViewTests
         ParameterInfoTests
     )
         add_mask_ui_test(${MASK_UI_TEST})

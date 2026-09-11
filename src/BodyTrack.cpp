@@ -57,6 +57,46 @@ std::string trimmed(std::string text) {
     return text;
 }
 
+bool usesDepth(const std::vector<BodyPose>& track) {
+    for (const BodyPose& pose : track)
+        if (pose.z != 0.0)
+            return true;
+    return false;
+}
+
+BodyPose neighbourPose(const std::vector<BodyPose>& track,
+                       std::ptrdiff_t index,
+                       bool closed) {
+    const std::ptrdiff_t last =
+        static_cast<std::ptrdiff_t>(track.size()) - 1;
+    if (index >= 0 && index <= last)
+        return track[static_cast<std::size_t>(index)];
+    const BodyPose& edge = index < 0 ? track.front() : track.back();
+    const BodyPose& inward =
+        index < 0 ? track[1] : track[static_cast<std::size_t>(last - 1)];
+    BodyPose outer = edge;
+    outer.x = 2.0 * edge.x - inward.x;
+    outer.y = 2.0 * edge.y - inward.y;
+    outer.z = 2.0 * edge.z - inward.z;
+    outer.rot = 2.0 * edge.rot - inward.rot;
+    if (closed && last >= 2) {
+        const BodyPose& across =
+            index < 0 ? track[static_cast<std::size_t>(last - 1)] : track[1];
+        outer.x = across.x;
+        outer.y = across.y;
+        outer.z = across.z;
+    }
+    return outer;
+}
+
+double catmullRom(double p0, double p1, double p2, double p3, double t) {
+    const double t2 = t * t;
+    const double t3 = t2 * t;
+    return 0.5 * ((2.0 * p1) + (-p0 + p2) * t +
+                  (2.0 * p0 - 5.0 * p1 + 4.0 * p2 - p3) * t2 +
+                  (-p0 + 3.0 * p1 - 3.0 * p2 + p3) * t3);
+}
+
 } // namespace
 
 std::vector<BodyPose> parseBodyTrack(const std::string& entry) {
@@ -75,6 +115,7 @@ std::vector<BodyPose> parseBodyTrack(const std::string& entry) {
         pose.time = numberValue(block, "t", 0.0);
         pose.x = numberValue(block, "x", 0.0);
         pose.y = numberValue(block, "y", 0.0);
+        pose.z = numberValue(block, "z", 0.0);
         pose.rot = numberValue(block, "rot", 0.0);
         const std::string interp = itemValue(block, "interp");
         const std::string ease = itemValue(block, "ease");
@@ -97,6 +138,7 @@ std::string formatBodyTrack(const std::vector<BodyPose>& track) {
     out << std::setprecision(std::numeric_limits<double>::max_digits10);
     for (const BodyPose& pose : track)
         out << "@t=" << pose.time << ",x=" << pose.x << ",y=" << pose.y
+            << ",z=" << pose.z
             << ",rot=" << pose.rot << ",interp=" << pose.interp
             << ",ease=" << pose.ease;
     return out.str();
@@ -106,6 +148,7 @@ std::string bodyTrackToMotion(const std::vector<BodyPose>& track) {
     if (track.size() < 2)
         return std::string();
 
+    const bool spatial = usesDepth(track);
     std::ostringstream out;
     out << std::setprecision(9);
     bool wrote = false;
@@ -122,12 +165,15 @@ std::string bodyTrackToMotion(const std::vector<BodyPose>& track) {
         if (from.interp != "linear")
             out << ",interp=" << from.interp << ",ease=" << from.ease;
         out << ",vx=" << (to.x - from.x) / span
-            << ",vy=" << (to.y - from.y) / span
-            << ",omega=" << (to.rot - from.rot) / span;
+            << ",vy=" << (to.y - from.y) / span;
+        if (spatial)
+            out << ",vz=" << (to.z - from.z) / span;
+        out << ",omega=" << (to.rot - from.rot) / span;
     }
     if (!wrote)
         return std::string();
-    out << ",@" << track.back().time << ",vx=0,vy=0,omega=0";
+    out << ",@" << track.back().time << ",vx=0,vy=0"
+        << (spatial ? ",vz=0" : "") << ",omega=0";
     return out.str();
 }
 
@@ -155,12 +201,139 @@ BodyPose bodyPoseAt(const std::vector<BodyPose>& track, double when) {
         current.time = when;
         current.x += (track[k + 1].x - track[k].x) * t;
         current.y += (track[k + 1].y - track[k].y) * t;
+        current.z += (track[k + 1].z - track[k].z) * t;
         current.rot += (track[k + 1].rot - track[k].rot) * t;
         return current;
     }
     current = track.back();
     current.time = when;
     return current;
+}
+
+bool bodyTrackIsClosed(const std::vector<BodyPose>& track) {
+    if (track.size() < 3)
+        return false;
+    const BodyPose& first = track.front();
+    const BodyPose& last = track.back();
+    double span = 0.0;
+    for (const BodyPose& pose : track)
+        span = std::max(span,
+                        std::fabs(pose.x - first.x) +
+                            std::fabs(pose.y - first.y) +
+                            std::fabs(pose.z - first.z));
+    const double tolerance = std::max(1e-9, span * 1e-6);
+    return std::fabs(last.x - first.x) <= tolerance &&
+           std::fabs(last.y - first.y) <= tolerance &&
+           std::fabs(last.z - first.z) <= tolerance;
+}
+
+BodyPose bodyPoseOnCurve(const std::vector<BodyPose>& track, double when) {
+    if (track.size() < 3)
+        return bodyPoseAt(track, when);
+    BodyPose current;
+    current.time = when;
+    if (when <= track.front().time) {
+        current = track.front();
+        current.time = when;
+        return current;
+    }
+    if (when >= track.back().time) {
+        current = track.back();
+        current.time = when;
+        return current;
+    }
+    const bool closed = bodyTrackIsClosed(track);
+    for (std::size_t k = 0; k + 1 < track.size(); ++k) {
+        if (when < track[k].time || when > track[k + 1].time)
+            continue;
+        const double span = track[k + 1].time - track[k].time;
+        const double t = span > 1e-12 ? (when - track[k].time) / span : 0.0;
+        const BodyPose before = neighbourPose(
+            track, static_cast<std::ptrdiff_t>(k) - 1, closed);
+        const BodyPose after = neighbourPose(
+            track, static_cast<std::ptrdiff_t>(k) + 2, closed);
+        current = track[k];
+        current.time = when;
+        current.x = catmullRom(before.x, track[k].x, track[k + 1].x, after.x, t);
+        current.y = catmullRom(before.y, track[k].y, track[k + 1].y, after.y, t);
+        current.z = catmullRom(before.z, track[k].z, track[k + 1].z, after.z, t);
+        current.rot =
+            catmullRom(before.rot, track[k].rot, track[k + 1].rot, after.rot, t);
+        return current;
+    }
+    current = track.back();
+    current.time = when;
+    return current;
+}
+
+double bodyCurveLength(const std::vector<BodyPose>& track,
+                       int samplesPerLeg) {
+    if (track.size() < 2)
+        return 0.0;
+    const int steps = std::max(1, samplesPerLeg);
+    double length = 0.0;
+    BodyPose previous = bodyPoseOnCurve(track, track.front().time);
+    for (std::size_t k = 0; k + 1 < track.size(); ++k) {
+        const double span = track[k + 1].time - track[k].time;
+        if (!(span > 0.0))
+            continue;
+        for (int step = 1; step <= steps; ++step) {
+            const BodyPose sample = bodyPoseOnCurve(
+                track,
+                track[k].time + span * static_cast<double>(step) / steps);
+            const double dx = sample.x - previous.x;
+            const double dy = sample.y - previous.y;
+            const double dz = sample.z - previous.z;
+            length += std::sqrt(dx * dx + dy * dy + dz * dz);
+            previous = sample;
+        }
+    }
+    return length;
+}
+
+std::string bodyCurveToMotion(const std::vector<BodyPose>& track,
+                              int stepsPerLeg) {
+    if (track.size() < 2)
+        return std::string();
+    if (track.size() == 2)
+        return bodyTrackToMotion(track);
+
+    const int steps = std::max(1, stepsPerLeg);
+    const bool spatial = usesDepth(track);
+    std::ostringstream out;
+    out << std::setprecision(9);
+    bool wrote = false;
+    BodyPose previous = bodyPoseOnCurve(track, track.front().time);
+    for (std::size_t k = 0; k + 1 < track.size(); ++k) {
+        const double span = track[k + 1].time - track[k].time;
+        if (!(span > 1e-9))
+            continue;
+        for (int step = 1; step <= steps; ++step) {
+            const double when =
+                track[k].time + span * static_cast<double>(step) / steps;
+            const BodyPose sample = bodyPoseOnCurve(track, when);
+            const double leg = when - previous.time;
+            if (!(leg > 1e-12)) {
+                previous = sample;
+                continue;
+            }
+            if (wrote)
+                out << ',';
+            wrote = true;
+            out << '@' << previous.time << ",interp=constant"
+                << ",vx=" << (sample.x - previous.x) / leg
+                << ",vy=" << (sample.y - previous.y) / leg;
+            if (spatial)
+                out << ",vz=" << (sample.z - previous.z) / leg;
+            out << ",omega=" << (sample.rot - previous.rot) / leg;
+            previous = sample;
+        }
+    }
+    if (!wrote)
+        return std::string();
+    out << ",@" << track.back().time << ",interp=constant,vx=0,vy=0"
+        << (spatial ? ",vz=0" : "") << ",omega=0";
+    return out.str();
 }
 
 void dropBodyPose(std::vector<BodyPose>& track, const BodyPose& pose) {

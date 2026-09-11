@@ -3,11 +3,15 @@
 #include "ExplorerTarget.hpp"
 #include "FluidSolverRun.hpp"
 #include "NumericInput.hpp"
+#include "BodyRows.hpp"
 #include "BodyTrack.hpp"
+#include "ConfigurationFile.hpp"
 #include "GeometryProcessor.hpp"
 #include "ParameterInfo.hpp"
+#include "ResultView.hpp"
 #include "SectionAdapter.hpp"
 #include "TrayIcon.hpp"
+#include "Viewport3D.hpp"
 #include "VtkFrame.hpp"
 #include "VelocityOverlay.hpp"
 
@@ -70,8 +74,11 @@ namespace maskui {
 namespace {
 
 constexpr float LEFT_PANEL_WIDTH = 330.0f;
-constexpr float PARAMETER_TOP = 156.0f;
-constexpr float PARAMETER_STRIP_TOP = 104.0f;
+constexpr float HEADER_HEIGHT = 44.0f;
+constexpr float OUTLINER_TOP = 52.0f;
+constexpr float OUTLINER_HEIGHT = 162.0f;
+constexpr float PARAMETER_TOP = 274.0f;
+constexpr float PARAMETER_STRIP_TOP = 222.0f;
 constexpr float PARAMETER_STRIP_HEIGHT = 28.0f;
 constexpr float PARAMETER_BOTTOM_MARGIN = 126.0f;
 constexpr float PARAMETER_ROW_HEIGHT = 44.0f;
@@ -84,20 +91,22 @@ constexpr std::size_t DECODED_FRAME_CACHE_BYTES = 1024ull * 1024ull * 1024ull;
 // which is why flipping past the sixth step always hit the disk again.
 constexpr std::size_t MAX_ADAPTIVE_RESIDENT_FRAMES = 256;
 
-const sf::Color BACKGROUND{5, 7, 6};
-const sf::Color PANEL{13, 15, 14};
-const sf::Color VIEW_BACKGROUND{4, 6, 5};
-const sf::Color TEXT{222, 225, 223};
-const sf::Color MUTED{128, 135, 131};
+const sf::Color BACKGROUND{24, 24, 24};
+const sf::Color PANEL{40, 40, 40};
+const sf::Color HEADER{31, 31, 31};
+const sf::Color VIEW_BACKGROUND{30, 30, 30};
+const sf::Color TEXT{224, 224, 224};
+const sf::Color MUTED{150, 150, 150};
 const sf::Color ACCENT{68, 214, 44};
-const sf::Color ACCENT_DARK{32, 112, 28};
-const sf::Color SOLID_COLOR{35, 38, 36};
-const sf::Color CONTROL_BACKGROUND{9, 11, 10};
-const sf::Color CONTROL_RAIL{48, 54, 50};
-const sf::Color BUTTON_DISABLED{34, 37, 35};
-const sf::Color BUTTON_BACKGROUND{28, 33, 30};
-const sf::Color BORDER{55, 63, 58};
-const sf::Color OVERLAY_BACKGROUND{8, 10, 9, 245};
+const sf::Color ACCENT_DARK{40, 96, 32};
+const sf::Color SOLID_COLOR{58, 58, 58};
+const sf::Color CONTROL_BACKGROUND{30, 30, 30};
+const sf::Color CONTROL_RAIL{72, 72, 72};
+const sf::Color BUTTON_DISABLED{45, 45, 45};
+const sf::Color BUTTON_BACKGROUND{56, 56, 56};
+const sf::Color BUTTON_HOVER{72, 72, 72};
+const sf::Color BORDER{64, 64, 64};
+const sf::Color OVERLAY_BACKGROUND{35, 35, 35, 245};
 const sf::Color SECTION_PLANE{68, 214, 44, 14};
 const sf::Color SECTION_PLANE_OUTLINE{86, 220, 62, 190};
 const sf::Color INVALID_COLOR{255, 0, 180};
@@ -154,13 +163,6 @@ sf::Text makeText(
     text.setPosition(position);
     text.setFillColor(color);
     return text;
-}
-
-void drawPanel(sf::RenderTarget& target, const sf::FloatRect& bounds) {
-    sf::RectangleShape panel(bounds.size);
-    panel.setPosition(bounds.position);
-    panel.setFillColor(PANEL);
-    target.draw(panel);
 }
 
 void drawThickLine(
@@ -460,7 +462,9 @@ struct Button {
         return enabled && bounds.contains(point);
     }
 
-    void draw(sf::RenderTarget& target, const sf::Font& font) const {
+    void draw(sf::RenderTarget& target,
+              const sf::Font& font,
+              sf::Vector2f cursor = {-1.0f, -1.0f}) const {
         sf::RectangleShape rectangle(bounds.size);
         rectangle.setPosition(bounds.position);
         rectangle.setFillColor(
@@ -468,12 +472,20 @@ struct Button {
                 ? BUTTON_DISABLED
                 : selected
                       ? ACCENT_DARK
-                      : BUTTON_BACKGROUND);
-        rectangle.setOutlineColor(selected ? ACCENT : BORDER);
-        rectangle.setOutlineThickness(1.0f);
+                      : bounds.contains(cursor)
+                            ? BUTTON_HOVER
+                            : BUTTON_BACKGROUND);
         target.draw(rectangle);
+        if (selected) {
+            sf::RectangleShape mark({bounds.size.x, 2.0f});
+            mark.setPosition(
+                {bounds.position.x,
+                 bounds.position.y + bounds.size.y - 2.0f});
+            mark.setFillColor(ACCENT);
+            target.draw(mark);
+        }
 
-        sf::Text text = makeText(font, label, 14, {0.0f, 0.0f});
+        sf::Text text = makeText(font, label, 13, {0.0f, 0.0f});
         const sf::FloatRect textBounds = text.getLocalBounds();
         text.setPosition({
             bounds.position.x +
@@ -839,6 +851,43 @@ enum class ResultQuantity {
     Scalar
 };
 
+enum ViewControl : std::size_t {
+    ControlFrameAll,
+    ControlOrtho,
+    ControlBox,
+    ControlGrid,
+    ControlSolid,
+    ControlWire,
+    ControlSliceX,
+    ControlSliceY,
+    ControlSliceZ,
+    ControlIso,
+    ControlVortices,
+    ControlStreamlines,
+    ControlTracers,
+    ControlColour,
+    ControlFront,
+    ControlBack,
+    ControlLeft,
+    ControlRight,
+    ControlTop,
+    ControlBottom,
+    ControlAxisX,
+    ControlAxisY,
+    ControlAxisZ,
+    ViewControlCount
+};
+
+enum ViewTrackIndex : std::size_t {
+    TrackSliceX,
+    TrackSliceY,
+    TrackSliceZ,
+    TrackIso,
+    TrackVortex,
+    TrackSlice2D,
+    ViewTrackCount
+};
+
 enum class ResultOrigin {
     FluidSolverRun,
     ContinuedFluidSolverRun,
@@ -889,55 +938,6 @@ Vec3 cross(const Vec3& first, const Vec3& second) {
 double length(const Vec3& value) {
     return std::sqrt(
         value.x * value.x + value.y * value.y + value.z * value.z);
-}
-
-sf::Color scalarColor(double value, double minimum, double maximum) {
-    if (!std::isfinite(value)) {
-        return INVALID_COLOR;
-    }
-    double normalized = 0.5;
-    if (maximum > minimum) {
-        normalized = std::clamp(
-            (value - minimum) / (maximum - minimum),
-            0.0,
-            1.0);
-    }
-
-    struct Stop {
-        double position;
-        sf::Color color;
-    };
-    const std::array<Stop, 5> stops{{
-        {0.00, {91, 33, 182}},
-        {0.25, {38, 92, 214}},
-        {0.50, {34, 201, 173}},
-        {0.75, {247, 177, 48}},
-        {1.00, {220, 43, 43}}
-    }};
-
-    for (std::size_t index = 1; index < stops.size(); ++index) {
-        if (normalized <= stops[index].position) {
-            const Stop& first = stops[index - 1];
-            const Stop& second = stops[index];
-            const double local =
-                (normalized - first.position) /
-                (second.position - first.position);
-            const auto interpolate = [local](std::uint8_t a, std::uint8_t b) {
-                return static_cast<std::uint8_t>(
-                    std::lround(
-                        static_cast<double>(a) +
-                        local *
-                            (static_cast<double>(b) -
-                             static_cast<double>(a))));
-            };
-            return {
-                interpolate(first.color.r, second.color.r),
-                interpolate(first.color.g, second.color.g),
-                interpolate(first.color.b, second.color.b)
-            };
-        }
-    }
-    return stops.back().color;
 }
 
 #ifdef _WIN32
@@ -1166,6 +1166,7 @@ std::filesystem::path chooseOutputFolder(
 std::filesystem::path chooseUiConfigFile(
     sf::WindowHandle owner,
     bool save,
+    const std::filesystem::path& fallback,
     std::string& error) {
 #ifdef _WIN32
     std::array<wchar_t, 32768> filename{};
@@ -1202,12 +1203,23 @@ std::filesystem::path chooseUiConfigFile(
         error = "Windows configuration file dialog failed with error " +
             std::to_string(dialogError) + ".";
     }
+    (void)fallback;
+    return {};
 #else
     (void)owner;
-    (void)save;
-    error = "Configuration file dialogs are implemented for Windows only.";
+    if (fallback.empty()) {
+        error = "There is no file dialog here and no default path to use.";
+        return {};
+    }
+    std::error_code fileError;
+    if (!save && (!std::filesystem::is_regular_file(fallback, fileError) ||
+                  fileError)) {
+        error = "There is no file dialog here, so the configuration is read "
+                "from " + fallback.string() + ", and that file is not there.";
+        return {};
+    }
+    return fallback;
 #endif
-    return {};
 }
 
 std::vector<std::filesystem::path> chooseVtkFiles(
@@ -1486,6 +1498,7 @@ struct SolverExecutableInfo {
     bool supportsCase = false;
     bool supportsPhases = false;
     bool supportsTension = false;
+    bool supportsVolume = false;
     std::string version = "unknown";
     std::string features;
     std::string build = "Unknown build";
@@ -1677,6 +1690,7 @@ SolverExecutableInfo inspectSolverExecutable(
     info.supportsCase = binaryContains(executable, "caseType");
     info.supportsPhases = binaryContains(executable, "vofScheme");
     info.supportsTension = binaryContains(executable, "surfaceTension");
+    info.supportsVolume = binaryContains(executable, "gravityTilt");
     info.supportsContinuation =
         info.version != "unknown" &&
         compareSolverVersions(info.version, "0.1.1") >= 0;
@@ -1792,6 +1806,7 @@ public:
               Slider{"Start level", "", 0.0, 1.0, 0.5, false, false},
               Slider{"Start x", "", 0.0, 1.0, 0.5, false, false},
               Slider{"Start y", "", 0.0, 1.0, 0.5, false, false},
+              Slider{"Start z", "", 0.0, 1.0, 0.5, false, false},
               Slider{"Interface scheme", "", 0.0, 2.0, 1.0, true, false, false, 0.0,
                      ControlKind::Choice, {"upwind", "hric", "cicsam"}},
               Slider{"Mixing", "", 0.0, 1.0, 0.0, true, false, false, 0.0,
@@ -1804,6 +1819,7 @@ public:
               Slider{"Gravity", "", 0.0, 1.0, 0.0, true, false, true},
               Slider{"Gravity g", "m/s2", 0.0, 100.0, 9.81, false, false},
               Slider{"Gravity angle", "deg", -180.0, 180.0, 0.0, false, false},
+              Slider{"Gravity tilt", "deg", -180.0, 180.0, 0.0, false, false},
               Slider{"Gravity mode", "", 0.0, 1.0, 0.0, true, false, false, 0.0,
                      ControlKind::Choice, {"reduced", "body"}},
               Slider{"Regime", "", 0.0, 1.0, 0.0, true, false, false, 0.0,
@@ -1849,6 +1865,7 @@ public:
               Slider{"Turbulence intensity", "", 0.0, 1.0, 0.05, false, false},
               Slider{"Turbulence length", "m", 0.0, 100.0, 0.0, false, false},
               Slider{"Slice X", "deg", -180.0, 180.0, 90.0, true, false},
+              Slider{"Slice Y", "deg", -180.0, 180.0, 0.0, true, false},
               Slider{"Slice Z", "deg", -180.0, 180.0, 90.0, true, false},
               Slider{"Slice rotation", "deg", -180.0, 180.0, 0.0, false, false},
               Slider{"Extra profiles", "", 0.0, 1.0, 0.0, false, false, false, 0.0,
@@ -1864,14 +1881,23 @@ public:
                      ControlKind::Choice, {"inlet", "outlet", "wall", "movingWall", "slip"}},
               Slider{"Top boundary", "", 0.0, 4.0, 4.0, true, false, false, 0.0,
                      ControlKind::Choice, {"inlet", "outlet", "wall", "movingWall", "slip"}},
+              Slider{"Front boundary", "", 0.0, 4.0, 4.0, true, false, false, 0.0,
+                     ControlKind::Choice, {"inlet", "outlet", "wall", "movingWall", "slip"}},
+              Slider{"Back boundary", "", 0.0, 4.0, 4.0, true, false, false, 0.0,
+                     ControlKind::Choice, {"inlet", "outlet", "wall", "movingWall", "slip"}},
               Slider{"Left side speed", "m/s", -200.0, 200.0, 0.0, false, false},
               Slider{"Right side speed", "m/s", -200.0, 200.0, 0.0, false, false},
               Slider{"Bottom side speed", "m/s", -200.0, 200.0, 0.0, false, false},
               Slider{"Top side speed", "m/s", -200.0, 200.0, 0.0, false, false},
+              Slider{"Front side speed", "m/s", -200.0, 200.0, 0.0, false, false},
+              Slider{"Back side speed", "m/s", -200.0, 200.0, 0.0, false, false},
               Slider{"Inlet band from", "", 0.0, 1.0, 0.0, false, false},
               Slider{"Inlet band to", "", 0.0, 1.0, 1.0, false, false},
-              Slider{"Inlet profile", "", 0.0, 1.0, 0.0, true, false, false, 0.0,
-                     ControlKind::Choice, {"uniform", "parabolic"}},
+              Slider{"Inlet span from", "", 0.0, 1.0, 0.0, false, false},
+              Slider{"Inlet span to", "", 0.0, 1.0, 1.0, false, false},
+              Slider{"Inlet profile", "", 0.0, 2.0, 0.0, true, false, false, 0.0,
+                     ControlKind::Choice,
+                     {"uniform", "parabolic", "parabolicSpan"}},
               Slider{"Wall motion", "", 0.0, 1.0, 0.0, false, false, false, 0.0,
                      ControlKind::Text},
               Slider{"Body", "", 1.0, 32.0, 1.0, true, false},
@@ -1879,21 +1905,34 @@ public:
                      ControlKind::Choice,
                      {"static", "drag", "slip", "travel", "free"}},
               Slider{"Surface spin", "deg/s", -3600.0, 3600.0, 0.0, false, false},
+              Slider{"Surface roll X", "deg/s", -3600.0, 3600.0, 0.0, false, false},
+              Slider{"Surface roll Y", "deg/s", -3600.0, 3600.0, 0.0, false, false},
               Slider{"Surface slide X", "m/s", -200.0, 200.0, 0.0, false, false},
               Slider{"Surface slide Y", "m/s", -200.0, 200.0, 0.0, false, false},
+              Slider{"Surface slide Z", "m/s", -200.0, 200.0, 0.0, false, false},
               Slider{"Body velocity X", "m/s", -200.0, 200.0, 0.0, false, false},
               Slider{"Body velocity Y", "m/s", -200.0, 200.0, 0.0, false, false},
+              Slider{"Body velocity Z", "m/s", -200.0, 200.0, 0.0, false, false},
               Slider{"Body spin", "deg/s", -3600.0, 3600.0, 0.0, false, false},
+              Slider{"Body roll X", "deg/s", -3600.0, 3600.0, 0.0, false, false},
+              Slider{"Body roll Y", "deg/s", -3600.0, 3600.0, 0.0, false, false},
               Slider{"Body mass", "kg/m", 0.0, 100000.0, 0.0, false, false},
               Slider{"Body density", "kg/m3", 0.0, 25000.0, 0.0, false, false},
+              Slider{"Body inertia X", "kg m2", 0.0, 100000.0, 0.0, false, false},
+              Slider{"Body inertia Y", "kg m2", 0.0, 100000.0, 0.0, false, false},
               Slider{"Pinned", "", 0.0, 7.0, 0.0, true, false, false, 0.0,
                      ControlKind::Choice,
                      {"nothing", "x", "y", "x+y", "spin", "x+spin",
                       "y+spin", "everything"}},
+              Slider{"Pin z", "", 0.0, 1.0, 0.0, true, false, true},
+              Slider{"Pin roll X", "", 0.0, 1.0, 0.0, true, false, true},
+              Slider{"Pin roll Y", "", 0.0, 1.0, 0.0, true, false, true},
               Slider{"Body motion", "", 0.0, 1.0, 0.0, false, false, false, 0.0,
                      ControlKind::Text},
               Slider{"Body track", "", 0.0, 1.0, 0.0, false, false, false, 0.0,
                      ControlKind::Text},
+              Slider{"Body path", "", 0.0, 1.0, 0.0, true, false, false, 0.0,
+                     ControlKind::Choice, {"curve", "keys"}},
               Slider{"Coupling", "", 0.0, 2.0, 1.0, true, false, false, 0.0,
                      ControlKind::Choice, {"weak", "added", "strong"}},
               Slider{"Collisions", "", 0.0, 1.0, 0.0, true, false, true},
@@ -1901,8 +1940,10 @@ public:
               Slider{"Report forces", "", 0.0, 1.0, 0.0, true, false, true},
               Slider{"Domain Lx", "m", 0.01, 100.0, 1.0, false, true},
               Slider{"Domain Ly", "m", 0.01, 100.0, 1.0, false, true},
+              Slider{"Domain Lz", "m", 0.01, 100.0, 1.0, false, true},
               Slider{"Cells nx", "", 8.0, 5000.0, 50.0, true, true},
               Slider{"Cells ny", "", 8.0, 5000.0, 50.0, true, true},
+              Slider{"Cells nz", "", 1.0, 1024.0, 1.0, true, true},
               Slider{"CFL", "", 0.01, 1.0, 0.5, false, false},
               Slider{"Total time", "s", 0.001, 10000.0, 10.0, false, true},
               Slider{"Stop when steady", "", 0.0, 0.001, 0.0, false, false},
@@ -2028,7 +2069,9 @@ public:
             return solverProcess_.active ||
                    resultCatalogFuture_.valid() ||
                    !inFlightFrames_.empty() ||
-                   playingFrames_;
+                   playingFrames_ ||
+                   (mode_ == DisplayMode::Results && view3D_ &&
+                    view3DSettings_.animateTracers);
         };
 
         sf::Clock frameClock;
@@ -2091,11 +2134,13 @@ public:
             }
 
             window.clear(BACKGROUND);
+            drawAreas();
             if (mode_ == DisplayMode::Setup) {
                 drawSetup();
             } else {
                 drawResults();
             }
+            drawProperties();
             drawTopTabs();
             drawLoadingIndicator();
             drawStatus();
@@ -2129,6 +2174,7 @@ private:
         signature += sliders_[MicrophoneLine].text.empty() ? "|-" : "|m";
         signature += sliders_[MicAudio].value >= 0.5 ? "|w" : "|-";
         signature += "|" + sliders_[CaseKind].choice();
+        signature += volumeRun() ? "|v" : "|-";
         if (signature == visibilitySignature_)
             return;
         visibilitySignature_ = signature;
@@ -2155,22 +2201,30 @@ private:
         layoutSize_ = size;
         const float width = static_cast<float>(size.x);
         const float height = static_cast<float>(size.y);
-        setupTab_.bounds = {{12.0f, 10.0f}, {96.0f, 34.0f}};
-        resultsTab_.bounds = {{114.0f, 10.0f}, {96.0f, 34.0f}};
-        openVtkButton_.bounds = {{216.0f, 10.0f}, {176.0f, 34.0f}};
-        stopSimulationButton_.bounds = {{400.0f, 10.0f}, {132.0f, 34.0f}};
-        revealVtkButton_.bounds = {{540.0f, 10.0f}, {190.0f, 34.0f}};
-        solverExeButton_.bounds = {{738.0f, 10.0f}, {196.0f, 34.0f}};
-        importButton_.bounds = {{18.0f, 60.0f}, {143.0f, 34.0f}};
-        outputFolderButton_.bounds = {{169.0f, 60.0f}, {143.0f, 34.0f}};
+        panelX_ = std::max(360.0f, width - LEFT_PANEL_WIDTH);
+        {
+            float x = 12.0f;
+            const auto place = [&](Button& button, float w) {
+                button.bounds = {{x, 6.0f}, {w, 32.0f}};
+                x += w + 4.0f;
+            };
+            place(setupTab_, 80.0f);
+            place(resultsTab_, 80.0f);
+            place(openVtkButton_, 130.0f);
+            place(stopSimulationButton_, 128.0f);
+            place(revealVtkButton_, 150.0f);
+            place(solverExeButton_, 124.0f);
+            place(importButton_, 132.0f);
+            place(outputFolderButton_, 124.0f);
+        }
         resetDefaultsButton_.bounds = {
-            {18.0f, height - 106.0f}, {92.0f, 34.0f}};
+            {panelX_ + 18.0f, height - 106.0f}, {92.0f, 34.0f}};
         saveConfigButton_.bounds = {
-            {118.0f, height - 106.0f}, {92.0f, 34.0f}};
+            {panelX_ + 118.0f, height - 106.0f}, {92.0f, 34.0f}};
         loadConfigButton_.bounds = {
-            {218.0f, height - 106.0f}, {94.0f, 34.0f}};
+            {panelX_ + 218.0f, height - 106.0f}, {94.0f, 34.0f}};
         generateButton_.bounds = {
-            {18.0f, height - 62.0f},
+            {panelX_ + 18.0f, height - 62.0f},
             {294.0f, 38.0f}
         };
 
@@ -2179,7 +2233,7 @@ private:
             const float span =
                 (294.0f - gap * (PARAMETER_TABS.size() - 1)) /
                 PARAMETER_TABS.size();
-            float x = 18.0f;
+            float x = panelX_ + 18.0f;
             for (std::size_t index = 0; index < tabButtons_.size(); ++index) {
                 tabButtons_[index].label = PARAMETER_TABS[index].label;
                 tabButtons_[index].bounds = {
@@ -2231,7 +2285,8 @@ private:
         groupHeaderY_.fill(-100000.0f);
         for (std::size_t index = 0; index < sliders_.size(); ++index) {
             if (rowHidden_[index]) {
-                sliders_[index].track = {{20.0f, -100000.0f}, {278.0f, 5.0f}};
+                sliders_[index].track =
+                    {{panelX_ + 20.0f, -100000.0f}, {278.0f, 5.0f}};
                 continue;
             }
             const std::size_t g = groupOf(index);
@@ -2239,15 +2294,16 @@ private:
                 cursor += PARAMETER_GROUP_HEIGHT;
                 groupHeaderY_[g] = cursor - 47.0f;
             }
-            sliders_[index].track = {{20.0f, cursor}, {278.0f, 5.0f}};
+            sliders_[index].track = {{panelX_ + 20.0f, cursor}, {278.0f, 5.0f}};
             cursor += PARAMETER_ROW_HEIGHT;
         }
 
+        const float timelineTop = height - 108.0f;
         setupViewport_ = {
-            {LEFT_PANEL_WIDTH + 10.0f, 58.0f},
+            {12.0f, HEADER_HEIGHT + 8.0f},
             {
-                std::max(320.0f, width - LEFT_PANEL_WIDTH - 28.0f),
-                std::max(300.0f, height - 100.0f)
+                std::max(320.0f, panelX_ - 24.0f),
+                std::max(300.0f, timelineTop - HEADER_HEIGHT - 16.0f)
             }
         };
 
@@ -2286,39 +2342,124 @@ private:
             placeLayout(layoutClearButton_, 66.0f);
         }
 
-        pressureButton_.bounds = {{20.0f, 72.0f}, {126.0f, 36.0f}};
-        velocityButton_.bounds = {{154.0f, 72.0f}, {126.0f, 36.0f}};
-        fieldButton_.bounds = {{288.0f, 72.0f}, {156.0f, 36.0f}};
-        vectorButton_.bounds = {{452.0f, 72.0f}, {144.0f, 36.0f}};
-        rangeButton_.bounds = {{604.0f, 72.0f}, {144.0f, 36.0f}};
-        playbackButton_.bounds = {{756.0f, 72.0f}, {110.0f, 36.0f}};
-        runDetailsButton_.bounds = {{874.0f, 72.0f}, {130.0f, 36.0f}};
-        continueRunButton_.bounds = {{1012.0f, 72.0f}, {166.0f, 36.0f}};
-        resultViewport_ = {
-            {20.0f, 122.0f},
-            {
-                std::max(320.0f, width - 170.0f),
-                std::max(260.0f, height - 220.0f)
-            }
-        };
+        layoutResultBar(timelineTop);
+        playbackButton_.bounds = {{32.0f, height - 96.0f}, {84.0f, 26.0f}};
+        rebuildOutliner();
         legendBounds_ = {
-            {width - 128.0f, 150.0f},
-            {34.0f, std::max(180.0f, height - 330.0f)}
+            {panelX_ - 94.0f, resultViewport_.position.y + 28.0f},
+            {34.0f, std::max(120.0f, resultViewport_.size.y - 96.0f)}
         };
+        const float trackSpan = std::max(320.0f, panelX_ - 176.0f);
         zoomTrack_ = {
-            {resultViewport_.position.x + 90.0f, height - 70.0f},
-            {std::max(160.0f, resultViewport_.size.x * 0.36f), 5.0f}
-        };
+            {144.0f, view3D_ ? -100000.0f : height - 44.0f},
+            {trackSpan * 0.3f, 5.0f}};
         frameTrack_ = {
-            {
-                resultViewport_.position.x +
-                    resultViewport_.size.x * 0.55f,
-                height - 70.0f
-            },
-            {std::max(160.0f, resultViewport_.size.x * 0.35f), 5.0f}
+            {144.0f + trackSpan * 0.42f, height - 44.0f},
+            {trackSpan * 0.58f, 5.0f}
         };
 
         syncControlState();
+    }
+
+    bool viewportShowsVolume() const {
+        return activeFrame_ && activeFrame_->volumetric();
+    }
+
+    void layoutResultBar(float timelineTop) {
+        const float right = panelX_ - 12.0f;
+        float x = 20.0f;
+        float y = HEADER_HEIGHT + 8.0f;
+        const auto place = [&](Button& button, float w) {
+            if (x > 20.0f && x + w > right) {
+                x = 20.0f;
+                y += 34.0f;
+            }
+            button.bounds = {{x, y}, {w, 30.0f}};
+            x += w + 4.0f;
+        };
+        const auto newRow = [&]() {
+            if (x > 20.0f) {
+                x = 20.0f;
+                y += 34.0f;
+            }
+        };
+        place(pressureButton_, 104.0f);
+        place(velocityButton_, 104.0f);
+        place(fieldButton_, 146.0f);
+        place(vectorButton_, 114.0f);
+        place(rangeButton_, 132.0f);
+        place(runDetailsButton_, 110.0f);
+        place(continueRunButton_, 128.0f);
+        place(recoverSetupButton_, 130.0f);
+        place(viewModeButton_, 92.0f);
+        for (Button& control : viewControls_) {
+            control.bounds = {{0.0f, -100000.0f}, {1.0f, 1.0f}};
+            control.enabled = false;
+        }
+        for (sf::FloatRect& track : viewTracks_) {
+            track = {{0.0f, -100000.0f}, {1.0f, 1.0f}};
+        }
+        const auto placeTrack = [&](std::size_t index) {
+            if (x > 20.0f && x + 152.0f > right) {
+                x = 20.0f;
+                y += 40.0f;
+            }
+            viewTracks_[index] = {{x, y + 24.0f}, {140.0f, 5.0f}};
+            x += 152.0f;
+        };
+        const auto enable = [&](std::size_t index, float w) {
+            viewControls_[index].enabled = true;
+            place(viewControls_[index], w);
+        };
+        if (view3D_ && activeFrame_) {
+            newRow();
+            enable(ControlFrameAll, 88.0f);
+            enable(ControlOrtho, 82.0f);
+            enable(ControlBox, 62.0f);
+            enable(ControlGrid, 62.0f);
+            enable(ControlSolid, 70.0f);
+            enable(ControlWire, 70.0f);
+            enable(ControlSliceX, 74.0f);
+            enable(ControlSliceY, 74.0f);
+            enable(ControlSliceZ, 74.0f);
+            enable(ControlIso, 66.0f);
+            enable(ControlVortices, 96.0f);
+            enable(ControlStreamlines, 96.0f);
+            enable(ControlTracers, 90.0f);
+            enable(ControlColour, 148.0f);
+            newRow();
+            enable(ControlFront, 68.0f);
+            enable(ControlBack, 68.0f);
+            enable(ControlLeft, 68.0f);
+            enable(ControlRight, 68.0f);
+            enable(ControlTop, 68.0f);
+            enable(ControlBottom, 74.0f);
+            newRow();
+            if (view3DSettings_.sliceX)
+                placeTrack(TrackSliceX);
+            if (view3DSettings_.sliceY)
+                placeTrack(TrackSliceY);
+            if (view3DSettings_.sliceZ)
+                placeTrack(TrackSliceZ);
+            if (view3DSettings_.showIsosurface)
+                placeTrack(TrackIso);
+            if (view3DSettings_.showVortices)
+                placeTrack(TrackVortex);
+        } else if (viewportShowsVolume()) {
+            newRow();
+            enable(ControlAxisX, 74.0f);
+            enable(ControlAxisY, 74.0f);
+            enable(ControlAxisZ, 74.0f);
+            placeTrack(TrackSlice2D);
+        }
+        resultBarBottom_ = y + 36.0f;
+        resultViewport_ = {
+            {20.0f, resultBarBottom_},
+            {
+                std::max(320.0f, panelX_ - 40.0f),
+                std::max(200.0f, timelineTop - resultBarBottom_ - 8.0f)
+            }
+        };
     }
 
     void syncControlState() {
@@ -2380,6 +2521,44 @@ private:
             solverInfo_.valid && solverInfo_.recognized &&
             solverInfo_.supportsContinuation &&
             !solverProcess_.active && !loadingResults;
+        recoverSetupButton_.enabled =
+            activeFrame_ != nullptr && activeFrame_->restart.hasConfigText &&
+            !solverProcess_.active && !loadingResults;
+        viewModeButton_.enabled = activeFrame_ != nullptr;
+        viewModeButton_.label = view3D_ ? "View: 3D" : "View: 2D";
+        viewModeButton_.selected = view3D_;
+        const auto toggle = [this](std::size_t control, const char* label,
+                                   bool on) {
+            viewControls_[control].label = label;
+            viewControls_[control].selected = on;
+        };
+        toggle(ControlFrameAll, "Frame all", false);
+        toggle(ControlOrtho, "Ortho",
+               viewport3D_.camera().orthographic);
+        toggle(ControlBox, "Box", view3DSettings_.showBox);
+        toggle(ControlGrid, "Grid", view3DSettings_.showGrid);
+        toggle(ControlSolid, "Solid", view3DSettings_.showSolid);
+        toggle(ControlWire, "Wire", view3DSettings_.wireframeSolid);
+        toggle(ControlSliceX, "Slice X", view3DSettings_.sliceX);
+        toggle(ControlSliceY, "Slice Y", view3DSettings_.sliceY);
+        toggle(ControlSliceZ, "Slice Z", view3DSettings_.sliceZ);
+        toggle(ControlIso, "Iso", view3DSettings_.showIsosurface);
+        toggle(ControlVortices, "Vortices", view3DSettings_.showVortices);
+        toggle(ControlStreamlines, "Streams",
+               view3DSettings_.showStreamlines);
+        toggle(ControlTracers, "Tracers", view3DSettings_.animateTracers);
+        viewControls_[ControlColour].label =
+            std::string("Colour: ") + volumeFieldName(view3DSettings_.colourBy);
+        viewControls_[ControlColour].selected = false;
+        toggle(ControlFront, "Front", false);
+        toggle(ControlBack, "Back", false);
+        toggle(ControlLeft, "Left", false);
+        toggle(ControlRight, "Right", false);
+        toggle(ControlTop, "Top", false);
+        toggle(ControlBottom, "Bottom", false);
+        toggle(ControlAxisX, "Axis X", sliceAxis_ == SliceAxis::X);
+        toggle(ControlAxisY, "Axis Y", sliceAxis_ == SliceAxis::Y);
+        toggle(ControlAxisZ, "Axis Z", sliceAxis_ == SliceAxis::Z);
     }
 
     void handleEvent(const sf::Event& event) {
@@ -2440,7 +2619,8 @@ private:
             }
         }
 
-        if (const auto* key = event.getIf<sf::Event::KeyPressed>()) {
+        if (const auto* key = event.getIf<sf::Event::KeyPressed>();
+            key != nullptr && !searchActive_) {
             if (mode_ == DisplayMode::Setup && layoutMode_) {
                 if (handleLayoutKeyPressed(*key))
                     return;
@@ -2479,7 +2659,6 @@ private:
         if (button == sf::Mouse::Button::Left &&
             editingSlider_.has_value()) {
             const bool insideEditor =
-                mode_ == DisplayMode::Setup &&
                 sliders_[*editingSlider_].valueHit(position);
             if (!insideEditor && !commitSliderEdit()) {
                 return;
@@ -2517,11 +2696,155 @@ private:
             return;
         }
 
+        if (button == sf::Mouse::Button::Left &&
+            importButton_.hit(position)) {
+            importGeometry();
+            return;
+        }
+        if (button == sf::Mouse::Button::Left &&
+            outputFolderButton_.hit(position)) {
+            selectOutputFolder();
+            return;
+        }
+        if (button == sf::Mouse::Button::Left &&
+            handleOutlinerClick(position)) {
+            return;
+        }
+        if (handlePropertiesMousePressed(button, position)) {
+            return;
+        }
         if (mode_ == DisplayMode::Setup) {
             handleSetupMousePressed(button, position);
         } else {
             handleResultsMousePressed(button, position);
         }
+    }
+
+    bool handlePropertiesMousePressed(
+        sf::Mouse::Button button,
+        sf::Vector2f position) {
+        if (button == sf::Mouse::Button::Left &&
+            resetDefaultsButton_.hit(position)) {
+            resetDefaults();
+            return true;
+        }
+        if (button == sf::Mouse::Button::Left &&
+            saveConfigButton_.hit(position)) {
+            saveConfiguration();
+            return true;
+        }
+        if (button == sf::Mouse::Button::Left &&
+            loadConfigButton_.hit(position)) {
+            loadConfiguration();
+            return true;
+        }
+        if (button == sf::Mouse::Button::Left && !searchActive_ &&
+            searchQuery_.empty()) {
+            for (std::size_t index = 0; index < tabButtons_.size(); ++index) {
+                if (!tabButtons_[index].hit(position))
+                    continue;
+                activeTab_ = index;
+                parameterScrollOffset_ = 0.0f;
+                updateLayout(layoutSize_);
+                return true;
+            }
+        }
+        if (button == sf::Mouse::Button::Left &&
+            (searchActive_ || !searchQuery_.empty())) {
+            const sf::FloatRect field{{panelX_ + 18.0f, PARAMETER_STRIP_TOP},
+                                      {294.0f, PARAMETER_STRIP_HEIGHT}};
+            if (field.contains(position)) {
+                if (searchActive_)
+                    closeSearch(true);
+                else
+                    openSearch();
+                return true;
+            }
+        }
+        if (button == sf::Mouse::Button::Left &&
+            maxParameterScroll_ > 0.0f) {
+            const sf::FloatRect thumb = parameterScrollbarThumb();
+            sf::FloatRect hit = parameterScrollbarRail();
+            hit.position.x -= 5.0f;
+            hit.size.x += 10.0f;
+            if (hit.contains(position)) {
+                draggingParameterScrollbar_ = true;
+                if (thumb.contains(position)) {
+                    parameterScrollbarGrabOffset_ =
+                        position.y - thumb.position.y;
+                } else {
+                    parameterScrollbarGrabOffset_ =
+                        thumb.size.y * 0.5f;
+                    setParameterScrollFromThumb(
+                        position.y - parameterScrollbarGrabOffset_);
+                }
+                return true;
+            }
+        }
+        if (button == sf::Mouse::Button::Left &&
+            generateButton_.hit(position)) {
+            generateAndRun();
+            return true;
+        }
+        if (button == sf::Mouse::Button::Left) {
+            for (std::size_t index = 0; index < sliders_.size(); ++index) {
+                if (!parameterRowOnScreen(index)) {
+                    continue;
+                }
+                if (sliders_[index].integer && !sliders_[index].boolean &&
+                    sliders_[index].stepMinusBounds().contains(position)) {
+                    focusedSlider_ = index;
+                    pushUndo();
+                    sliders_[index].value = std::max(sliders_[index].minimum, sliders_[index].value - 1.0);
+                    invalidSlider_.reset();
+                    if (index == CacheMegabytes) {
+                        applyCacheBudget();
+                        savePreferences();
+                    }
+                    return true;
+                }
+                if (sliders_[index].integer && !sliders_[index].boolean &&
+                    sliders_[index].stepPlusBounds().contains(position)) {
+                    focusedSlider_ = index;
+                    pushUndo();
+                    sliders_[index].value = std::min(sliders_[index].maximum, sliders_[index].value + 1.0);
+                    invalidSlider_.reset();
+                    if (index == CacheMegabytes) {
+                        applyCacheBudget();
+                        savePreferences();
+                    }
+                    return true;
+                }
+                if (sliders_[index].valueHit(position)) {
+                    handleSliderValueClick(index);
+                    return true;
+                }
+            }
+        }
+        if (button == sf::Mouse::Button::Left) {
+            for (std::size_t index = 0; index < sliders_.size(); ++index) {
+                if (!parameterRowOnScreen(index)) {
+                    continue;
+                }
+                if (sliders_[index].hit(position)) {
+                    focusedSlider_ = index;
+                    pushUndo();
+                    if (index == UseCuda && !solverInfo_.cudaCapable) {
+                        status_ =
+                            "CUDA is unavailable in the selected CPU-only "
+                            "Fluid Solver build.";
+                        sliders_[UseCuda].value = 0.0;
+                        return true;
+                    }
+                    activeSlider_ = index;
+                    sliders_[index].dragging = true;
+                    sliders_[index].setFromX(position.x);
+                    return true;
+                }
+            }
+        }
+
+        return false;
     }
 
     void handleSetupMousePressed(
@@ -2543,137 +2866,6 @@ private:
             return;
         if (!layoutMode_ && handlePaintMousePressed(button, position))
             return;
-        if (button == sf::Mouse::Button::Left &&
-            importButton_.hit(position)) {
-            importGeometry();
-            return;
-        }
-        if (button == sf::Mouse::Button::Left &&
-            outputFolderButton_.hit(position)) {
-            selectOutputFolder();
-            return;
-        }
-        if (button == sf::Mouse::Button::Left &&
-            resetDefaultsButton_.hit(position)) {
-            resetDefaults();
-            return;
-        }
-        if (button == sf::Mouse::Button::Left &&
-            saveConfigButton_.hit(position)) {
-            saveConfiguration();
-            return;
-        }
-        if (button == sf::Mouse::Button::Left &&
-            loadConfigButton_.hit(position)) {
-            loadConfiguration();
-            return;
-        }
-        if (button == sf::Mouse::Button::Left && !searchActive_ &&
-            searchQuery_.empty()) {
-            for (std::size_t index = 0; index < tabButtons_.size(); ++index) {
-                if (!tabButtons_[index].hit(position))
-                    continue;
-                activeTab_ = index;
-                parameterScrollOffset_ = 0.0f;
-                updateLayout(layoutSize_);
-                return;
-            }
-        }
-        if (button == sf::Mouse::Button::Left &&
-            (searchActive_ || !searchQuery_.empty())) {
-            const sf::FloatRect field{{18.0f, PARAMETER_STRIP_TOP},
-                                      {294.0f, PARAMETER_STRIP_HEIGHT}};
-            if (field.contains(position)) {
-                if (searchActive_)
-                    closeSearch(true);
-                else
-                    openSearch();
-                return;
-            }
-        }
-        if (button == sf::Mouse::Button::Left &&
-            maxParameterScroll_ > 0.0f) {
-            const sf::FloatRect thumb = parameterScrollbarThumb();
-            sf::FloatRect hit = parameterScrollbarRail();
-            hit.position.x -= 5.0f;
-            hit.size.x += 10.0f;
-            if (hit.contains(position)) {
-                draggingParameterScrollbar_ = true;
-                if (thumb.contains(position)) {
-                    parameterScrollbarGrabOffset_ =
-                        position.y - thumb.position.y;
-                } else {
-                    parameterScrollbarGrabOffset_ =
-                        thumb.size.y * 0.5f;
-                    setParameterScrollFromThumb(
-                        position.y - parameterScrollbarGrabOffset_);
-                }
-                return;
-            }
-        }
-        if (button == sf::Mouse::Button::Left &&
-            generateButton_.hit(position)) {
-            generateAndRun();
-            return;
-        }
-        if (button == sf::Mouse::Button::Left) {
-            for (std::size_t index = 0; index < sliders_.size(); ++index) {
-                if (!parameterRowOnScreen(index)) {
-                    continue;
-                }
-                if (sliders_[index].integer && !sliders_[index].boolean &&
-                    sliders_[index].stepMinusBounds().contains(position)) {
-                    focusedSlider_ = index;
-                    pushUndo();
-                    sliders_[index].value = std::max(sliders_[index].minimum, sliders_[index].value - 1.0);
-                    invalidSlider_.reset();
-                    if (index == CacheMegabytes) {
-                        applyCacheBudget();
-                        savePreferences();
-                    }
-                    return;
-                }
-                if (sliders_[index].integer && !sliders_[index].boolean &&
-                    sliders_[index].stepPlusBounds().contains(position)) {
-                    focusedSlider_ = index;
-                    pushUndo();
-                    sliders_[index].value = std::min(sliders_[index].maximum, sliders_[index].value + 1.0);
-                    invalidSlider_.reset();
-                    if (index == CacheMegabytes) {
-                        applyCacheBudget();
-                        savePreferences();
-                    }
-                    return;
-                }
-                if (sliders_[index].valueHit(position)) {
-                    handleSliderValueClick(index);
-                    return;
-                }
-            }
-        }
-        if (button == sf::Mouse::Button::Left) {
-            for (std::size_t index = 0; index < sliders_.size(); ++index) {
-                if (!parameterRowOnScreen(index)) {
-                    continue;
-                }
-                if (sliders_[index].hit(position)) {
-                    focusedSlider_ = index;
-                    pushUndo();
-                    if (index == UseCuda && !solverInfo_.cudaCapable) {
-                        status_ =
-                            "CUDA is unavailable in the selected CPU-only "
-                            "Fluid Solver build.";
-                        sliders_[UseCuda].value = 0.0;
-                        return;
-                    }
-                    activeSlider_ = index;
-                    sliders_[index].dragging = true;
-                    sliders_[index].setFromX(position.x);
-                    return;
-                }
-            }
-        }
-
         const sf::FloatRect invertBox = invertBounds();
         if (button == sf::Mouse::Button::Left &&
             invertBox.contains(position)) {
@@ -2708,8 +2900,43 @@ private:
     void handleResultsMousePressed(
         sf::Mouse::Button button,
         sf::Vector2f position) {
+        if (button == sf::Mouse::Button::Middle) {
+            if (view3D_ && resultViewport_.contains(position)) {
+                panning3D_ = true;
+            }
+            return;
+        }
         if (button != sf::Mouse::Button::Left) {
             return;
+        }
+        if (recoverSetupButton_.hit(position)) {
+            loadConfigurationFromFrame();
+            return;
+        }
+        if (viewModeButton_.hit(position)) {
+            setViewMode(!view3D_);
+            return;
+        }
+        for (std::size_t control = 0; control < viewControls_.size();
+             ++control) {
+            if (viewControls_[control].hit(position)) {
+                handleViewControl(control);
+                return;
+            }
+        }
+        for (std::size_t track = 0; track < viewTracks_.size(); ++track) {
+            const sf::FloatRect& rail = viewTracks_[track];
+            if (rail.position.y < 0.0f) {
+                continue;
+            }
+            const sf::FloatRect hit{
+                {rail.position.x - 8.0f, rail.position.y - 12.0f},
+                {rail.size.x + 16.0f, 29.0f}};
+            if (hit.contains(position)) {
+                draggingViewTrack_ = track;
+                setViewTrackFromX(track, position.x);
+                return;
+            }
         }
         if (pressureButton_.hit(position)) {
             resultQuantity_ = ResultQuantity::Pressure;
@@ -2794,6 +3021,11 @@ private:
             return;
         }
         if (resultViewport_.contains(position)) {
+            if (view3D_) {
+                orbiting3D_ = true;
+                orbitMoved_ = false;
+                return;
+            }
             panningResults_ = true;
         }
     }
@@ -2801,6 +3033,54 @@ private:
     bool handleResultsKeyPressed(const sf::Event::KeyPressed& key) {
         if (frames_.empty()) {
             return false;
+        }
+        if (key.code == sf::Keyboard::Key::V) {
+            setViewMode(!view3D_);
+            return true;
+        }
+        if (view3D_) {
+            switch (key.code) {
+            case sf::Keyboard::Key::F:
+                viewport3D_.frameAll();
+                status_ = "Framed the whole volume.";
+                return true;
+            case sf::Keyboard::Key::Numpad1:
+                viewport3D_.setView(2, key.control);
+                return true;
+            case sf::Keyboard::Key::Numpad3:
+                viewport3D_.setView(0, key.control);
+                return true;
+            case sf::Keyboard::Key::Numpad7:
+                viewport3D_.setView(1, key.control);
+                return true;
+            case sf::Keyboard::Key::Numpad5:
+                viewport3D_.camera().orthographic =
+                    !viewport3D_.camera().orthographic;
+                return true;
+            default:
+                break;
+            }
+        } else if (sliceCache_.slicing()) {
+            if (key.code == sf::Keyboard::Key::Up) {
+                stepSlice(1);
+                return true;
+            }
+            if (key.code == sf::Keyboard::Key::Down) {
+                stepSlice(-1);
+                return true;
+            }
+            if (key.code == sf::Keyboard::Key::X) {
+                setSlicePlane(SliceAxis::X, sliceIndex_);
+                return true;
+            }
+            if (key.code == sf::Keyboard::Key::Y) {
+                setSlicePlane(SliceAxis::Y, sliceIndex_);
+                return true;
+            }
+            if (key.code == sf::Keyboard::Key::Z) {
+                setSlicePlane(SliceAxis::Z, sliceIndex_);
+                return true;
+            }
         }
         const std::size_t current = desiredFrame_.value_or(selectedFrame_);
         if (key.code == sf::Keyboard::Key::Left) {
@@ -2833,6 +3113,16 @@ private:
     }
 
     void handleMouseReleased(sf::Mouse::Button button) {
+        if (button == sf::Mouse::Button::Left && orbiting3D_ &&
+            !orbitMoved_ && activeFrame_) {
+            applyPickSelection(
+                viewport3D_.pickAt(
+                    resultViewport_, lastMouse_.x, lastMouse_.y));
+        }
+        if (button == sf::Mouse::Button::Middle) {
+            panning3D_ = false;
+            return;
+        }
         if (button == sf::Mouse::Button::Left ||
             button == sf::Mouse::Button::Right) {
             endDragging();
@@ -2842,6 +3132,27 @@ private:
     void handleMouseMoved(sf::Vector2f position) {
         const sf::Vector2f delta = position - lastMouse_;
         lastMouse_ = position;
+        if (orbiting3D_) {
+            if (delta.x != 0.0f || delta.y != 0.0f) {
+                orbitMoved_ = true;
+            }
+            viewport3D_.orbit(delta.x, delta.y);
+            return;
+        }
+        if (panning3D_) {
+            viewport3D_.pan(delta.x, delta.y);
+            return;
+        }
+        if (draggingViewTrack_.has_value()) {
+            setViewTrackFromX(*draggingViewTrack_, position.x);
+            return;
+        }
+        if (mode_ == DisplayMode::Results && view3D_ && activeFrame_) {
+            pickText_ = resultViewport_.contains(position)
+                ? pickDescription(viewport3D_.pickAt(
+                      resultViewport_, position.x, position.y))
+                : std::string();
+        }
         if (layoutDragging_) {
             dragLayoutSelection(delta);
         } else if (layoutRotating_) {
@@ -2894,6 +3205,15 @@ private:
     }
 
     void handleWheel(sf::Vector2f position, float delta) {
+        if (outlinerBounds().contains(position)) {
+            const float rows =
+                static_cast<float>(outlinerRows_.size()) * 17.0f;
+            outlinerScroll_ = clampFloat(
+                outlinerScroll_ - delta * 17.0f,
+                0.0f,
+                std::max(0.0f, rows - (OUTLINER_HEIGHT - 28.0f)));
+            return;
+        }
         if (mode_ == DisplayMode::Setup &&
             parameterViewport().contains(position)) {
             parameterScrollOffset_ = clampFloat(
@@ -2921,11 +3241,20 @@ private:
         if (mode_ == DisplayMode::Results &&
             resultViewport_.contains(position) &&
             !frames_.empty()) {
-            zoomResultsAt(position, std::pow(1.15f, delta));
+            if (view3D_) {
+                viewport3D_.zoom(delta);
+                return;
+            }
+            if (sliceCache_.view()) {
+                zoomResultsAt(position, std::pow(1.15f, delta));
+            }
         }
     }
 
     void endDragging() {
+        orbiting3D_ = false;
+        panning3D_ = false;
+        draggingViewTrack_.reset();
         paintStroke_ = false;
         layoutDragging_ = false;
         layoutRotating_ = false;
@@ -3103,6 +3432,10 @@ private:
                 const std::size_t next = (selectedFrame_ + 1) % frames_.size();
                 requestSelectedFrame(next);
             }
+        }
+        if (mode_ == DisplayMode::Results && view3D_ &&
+            view3DSettings_.animateTracers) {
+            viewport3D_.advance(elapsed);
         }
         if (window_->hasFocus()) {
             const double rotationSpeed = 70.0 * elapsed;
@@ -3441,7 +3774,7 @@ private:
         const float bottom =
             std::max(PARAMETER_TOP + 40.0f, height - PARAMETER_BOTTOM_MARGIN);
         return {
-            {0.0f, PARAMETER_TOP},
+            {panelX_, PARAMETER_TOP},
             {LEFT_PANEL_WIDTH, bottom - PARAMETER_TOP}
         };
     }
@@ -3450,10 +3783,24 @@ private:
         return sliders_[RegimeKind].choice() == "compressible";
     }
 
+    bool volumeRun() const {
+        return std::lround(sliders_[CellsZ].value) > 1 ||
+               (activeFrame_ && activeFrame_->volumetric());
+    }
+
     void refreshRowVisibility() {
         rowHidden_.fill(false);
         const bool gas = compressibleOn();
         const bool two = sliders_[Phases].value >= 1.5;
+        const bool volume = volumeRun();
+
+        const std::size_t volumeOnly[] = {
+            PhaseSpotZ, GravityTilt, SliceY, BcFront, BcBack, BcFrontSpeed,
+            BcBackSpeed, InletFrom2, InletTo2, BodyRotationX, BodyRotationY,
+            BodySlideZ, BodyVelocityZ, BodySpinX, BodySpinY, BodyInertiaX,
+            BodyInertiaY, BodyPinZ, BodyPinRotX, BodyPinRotY};
+        for (std::size_t index : volumeOnly)
+            rowHidden_[index] = !volume;
 
         const std::size_t incompressibleOnly[] = {
             Viscosity, Density, Density1, Viscosity1, Density2, Viscosity2,
@@ -3503,6 +3850,10 @@ private:
         } else {
             rowHidden_[LidSpeed] =
                 sliders_[CaseKind].choice() != "cavity";
+        }
+        if (!solverInfo_.supportsVolume) {
+            rowHidden_[DomainZ] = true;
+            rowHidden_[CellsZ] = true;
         }
     }
 
@@ -3558,6 +3909,7 @@ private:
         parameters.ny =
             static_cast<int>(std::lround(sliders_[CellsY].value));
         parameters.sliceAngleX = sliders_[SliceX].value;
+        parameters.sliceAngleY = sliders_[SliceY].value;
         parameters.sliceAngleZ = sliders_[SliceZ].value;
         parameters.sliceRotation = sliders_[SliceRotation].value;
         parameters.invertSection = invertSection_;
@@ -3569,8 +3921,11 @@ private:
         const MaskParameters parameters = sectionParameters();
         config.Lx = parameters.Lx;
         config.Ly = parameters.Ly;
+        config.Lz = sliders_[DomainZ].value;
         config.nx = parameters.nx;
         config.ny = parameters.ny;
+        config.nz = static_cast<int>(std::lround(sliders_[CellsZ].value));
+        config.supportsVolume = solverInfo_.supportsVolume;
         config.U0 = sliders_[WindSpeed].value;
         config.nu = sliders_[Viscosity].value;
         config.ro = sliders_[Density].value;
@@ -3595,6 +3950,7 @@ private:
                 ? std::filesystem::path("empty")
                 : geometry_.sourcePath();
         config.sliceAngleX = parameters.sliceAngleX;
+        config.sliceAngleY = parameters.sliceAngleY;
         config.sliceAngleZ = parameters.sliceAngleZ;
         config.sliceRotation = parameters.sliceRotation;
         config.invertSection = parameters.invertSection;
@@ -3616,6 +3972,7 @@ private:
         config.gravityEnabled = sliders_[GravityEnabled].value >= 0.5;
         config.gravityAccel = sliders_[GravityAccel].value;
         config.gravityAngle = sliders_[GravityAngle].value;
+        config.gravityTilt = sliders_[GravityTilt].value;
 
         config.supportsWallMotion = solverInfo_.supportsWallMotion;
         config.wallMotion = sliders_[WallMotionLine].text;
@@ -3685,6 +4042,7 @@ private:
         config.phaseLevel = sliders_[PhaseLevel].value;
         config.phaseX = sliders_[PhaseSpotX].value;
         config.phaseY = sliders_[PhaseSpotY].value;
+        config.phaseZ = sliders_[PhaseSpotZ].value;
         config.vofScheme = sliders_[VofSchemeKind].choice();
         config.supportsTension = solverInfo_.supportsTension;
         config.mixing = sliders_[MixingKindRow].choice();
@@ -3700,24 +4058,26 @@ private:
         config.steadyTolerance = sliders_[SteadyTolerance].value;
 
         config.supportsBoundaries = solverInfo_.supportsBoundaries;
-        static constexpr ParameterIndex kSideKind[4] = {
-            BcLeft, BcRight, BcBottom, BcTop};
-        static constexpr ParameterIndex kSideSpeed[4] = {
-            BcLeftSpeed, BcRightSpeed, BcBottomSpeed, BcTopSpeed};
-        for (int side = 0; side < 4; ++side) {
-            config.boundaryKind[side] = sliders_[kSideKind[side]].choice();
-            config.boundarySpeed[side] = sliders_[kSideSpeed[side]].value;
+        for (int side = 0; side < 6; ++side) {
+            config.boundaryKind[side] =
+                sliders_[boundaryKindRow(side)].choice();
+            config.boundarySpeed[side] =
+                sliders_[boundarySpeedRow(side)].value;
         }
         config.inletFrom = sliders_[InletFrom].value;
         config.inletTo = sliders_[InletTo].value;
+        config.inletFrom2 = sliders_[InletFrom2].value;
+        config.inletTo2 = sliders_[InletTo2].value;
         config.inletProfile = sliders_[InletProfileKind].choice();
         return config;
     }
 
     std::optional<std::size_t> sliderForValidationError(
         const std::string& error) const {
-        const std::array<std::pair<const char*, ParameterIndex>, 44> mappings{{
-            {"Lx", DomainX}, {"Ly", DomainY}, {"nx", CellsX}, {"ny", CellsY},
+        const std::array<std::pair<const char*, ParameterIndex>, 51> mappings{{
+            {"Lx", DomainX}, {"Ly", DomainY}, {"Lz", DomainZ},
+            {"nx * ny * nz", CellsZ},
+            {"nx", CellsX}, {"ny", CellsY}, {"nz", CellsZ},
             {"U0", WindSpeed}, {"nu", Viscosity}, {"ro", Density},
             {"CFL", Cfl}, {"totalTime", TotalTime},
             {"dtUpdateInterval", DtUpdateInterval}, {"dtSafety", DtSafety},
@@ -3739,7 +4099,9 @@ private:
             {"micAudio", MicAudio}, {"micAudioRate", MicAudioRate},
             {"micAudioSpeed", MicAudioSpeed},
             {"bodyMotion", BodyMotionLine}, {"bodyCoupling", BodyCouplingKind},
-            {"bodyRestitution", BodyRestitution}
+            {"bodyRestitution", BodyRestitution},
+            {"gravityTilt", GravityTilt}, {"sliceAngleY", SliceY},
+            {"inletFrom2", InletFrom2}, {"inletTo2", InletTo2}
         }};
         for (const auto& mapping : mappings) {
             if (error.rfind(mapping.first, 0) == 0) {
@@ -3776,8 +4138,10 @@ private:
         // "continue this run" could only ever work by accident.
         assignDouble("Lx", DomainX);
         assignDouble("Ly", DomainY);
+        assignDouble("Lz", DomainZ);
         assignDouble("nx", CellsX);
         assignDouble("ny", CellsY);
+        assignDouble("nz", CellsZ);
         assignDouble("U0", WindSpeed);
         assignDouble("nu", Viscosity);
         assignDouble("ro", Density);
@@ -3836,6 +4200,10 @@ private:
         }
     }
 
+    std::filesystem::path defaultConfigurationFile() const {
+        return executablePath_.parent_path() / "configuration.cfdui";
+    }
+
     void applyCacheBudget() {
         const double megabytes = std::clamp(
             sliders_[CacheMegabytes].value, 32.0, 16384.0);
@@ -3862,6 +4230,8 @@ private:
             const std::string value = line.substr(separator + 1);
             if (key == "outputRoot" && !value.empty()) {
                 outputRoot_ = std::filesystem::u8path(value);
+            } else if (key == "resultView3D") {
+                view3D_ = value == "1";
             } else if (key == "uiCacheMB") {
                 try {
                     const double parsed = std::stod(value);
@@ -3881,8 +4251,142 @@ private:
             return;
         }
         output << "outputRoot=" << outputRoot_.u8string() << '\n';
+        output << "resultView3D=" << (view3D_ ? 1 : 0) << '\n';
         output << "uiCacheMB=" <<
             editableNumber(sliders_[CacheMegabytes].value, true) << '\n';
+    }
+
+    std::string configurationValue(std::size_t index) const {
+        const Slider& slider = sliders_[index];
+        if (slider.kind == ControlKind::Text)
+            return slider.text;
+        if (slider.kind == ControlKind::Choice)
+            return slider.choice();
+        std::ostringstream out;
+        out << std::setprecision(
+            std::numeric_limits<double>::max_digits10);
+        out << (index == SurfaceTension ? slider.value * 1e-3 : slider.value);
+        return out.str();
+    }
+
+    std::array<std::string, ParameterCount> configurationValues() const {
+        std::array<std::string, ParameterCount> values;
+        for (std::size_t index = 0; index < sliders_.size(); ++index)
+            values[index] = configurationValue(index);
+        return values;
+    }
+
+    std::vector<std::pair<std::string, std::string>>
+    configurationExtras() const {
+        return {
+            {"model", geometry_.sourcePath().u8string()},
+            {"outputRoot", outputRoot_.u8string()},
+            {"solver", fluidSolverExecutable_.u8string()},
+            {"invertSection", invertSection_ ? "1" : "0"}
+        };
+    }
+
+    std::string configurationText() const {
+        return formatConfiguration(
+            configurationValues(), configurationExtras());
+    }
+
+    bool applyConfigurationRow(std::size_t index,
+                               const std::string& value,
+                               std::string& error) {
+        Slider& slider = sliders_[index];
+        if (slider.kind == ControlKind::Text) {
+            if (value.find_first_of("\r\n") != std::string::npos) {
+                error = "has to stay on one line";
+                return false;
+            }
+            slider.text = value;
+            return true;
+        }
+        if (slider.kind == ControlKind::Choice)
+            return slider.setFromText(value, error);
+        try {
+            std::size_t consumed = 0;
+            const double parsed = std::stod(value, &consumed);
+            if (consumed != value.size() || !std::isfinite(parsed)) {
+                error = "does not carry a number";
+                return false;
+            }
+            slider.value =
+                index == SurfaceTension ? parsed * 1e3 : parsed;
+            return true;
+        } catch (const std::exception&) {
+            error = "does not carry a number";
+            return false;
+        }
+    }
+
+    std::string applyConfigurationDocument(
+        const ConfigurationDocument& document,
+        bool withPaths) {
+        const bool millinewtons = document.format == "CFDMaskUI-1";
+        std::size_t applied = 0;
+        std::vector<std::string> refused;
+        for (std::size_t index = 0; index < sliders_.size(); ++index) {
+            if (!document.present[index])
+                continue;
+            std::string error;
+            if (!applyConfigurationRow(index, document.values[index], error)) {
+                refused.push_back(
+                    std::string(parameterKey(index)) + " " + error);
+                continue;
+            }
+            if (millinewtons && index == SurfaceTension)
+                sliders_[index].value *= 1e-3;
+            ++applied;
+        }
+        for (const auto& extra : document.extras)
+            if (extra.first == "invertSection")
+                invertSection_ = extra.second == "1";
+        if (withPaths) {
+            const std::string root = document.extra("outputRoot");
+            if (!root.empty())
+                outputRoot_ = std::filesystem::u8path(root);
+            const std::string chosen = document.extra("solver");
+            if (!chosen.empty()) {
+                const std::filesystem::path solver =
+                    std::filesystem::u8path(chosen);
+                const SolverExecutableInfo info =
+                    inspectSolverExecutable(solver);
+                if (info.valid && info.recognized) {
+                    fluidSolverExecutable_ = solver;
+                    solverInfo_ = info;
+                }
+            }
+            const std::string model = document.extra("model");
+            if (!model.empty()) {
+                const std::filesystem::path file =
+                    std::filesystem::u8path(model);
+                std::error_code fileError;
+                if (std::filesystem::is_regular_file(file, fileError) &&
+                    !fileError)
+                    loadGeometry(file);
+            }
+        }
+        invalidSlider_.reset();
+        loadBodyRows();
+        updateLayout(layoutSize_);
+
+        std::string report = std::to_string(applied) + " setting(s) applied";
+        if (!document.ignored.empty())
+            report += ", " + std::to_string(document.ignored.size()) +
+                " the panel does not carry (" + document.ignored.front() +
+                (document.ignored.size() > 1 ? ", ..." : "") + ")";
+        if (!refused.empty())
+            report += ", refused " + refused.front() +
+                (refused.size() > 1
+                     ? " and " + std::to_string(refused.size() - 1) + " more"
+                     : "");
+        if (!document.unknown.empty())
+            report += ", " + std::to_string(document.unknown.size()) +
+                " unrecognised key(s) ignored (" + document.unknown.front() +
+                (document.unknown.size() > 1 ? ", ..." : "") + ")";
+        return report + ".";
     }
 
     bool writeConfigurationFile(
@@ -3894,24 +4398,7 @@ private:
                 path.string();
             return false;
         }
-        output << "format=CFDMaskUI-1\n";
-        output << "model=" << geometry_.sourcePath().u8string() << '\n';
-        output << "outputRoot=" << outputRoot_.u8string() << '\n';
-        output << "solver=" << fluidSolverExecutable_.u8string() << '\n';
-        output << "invertSection=" << (invertSection_ ? 1 : 0) << '\n';
-        output << std::setprecision(
-            std::numeric_limits<double>::max_digits10);
-        for (std::size_t index = 0; index < sliders_.size(); ++index) {
-            const Slider& slider = sliders_[index];
-            output << parameterKey(index) << '=';
-            if (slider.kind == ControlKind::Text)
-                output << slider.text;
-            else if (slider.kind == ControlKind::Choice)
-                output << slider.choice();
-            else
-                output << slider.value;
-            output << '\n';
-        }
+        output << configurationText();
         output.flush();
         if (!output) {
             error = "Failed while writing configuration file: " +
@@ -3921,121 +4408,125 @@ private:
         return true;
     }
 
+    std::string configurationTextOfFrame(
+        const std::filesystem::path& path,
+        std::string& error) const {
+        try {
+            const VtkFrame frame = VtkFrameParser::parse(path);
+            if (!frame.restart.hasConfigText) {
+                error = "That frame carries no configText, so there is "
+                        "nothing in it to recover the settings from.";
+                return std::string();
+            }
+            std::string text;
+            for (const auto& entry : frame.restart.config)
+                text += entry.first + "=" + entry.second + "\n";
+            return text;
+        } catch (const std::exception& exception) {
+            error = std::string("Cannot read that frame: ") + exception.what();
+            return std::string();
+        }
+    }
+
     bool readConfigurationFile(
         const std::filesystem::path& path,
         std::string& error) {
-        std::ifstream input(path, std::ios::binary);
-        if (!input.is_open()) {
-            error = "Cannot open configuration file: " + path.string();
-            return false;
-        }
-        std::unordered_map<std::string, std::string> values;
-        std::string line;
-        while (std::getline(input, line)) {
-            if (!line.empty() && line.back() == '\r') {
-                line.pop_back();
-            }
-            const std::size_t separator = line.find('=');
-            if (separator != std::string::npos) {
-                values[line.substr(0, separator)] = line.substr(separator + 1);
-            }
-        }
-        if (values["format"] != "CFDMaskUI-1") {
-            error = "Unsupported UI configuration format.";
-            return false;
-        }
-        for (std::size_t index = 0; index < sliders_.size(); ++index) {
-            const auto found = values.find(parameterKey(index));
-            if (found == values.end()) {
-                continue;
-            }
-            Slider& slider = sliders_[index];
-            if (slider.kind == ControlKind::Text) {
-                slider.text = found->second;
-                continue;
-            }
-            if (slider.kind == ControlKind::Choice) {
-                slider.setChoice(found->second);
-                continue;
-            }
-            try {
-                const double parsed = std::stod(found->second);
-                if (std::isfinite(parsed)) {
-                    slider.value = parsed;
-                }
-            } catch (const std::exception&) {
-                error = "Invalid value for " +
-                    std::string(parameterKey(index)) + ".";
+        std::string text;
+        if (path.extension() == ".vtk") {
+            text = configurationTextOfFrame(path, error);
+            if (text.empty()) {
                 return false;
             }
-        }
-        invertSection_ = values["invertSection"] == "1";
-        if (const auto found = values.find("outputRoot");
-            found != values.end() && !found->second.empty()) {
-            outputRoot_ = std::filesystem::u8path(found->second);
-        }
-        if (const auto found = values.find("solver");
-            found != values.end() && !found->second.empty()) {
-            const std::filesystem::path solver =
-                std::filesystem::u8path(found->second);
-            const SolverExecutableInfo info = inspectSolverExecutable(solver);
-            if (info.valid && info.recognized) {
-                fluidSolverExecutable_ = solver;
-                solverInfo_ = info;
+        } else {
+            std::ifstream input(path, std::ios::binary);
+            if (!input.is_open()) {
+                error = "Cannot open configuration file: " + path.string();
+                return false;
             }
+            text.assign(
+                (std::istreambuf_iterator<char>(input)),
+                std::istreambuf_iterator<char>());
         }
-        if (const auto found = values.find("model");
-            found != values.end() && !found->second.empty()) {
-            const std::filesystem::path model =
-                std::filesystem::u8path(found->second);
-            std::error_code fileError;
-            if (std::filesystem::is_regular_file(model, fileError) &&
-                !fileError) {
-                loadGeometry(model);
-            }
+        const ConfigurationDocument document = parseConfiguration(text);
+        if (!document.recognised) {
+            error = "Nothing in that file is a solver or UI setting.";
+            return false;
         }
+        const std::string report = applyConfigurationDocument(document, true);
         refreshSolverInfo();
         applyCacheBudget();
         savePreferences();
-        invalidSlider_.reset();
+        error = report;
         return true;
     }
 
     void saveConfiguration() {
         std::string error;
         const std::filesystem::path path =
-            chooseUiConfigFile(window_->getNativeHandle(), true, error);
-        if (!error.empty()) {
-            status_ = error;
-            return;
-        }
+            chooseUiConfigFile(
+                window_->getNativeHandle(),
+                true,
+                defaultConfigurationFile(),
+                error);
         if (path.empty()) {
+            status_ = error.empty()
+                ? std::string("Configuration save cancelled.")
+                : error;
             return;
         }
         if (!writeConfigurationFile(path, error)) {
             status_ = error;
             return;
         }
-        status_ = "Saved UI configuration: " + path.string();
+        status_ = "Saved configuration: " + path.string();
     }
 
     void loadConfiguration() {
         pushUndo();
         std::string error;
         const std::filesystem::path path =
-            chooseUiConfigFile(window_->getNativeHandle(), false, error);
-        if (!error.empty()) {
-            status_ = error;
-            return;
-        }
+            chooseUiConfigFile(
+                window_->getNativeHandle(),
+                false,
+                defaultConfigurationFile(),
+                error);
         if (path.empty()) {
+            undoStack_.pop_back();
+            status_ = error.empty()
+                ? std::string("Configuration load cancelled.")
+                : error;
             return;
         }
         if (!readConfigurationFile(path, error)) {
+            undoStack_.pop_back();
             status_ = error;
             return;
         }
-        status_ = "Loaded UI configuration: " + path.string();
+        status_ = "Loaded " + path.string() + ": " + error;
+    }
+
+    void loadConfigurationFromFrame() {
+        if (!activeFrame_ || !activeFrame_->restart.hasConfigText) {
+            status_ =
+                "That frame carries no configText, so there is nothing to "
+                "recover its settings from.";
+            return;
+        }
+        std::string text;
+        for (const auto& entry : activeFrame_->restart.config)
+            text += entry.first + "=" + entry.second + "\n";
+        pushUndo();
+        const ConfigurationDocument document = parseConfiguration(text);
+        if (!document.recognised) {
+            undoStack_.pop_back();
+            status_ = "That frame's configText holds nothing this panel knows.";
+            return;
+        }
+        const std::string report = applyConfigurationDocument(document, false);
+        applyCacheBudget();
+        mode_ = DisplayMode::Setup;
+        status_ = "Recovered the settings of solver step " +
+            std::to_string(activeFrame_->frameNumber) + ": " + report;
     }
 
     void resetDefaults() {
@@ -4345,9 +4836,11 @@ private:
             return;
         }
 
+        const bool volumeDomain =
+            requestedConfig.supportsVolume && requestedConfig.nz > 1;
         const std::filesystem::path adapterFile =
             runDirectory / "section-adapter.obj";
-        if (!emptyDomain &&
+        if (!emptyDomain && !volumeDomain &&
             !writeSectionAdapterOBJ(adapterFile, mask.contours, error)) {
             status_ = "Cannot write section adapter: " + error;
             return;
@@ -4355,7 +4848,9 @@ private:
 
         FluidSolverRunConfig solverConfig = requestedConfig;
         solverConfig.geometryFile =
-            emptyDomain ? std::filesystem::path("empty") : adapterFile;
+            emptyDomain
+                ? std::filesystem::path("empty")
+                : (volumeDomain ? geometry_.sourcePath() : adapterFile);
 
         ensurePaintField();
         if (requestedConfig.phases > 1 && paintFieldUsed()) {
@@ -4367,10 +4862,13 @@ private:
             }
             solverConfig.initialPhaseFile = phaseFile;
         }
-        solverConfig.sliceAngleX = 0.0;
-        solverConfig.sliceAngleZ = 0.0;
-        solverConfig.sliceRotation = 0.0;
-        solverConfig.invertSection = false;
+        if (!volumeDomain) {
+            solverConfig.sliceAngleX = 0.0;
+            solverConfig.sliceAngleY = 0.0;
+            solverConfig.sliceAngleZ = 0.0;
+            solverConfig.sliceRotation = 0.0;
+            solverConfig.invertSection = false;
+        }
         std::vector<std::string> solverArguments;
         if (!buildFluidSolverArguments(
                 solverConfig,
@@ -4415,6 +4913,7 @@ private:
         showRunDetails_ = false;
         runDetailsText_.clear();
         activeFrame_.reset();
+        refreshDisplayFrame();
         decodedFrameCache_.clear();
         desiredFrame_.reset();
         inFlightFrames_.clear();
@@ -4571,6 +5070,7 @@ private:
         showRunDetails_ = false;
         runDetailsText_.clear();
         activeFrame_.reset();
+        refreshDisplayFrame();
         decodedFrameCache_.clear();
         desiredFrame_.reset();
         inFlightFrames_.clear();
@@ -4756,6 +5256,8 @@ private:
         activeFrame_ = std::make_shared<VtkFrame>(
             std::move(catalog.activeFrame));
         applyRestartControlDefaults(*activeFrame_);
+        setViewMode(activeFrame_->volumetric());
+        refreshDisplayFrame();
         currentRunRequiresComputedFrame_ = false;
         currentRunIsContinuation_ = false;
         selectedFrame_ = frames_.size() - 1;
@@ -4883,6 +5385,7 @@ private:
         VtkFrameParser::validateCompatibility(*activeFrame_, *frame);
         activeFrame_ = std::move(frame);
         applyRestartControlDefaults(*activeFrame_);
+        refreshDisplayFrame();
         selectedFrame_ = index;
         if (desiredFrame_ == index) {
             desiredFrame_.reset();
@@ -5176,7 +5679,7 @@ private:
     }
 
     void zoomResultsAt(sf::Vector2f cursor, float factor) {
-        const VtkFrame& frame = *activeFrame_;
+        const VtkFrame& frame = displayFrame();
         const float physicalWidth =
             static_cast<float>(
                 static_cast<double>(frame.nx) * frame.spacingX);
@@ -5259,7 +5762,7 @@ private:
     sf::FloatRect parameterScrollbarRail() const {
         const sf::FloatRect viewport = parameterViewport();
         return {
-            {LEFT_PANEL_WIDTH - 12.0f, viewport.position.y},
+            {panelX_ + LEFT_PANEL_WIDTH - 12.0f, viewport.position.y},
             {4.0f, viewport.size.y}
         };
     }
@@ -5357,7 +5860,7 @@ private:
             if (!parameterRowOnScreen(index))
                 continue;
             const sf::FloatRect row{
-                {12.0f, sliders_[index].track.position.y - 29.0f},
+                {panelX_ + 12.0f, sliders_[index].track.position.y - 29.0f},
                 {292.0f, 42.0f}};
             if (row.contains(lastMouse_)) {
                 hovered = index;
@@ -5399,7 +5902,7 @@ private:
 
         sf::RectangleShape frame(box);
         frame.setPosition(at);
-        frame.setFillColor(sf::Color{24, 30, 40, 246});
+        frame.setFillColor(OVERLAY_BACKGROUND);
         frame.setOutlineColor(ACCENT_DARK);
         frame.setOutlineThickness(1.0f);
         window_->draw(frame);
@@ -5414,8 +5917,8 @@ private:
     void drawParameterStrip() {
         if (searchActive_ || !searchQuery_.empty()) {
             sf::RectangleShape field({294.0f, PARAMETER_STRIP_HEIGHT});
-            field.setPosition({18.0f, PARAMETER_STRIP_TOP});
-            field.setFillColor(sf::Color{22, 27, 35});
+            field.setPosition({panelX_ + 18.0f, PARAMETER_STRIP_TOP});
+            field.setFillColor(CONTROL_BACKGROUND);
             field.setOutlineColor(searchActive_ ? ACCENT : BORDER);
             field.setOutlineThickness(1.0f);
             window_->draw(field);
@@ -5425,12 +5928,13 @@ private:
             if (searchQuery_.empty() && !searchActive_)
                 shown = "Find: (Ctrl+F)";
             window_->draw(makeText(font_, shown, 13,
-                                   {26.0f, PARAMETER_STRIP_TOP + 6.0f},
+                                   {panelX_ + 26.0f,
+                                    PARAMETER_STRIP_TOP + 6.0f},
                                    searchQuery_.empty() ? MUTED : TEXT));
             return;
         }
         for (const Button& tab : tabButtons_)
-            tab.draw(*window_, font_);
+            tab.draw(*window_, font_, lastMouse_);
     }
 
     void drawParameterRowBackdrops() {
@@ -5446,14 +5950,14 @@ private:
             const bool focused = focusedSlider_ == index;
             if ((stripe % 2 == 1) || focused) {
                 sf::RectangleShape band({296.0f, PARAMETER_ROW_HEIGHT - 4.0f});
-                band.setPosition({16.0f, top});
-                band.setFillColor(focused ? sf::Color{30, 46, 66}
+                band.setPosition({panelX_ + 16.0f, top});
+                band.setFillColor(focused ? sf::Color{58, 58, 58}
                                           : sf::Color{255, 255, 255, 8});
                 window_->draw(band);
             }
             if (focused) {
                 sf::RectangleShape edge({2.0f, PARAMETER_ROW_HEIGHT - 4.0f});
-                edge.setPosition({16.0f, top});
+                edge.setPosition({panelX_ + 16.0f, top});
                 edge.setFillColor(ACCENT);
                 window_->draw(edge);
             }
@@ -5474,9 +5978,9 @@ private:
                 continue;
             }
             window_->draw(makeText(
-                font_, group.label, 11, {20.0f, y}, ACCENT));
+                font_, group.label, 11, {panelX_ + 20.0f, y}, ACCENT));
             sf::RectangleShape divider({278.0f, 1.0f});
-            divider.setPosition({20.0f, y + 17.0f});
+            divider.setPosition({panelX_ + 20.0f, y + 17.0f});
             divider.setFillColor(BORDER);
             window_->draw(divider);
         }
@@ -5627,115 +6131,6 @@ private:
         }
     }
 
-
-
-
-    struct BodyEntry {
-        int object = 0;
-        std::string settings;
-    };
-
-    static std::vector<BodyEntry> splitEntries(const std::string& line) {
-        std::vector<BodyEntry> out;
-        std::size_t pos = 0;
-        while (pos < line.size()) {
-            std::size_t colon = line.find(':', pos);
-            if (colon == std::string::npos)
-                break;
-            const std::string number = line.substr(pos, colon - pos);
-            int object = std::atoi(number.c_str());
-            std::size_t next = colon + 1;
-            while (next < line.size()) {
-                const std::size_t mark = line.find(';', next);
-                if (mark == std::string::npos) {
-                    next = line.size();
-                    break;
-                }
-                next = mark;
-                break;
-            }
-            if (object >= 1) {
-                BodyEntry entry;
-                entry.object = object;
-                entry.settings = line.substr(colon + 1, next - colon - 1);
-                out.push_back(entry);
-            }
-            pos = next + 1;
-        }
-        return out;
-    }
-
-    static std::string joinEntries(const std::vector<BodyEntry>& entries) {
-        std::string out;
-        for (const BodyEntry& entry : entries) {
-            if (entry.settings.empty())
-                continue;
-            if (!out.empty())
-                out += ';';
-            out += std::to_string(entry.object) + ':' + entry.settings;
-        }
-        return out;
-    }
-
-    static double settingOf(const std::string& settings,
-                            const std::string& name,
-                            double fallback = 0.0) {
-        std::size_t pos = 0;
-        while (pos < settings.size()) {
-            std::size_t end = settings.find(',', pos);
-            if (end == std::string::npos)
-                end = settings.size();
-            const std::string token = settings.substr(pos, end - pos);
-            const std::size_t eq = token.find('=');
-            if (eq != std::string::npos) {
-                std::string key = token.substr(0, eq);
-                while (!key.empty() && key.front() == ' ')
-                    key.erase(key.begin());
-                while (!key.empty() && key.back() == ' ')
-                    key.pop_back();
-                std::string lower;
-                for (char c : key)
-                    lower += static_cast<char>(
-                        std::tolower(static_cast<unsigned char>(c)));
-                if (lower == name)
-                    return std::atof(token.c_str() + eq + 1);
-            }
-            pos = end + 1;
-        }
-        return fallback;
-    }
-
-    static std::string number(double value) {
-        std::ostringstream out;
-        out << value;
-        return out.str();
-    }
-
-    static std::string entrySettings(const std::string& line, int object) {
-        for (const BodyEntry& entry : splitEntries(line))
-            if (entry.object == object)
-                return entry.settings;
-        return std::string();
-    }
-
-    static void setEntry(std::string& line, int object,
-                         const std::string& settings) {
-        std::vector<BodyEntry> entries = splitEntries(line);
-        bool found = false;
-        for (BodyEntry& entry : entries)
-            if (entry.object == object) {
-                entry.settings = settings;
-                found = true;
-            }
-        if (!found && !settings.empty()) {
-            BodyEntry entry;
-            entry.object = object;
-            entry.settings = settings;
-            entries.push_back(entry);
-        }
-        line = joinEntries(entries);
-    }
-
     int selectedBody() const {
         return static_cast<int>(std::lround(sliders_[BodySelect].value));
     }
@@ -5745,7 +6140,7 @@ private:
             loadBodyRows();
             return;
         }
-        if (index >= BodyBehaviour && index <= BodyPins)
+        if (index >= BodyBehaviour && index <= BodyPinRotY)
             storeBodyRows();
         else if (index == BodyMotionLine || index == WallMotionLine)
             loadBodyRows();
@@ -5753,82 +6148,65 @@ private:
 
     void loadBodyRows() {
         const int object = selectedBody();
-        const std::string wall =
-            entrySettings(sliders_[WallMotionLine].text, object);
-        const std::string travel =
-            entrySettings(sliders_[BodyMotionLine].text, object);
+        const BodyRowValues values = readBodyRows(
+            sliders_[WallMotionLine].text,
+            sliders_[BodyMotionLine].text,
+            object);
 
-        int behaviour = 0;
-        if (!travel.empty())
-            behaviour = settingOf(travel, "free", 0.0) >= 0.5 ? 4 : 3;
-        else if (!wall.empty())
-            behaviour = settingOf(wall, "slip", 0.0) >= 0.5 ? 2 : 1;
-
-        sliders_[BodyBehaviour].value = behaviour;
-        sliders_[BodyRotation].value = settingOf(wall, "rot");
-        sliders_[BodySlideX].value = settingOf(wall, "slidex");
-        sliders_[BodySlideY].value = settingOf(wall, "slidey");
-        sliders_[BodyVelocityX].value = settingOf(travel, "vx");
-        sliders_[BodyVelocityY].value = settingOf(travel, "vy");
-        sliders_[BodySpin].value = settingOf(travel, "omega");
-        sliders_[BodyMass].value = settingOf(travel, "mass");
-        sliders_[BodyDensity].value = settingOf(travel, "density");
-        const int pins = (settingOf(travel, "pinx") >= 0.5 ? 1 : 0) |
-                         (settingOf(travel, "piny") >= 0.5 ? 2 : 0) |
-                         (settingOf(travel, "pinrot") >= 0.5 ? 4 : 0);
-        sliders_[BodyPins].value = pins;
+        sliders_[BodyBehaviour].value = values.behaviour;
+        sliders_[BodyRotation].value = values.rotation;
+        sliders_[BodyRotationX].value = values.rotationX;
+        sliders_[BodyRotationY].value = values.rotationY;
+        sliders_[BodySlideX].value = values.slideX;
+        sliders_[BodySlideY].value = values.slideY;
+        sliders_[BodySlideZ].value = values.slideZ;
+        sliders_[BodyVelocityX].value = values.velocityX;
+        sliders_[BodyVelocityY].value = values.velocityY;
+        sliders_[BodyVelocityZ].value = values.velocityZ;
+        sliders_[BodySpin].value = values.spin;
+        sliders_[BodySpinX].value = values.spinX;
+        sliders_[BodySpinY].value = values.spinY;
+        sliders_[BodyMass].value = values.mass;
+        sliders_[BodyDensity].value = values.density;
+        sliders_[BodyInertiaX].value = values.inertiaX;
+        sliders_[BodyInertiaY].value = values.inertiaY;
+        sliders_[BodyPins].value =
+            values.pins & (PinSlideX | PinSlideY | PinSpinZ);
+        sliders_[BodyPinZ].value = (values.pins & PinSlideZ) ? 1.0 : 0.0;
+        sliders_[BodyPinRotX].value = (values.pins & PinSpinX) ? 1.0 : 0.0;
+        sliders_[BodyPinRotY].value = (values.pins & PinSpinY) ? 1.0 : 0.0;
     }
 
     void storeBodyRows() {
-        const int object = selectedBody();
-        const std::string behaviour = sliders_[BodyBehaviour].choice();
+        BodyRowValues values;
+        values.behaviour =
+            static_cast<int>(std::lround(sliders_[BodyBehaviour].value));
+        values.rotation = sliders_[BodyRotation].value;
+        values.rotationX = sliders_[BodyRotationX].value;
+        values.rotationY = sliders_[BodyRotationY].value;
+        values.slideX = sliders_[BodySlideX].value;
+        values.slideY = sliders_[BodySlideY].value;
+        values.slideZ = sliders_[BodySlideZ].value;
+        values.velocityX = sliders_[BodyVelocityX].value;
+        values.velocityY = sliders_[BodyVelocityY].value;
+        values.velocityZ = sliders_[BodyVelocityZ].value;
+        values.spin = sliders_[BodySpin].value;
+        values.spinX = sliders_[BodySpinX].value;
+        values.spinY = sliders_[BodySpinY].value;
+        values.mass = sliders_[BodyMass].value;
+        values.density = sliders_[BodyDensity].value;
+        values.inertiaX = sliders_[BodyInertiaX].value;
+        values.inertiaY = sliders_[BodyInertiaY].value;
+        values.pins =
+            static_cast<int>(std::lround(sliders_[BodyPins].value)) |
+            (sliders_[BodyPinZ].value >= 0.5 ? PinSlideZ : 0) |
+            (sliders_[BodyPinRotX].value >= 0.5 ? PinSpinX : 0) |
+            (sliders_[BodyPinRotY].value >= 0.5 ? PinSpinY : 0);
 
-        std::string wall;
-        std::string travel;
-        const auto add = [](std::string& into, const std::string& text) {
-            if (!into.empty())
-                into += ',';
-            into += text;
-        };
-
-        if (behaviour == "drag") {
-            if (sliders_[BodyRotation].value != 0.0)
-                add(wall, "rot=" + number(sliders_[BodyRotation].value));
-            if (sliders_[BodySlideX].value != 0.0)
-                add(wall, "slideX=" + number(sliders_[BodySlideX].value));
-            if (sliders_[BodySlideY].value != 0.0)
-                add(wall, "slideY=" + number(sliders_[BodySlideY].value));
-            if (wall.empty())
-                wall = "rot=0";
-        } else if (behaviour == "slip") {
-            wall = "slip=1";
-        } else if (behaviour == "travel" || behaviour == "free") {
-            if (behaviour == "free")
-                add(travel, "free=1");
-            if (sliders_[BodyVelocityX].value != 0.0)
-                add(travel, "vx=" + number(sliders_[BodyVelocityX].value));
-            if (sliders_[BodyVelocityY].value != 0.0)
-                add(travel, "vy=" + number(sliders_[BodyVelocityY].value));
-            if (sliders_[BodySpin].value != 0.0)
-                add(travel, "omega=" + number(sliders_[BodySpin].value));
-            if (behaviour == "free") {
-                if (sliders_[BodyDensity].value > 0.0)
-                    add(travel,
-                        "density=" + number(sliders_[BodyDensity].value));
-                else if (sliders_[BodyMass].value > 0.0)
-                    add(travel, "mass=" + number(sliders_[BodyMass].value));
-                const int pins =
-                    static_cast<int>(std::lround(sliders_[BodyPins].value));
-                if (pins & 1) add(travel, "pinX=1");
-                if (pins & 2) add(travel, "pinY=1");
-                if (pins & 4) add(travel, "pinRot=1");
-            }
-            if (travel.empty())
-                travel = "vx=0";
-        }
-
-        setEntry(sliders_[WallMotionLine].text, object, wall);
-        setEntry(sliders_[BodyMotionLine].text, object, travel);
+        writeBodyRows(sliders_[WallMotionLine].text,
+                      sliders_[BodyMotionLine].text,
+                      selectedBody(),
+                      values);
     }
 
     bool phasesOn() const {
@@ -5961,19 +6339,30 @@ private:
 
     std::vector<Pose> poseTrack(int object) const {
         return parseBodyTrack(
-            entrySettings(sliders_[BodyTrackLine].text, object));
+            motionEntryOf(sliders_[BodyTrackLine].text, object));
+    }
+
+    bool curvedPath() const {
+        return sliders_[BodyPathKind].choice() == "curve";
+    }
+
+    std::string trackMotion(const std::vector<Pose>& track) const {
+        return curvedPath() ? bodyCurveToMotion(track)
+                            : bodyTrackToMotion(track);
     }
 
     void setPoseTrack(int object, const std::vector<Pose>& track) {
-        setEntry(sliders_[BodyTrackLine].text, object,
-                 formatBodyTrack(track));
-        setEntry(sliders_[BodyMotionLine].text, object,
-                 bodyTrackToMotion(track));
+        setMotionEntry(sliders_[BodyTrackLine].text, object,
+                       formatBodyTrack(track));
+        setMotionEntry(sliders_[BodyMotionLine].text, object,
+                       trackMotion(track));
         loadBodyRows();
     }
 
     Pose poseAt(int object, double when) const {
-        return bodyPoseAt(poseTrack(object), when);
+        const std::vector<Pose> track = poseTrack(object);
+        return curvedPath() ? bodyPoseOnCurve(track, when)
+                            : bodyPoseAt(track, when);
     }
 
     void dropKeyframe(int object, const Pose& pose) {
@@ -6066,72 +6455,6 @@ private:
         performUndo();
     }
 
-    std::string configurationText() const {
-        std::ostringstream output;
-        output << "format=CFDMaskUI-1\n";
-        output << "invertSection=" << (invertSection_ ? 1 : 0) << '\n';
-        output << std::setprecision(
-            std::numeric_limits<double>::max_digits10);
-        for (std::size_t index = 0; index < sliders_.size(); ++index) {
-            const Slider& slider = sliders_[index];
-            output << parameterKey(index) << '=';
-            if (slider.kind == ControlKind::Text)
-                output << slider.text;
-            else if (slider.kind == ControlKind::Choice)
-                output << slider.choice();
-            else
-                output << slider.value;
-            output << '\n';
-        }
-        return output.str();
-    }
-
-    bool applyConfigurationText(const std::string& text, std::string& error) {
-        std::unordered_map<std::string, std::string> values;
-        std::istringstream input(text);
-        std::string line;
-        while (std::getline(input, line)) {
-            if (!line.empty() && line.back() == '\r')
-                line.pop_back();
-            const std::size_t separator = line.find('=');
-            if (separator != std::string::npos)
-                values[line.substr(0, separator)] = line.substr(separator + 1);
-        }
-        if (values["format"] != "CFDMaskUI-1") {
-            error = "the text does not start with format=CFDMaskUI-1";
-            return false;
-        }
-        for (std::size_t index = 0; index < sliders_.size(); ++index) {
-            const auto found = values.find(parameterKey(index));
-            if (found == values.end())
-                continue;
-            Slider& slider = sliders_[index];
-            if (slider.kind == ControlKind::Text) {
-                slider.text = found->second;
-                continue;
-            }
-            if (slider.kind == ControlKind::Choice) {
-                slider.setChoice(found->second);
-                continue;
-            }
-            try {
-                const double parsed = std::stod(found->second);
-                if (std::isfinite(parsed))
-                    slider.value = parsed;
-            } catch (const std::exception&) {
-                error = std::string(parameterKey(index)) +
-                        " does not carry a number";
-                return false;
-            }
-        }
-        if (const auto found = values.find("invertSection");
-            found != values.end())
-            invertSection_ = found->second == "1";
-        invalidSlider_.reset();
-        updateLayout(layoutSize_);
-        return true;
-    }
-
     std::string rowClipboardText(std::size_t index) const {
         const Slider& row = sliders_[index];
         if (row.kind == ControlKind::Text)
@@ -6169,12 +6492,15 @@ private:
         if (incoming.find('\n') != std::string::npos &&
             incoming.find('=') != std::string::npos) {
             pushUndo();
-            std::string error;
-            if (applyConfigurationText(incoming, error)) {
-                status_ = "Configuration pasted from the clipboard.";
+            const ConfigurationDocument document =
+                parseConfiguration(incoming);
+            if (document.recognised) {
+                status_ = "Configuration pasted from the clipboard: " +
+                    applyConfigurationDocument(document, false);
             } else {
                 undoStack_.pop_back();
-                status_ = "That is not a configuration: " + error;
+                status_ = "That is not a configuration: nothing in it is a "
+                          "solver or UI setting.";
             }
             return;
         }
@@ -6451,15 +6777,15 @@ private:
         paintClearButton_.enabled = painting_;
         paintUndoButton_.enabled = painting_ && !paintUndo_.empty();
 
-        paintButton_.draw(*window_, font_);
+        paintButton_.draw(*window_, font_, lastMouse_);
         if (!painting_)
             return;
-        paintFluid1Button_.draw(*window_, font_);
-        paintFluid2Button_.draw(*window_, font_);
-        paintSourceButton_.draw(*window_, font_);
-        paintFillButton_.draw(*window_, font_);
-        paintClearButton_.draw(*window_, font_);
-        paintUndoButton_.draw(*window_, font_);
+        paintFluid1Button_.draw(*window_, font_, lastMouse_);
+        paintFluid2Button_.draw(*window_, font_, lastMouse_);
+        paintSourceButton_.draw(*window_, font_, lastMouse_);
+        paintFillButton_.draw(*window_, font_, lastMouse_);
+        paintClearButton_.draw(*window_, font_, lastMouse_);
+        paintUndoButton_.draw(*window_, font_, lastMouse_);
     }
 
     bool handlePaintMousePressed(sf::Mouse::Button button,
@@ -6510,7 +6836,7 @@ private:
         area.position.x += 12.0f;
         area.position.y += 52.0f;
         area.size.x -= 24.0f;
-        area.size.y -= 152.0f;
+        area.size.y -= 76.0f;
         const float want =
             static_cast<float>(sliders_[DomainX].value /
                                std::max(1e-9, sliders_[DomainY].value));
@@ -6528,10 +6854,8 @@ private:
     }
 
     sf::FloatRect layoutTimeTrack() const {
-        const sf::FloatRect canvas = layoutCanvasRect();
-        return {{canvas.position.x,
-                 setupViewport_.position.y + setupViewport_.size.y - 62.0f},
-                {canvas.size.x, 6.0f}};
+        return {{144.0f, static_cast<float>(layoutSize_.y) - 66.0f},
+                {std::max(320.0f, panelX_ - 176.0f), 6.0f}};
     }
 
     std::string layoutMaskSignature() const {
@@ -6695,10 +7019,10 @@ private:
             }
             if (layoutClearButton_.hit(position)) {
                 pushUndo();
-                setEntry(sliders_[BodyTrackLine].text, layoutSelected_,
-                         std::string());
-                setEntry(sliders_[BodyMotionLine].text, layoutSelected_,
-                         std::string());
+                setMotionEntry(sliders_[BodyTrackLine].text, layoutSelected_,
+                               std::string());
+                setMotionEntry(sliders_[BodyMotionLine].text, layoutSelected_,
+                               std::string());
                 loadBodyRows();
                 status_ = "Track cleared for that body.";
                 return true;
@@ -6896,12 +7220,29 @@ private:
             const std::vector<Pose> track = poseTrack(object);
             if (track.size() > 1) {
                 sf::VertexArray path(sf::PrimitiveType::LineStrip);
-                for (const Pose& step : track) {
-                    const sf::Vector2f point = layoutDomainToPoint(
-                        layoutCentreX_[object - 1] + step.x,
-                        layoutCentreY_[object - 1] + step.y);
-                    path.append({point, chosen ? ACCENT : sf::Color{70, 82,
-                                                                    104}});
+                const sf::Color pathColour =
+                    chosen ? ACCENT : sf::Color{96, 96, 96};
+                if (curvedPath() && track.size() > 2) {
+                    const double from = track.front().time;
+                    const double span = track.back().time - from;
+                    const int steps =
+                        static_cast<int>(track.size() - 1) * 12;
+                    for (int step = 0; step <= steps; ++step) {
+                        const Pose sample = bodyPoseOnCurve(
+                            track,
+                            from + span * static_cast<double>(step) / steps);
+                        path.append({layoutDomainToPoint(
+                                         layoutCentreX_[object - 1] + sample.x,
+                                         layoutCentreY_[object - 1] + sample.y),
+                                     pathColour});
+                    }
+                } else {
+                    for (const Pose& step : track) {
+                        const sf::Vector2f point = layoutDomainToPoint(
+                            layoutCentreX_[object - 1] + step.x,
+                            layoutCentreY_[object - 1] + step.y);
+                        path.append({point, pathColour});
+                    }
                 }
                 window_->draw(path);
                 for (const Pose& step : track) {
@@ -6913,7 +7254,7 @@ private:
                                    chosen ? 4.0f : 2.5f});
                     dot.setPosition(point);
                     dot.setFillColor(chosen ? sf::Color::White
-                                            : sf::Color{70, 82, 104});
+                                            : sf::Color{96, 96, 96});
                     window_->draw(dot);
                 }
             }
@@ -6926,7 +7267,7 @@ private:
         const sf::FloatRect track = layoutTimeTrack();
         sf::RectangleShape rail(track.size);
         rail.setPosition(track.position);
-        rail.setFillColor(sf::Color{52, 60, 74});
+        rail.setFillColor(CONTROL_RAIL);
         window_->draw(rail);
 
         const double duration = layoutDuration();
@@ -6967,7 +7308,7 @@ private:
         layoutButton_.label = layoutMode_ ? "Layout on" : "Layout";
         layoutButton_.selected = layoutMode_;
         layoutButton_.enabled = true;
-        layoutButton_.draw(*window_, font_);
+        layoutButton_.draw(*window_, font_, lastMouse_);
         if (!layoutMode_)
             return;
         layoutKeyButton_.label = "Keyframe";
@@ -6978,19 +7319,13 @@ private:
         layoutDropButton_.enabled = layoutSelected_ > 0;
         layoutInterpButton_.enabled = true;
         layoutClearButton_.enabled = layoutSelected_ > 0;
-        layoutKeyButton_.draw(*window_, font_);
-        layoutDropButton_.draw(*window_, font_);
-        layoutInterpButton_.draw(*window_, font_);
-        layoutClearButton_.draw(*window_, font_);
+        layoutKeyButton_.draw(*window_, font_, lastMouse_);
+        layoutDropButton_.draw(*window_, font_, lastMouse_);
+        layoutInterpButton_.draw(*window_, font_, lastMouse_);
+        layoutClearButton_.draw(*window_, font_, lastMouse_);
     }
 
-    void drawSetup() {
-        drawPanel(
-            *window_,
-            {{0.0f, 50.0f},
-             {LEFT_PANEL_WIDTH, static_cast<float>(layoutSize_.y) - 50.0f}});
-        importButton_.draw(*window_, font_);
-        outputFolderButton_.draw(*window_, font_);
+    void drawProperties() {
         drawParameterStrip();
         drawParameterRowBackdrops();
         drawParameterGroupHeaders();
@@ -7007,11 +7342,14 @@ private:
                 invalidSlider_ == index);
         }
         drawParameterScrollbar();
-        resetDefaultsButton_.draw(*window_, font_);
-        saveConfigButton_.draw(*window_, font_);
-        loadConfigButton_.draw(*window_, font_);
-        generateButton_.draw(*window_, font_);
+        resetDefaultsButton_.draw(*window_, font_, lastMouse_);
+        saveConfigButton_.draw(*window_, font_, lastMouse_);
+        loadConfigButton_.draw(*window_, font_, lastMouse_);
+        generateButton_.draw(*window_, font_, lastMouse_);
+        drawParameterTooltip();
+    }
 
+    void drawSetup() {
         sf::RectangleShape viewBackground(setupViewport_.size);
         viewBackground.setPosition(setupViewport_.position);
         viewBackground.setFillColor(VIEW_BACKGROUND);
@@ -7046,7 +7384,6 @@ private:
             drawSetupInfoOverlay();
             drawSliceControls();
         }
-        drawParameterTooltip();
     }
 
     void drawGeometryPreview() {
@@ -7397,14 +7734,13 @@ private:
     }
 
     void drawResults() {
-        pressureButton_.draw(*window_, font_);
-        velocityButton_.draw(*window_, font_);
-        fieldButton_.draw(*window_, font_);
-        vectorButton_.draw(*window_, font_);
-        rangeButton_.draw(*window_, font_);
-        playbackButton_.draw(*window_, font_);
-        runDetailsButton_.draw(*window_, font_);
-        continueRunButton_.draw(*window_, font_);
+        pressureButton_.draw(*window_, font_, lastMouse_);
+        velocityButton_.draw(*window_, font_, lastMouse_);
+        fieldButton_.draw(*window_, font_, lastMouse_);
+        vectorButton_.draw(*window_, font_, lastMouse_);
+        rangeButton_.draw(*window_, font_, lastMouse_);
+        runDetailsButton_.draw(*window_, font_, lastMouse_);
+        continueRunButton_.draw(*window_, font_, lastMouse_);
 
         sf::RectangleShape background(resultViewport_.size);
         background.setPosition(resultViewport_.position);
@@ -7413,16 +7749,380 @@ private:
         background.setOutlineThickness(1.0f);
         window_->draw(background);
 
-        if (!frames_.empty()) {
-            drawResultCells();
-            drawLegend();
+        if (!frames_.empty() && sliceCache_.view()) {
+            if (view3D_) {
+                viewport3D_.draw(*window_, resultViewport_);
+                drawViewportOverlay();
+            } else {
+                drawResultCells();
+                drawLegend();
+                drawResultTooltip();
+            }
             drawResultSliders();
             drawResultWarning();
-            drawResultTooltip();
         }
+        drawResultControls();
         if (showRunDetails_) {
             drawRunDetailsOverlay();
         }
+    }
+
+    const VtkFrame& displayFrame() const {
+        return *sliceCache_.view();
+    }
+
+    const char* sliceAxisName() const {
+        return sliceAxis_ == SliceAxis::X
+            ? "X"
+            : (sliceAxis_ == SliceAxis::Y ? "Y" : "Z");
+    }
+
+    std::size_t slicePlaneCount() const {
+        return sliceCache_.planeCount();
+    }
+
+    void syncViewportSettings() {
+        view3DSettings_.sliceIndexX =
+            std::min(view3DSettings_.sliceIndexX,
+                     activeFrame_ && activeFrame_->nx
+                         ? activeFrame_->nx - 1u : 0u);
+        view3DSettings_.sliceIndexY =
+            std::min(view3DSettings_.sliceIndexY,
+                     activeFrame_ && activeFrame_->ny
+                         ? activeFrame_->ny - 1u : 0u);
+        view3DSettings_.sliceIndexZ =
+            std::min(view3DSettings_.sliceIndexZ,
+                     activeFrame_ && activeFrame_->nz
+                         ? activeFrame_->nz - 1u : 0u);
+        viewport3D_.setSettings(view3DSettings_);
+    }
+
+    void refreshDisplayFrame() {
+        sliceCache_.setSource(activeFrame_);
+        sliceCache_.setPlane(sliceAxis_, sliceIndex_);
+        sliceIndex_ = sliceCache_.index();
+        if (view3D_ && viewport3D_.frame() != activeFrame_) {
+            viewport3D_.setFrame(activeFrame_);
+            syncViewportSettings();
+        }
+        resultTextureCacheValid_ = false;
+        updateLayout(layoutSize_);
+    }
+
+    void setSlicePlane(SliceAxis axis, std::size_t index) {
+        sliceCache_.setPlane(axis, index);
+        if (sliceCache_.axis() == sliceAxis_ &&
+            sliceCache_.index() == sliceIndex_) {
+            return;
+        }
+        sliceAxis_ = sliceCache_.axis();
+        sliceIndex_ = sliceCache_.index();
+        resultTextureCacheValid_ = false;
+        resultPan_ = {};
+        updateLayout(layoutSize_);
+        status_ = std::string("Slice ") + sliceAxisName() + " " +
+            std::to_string(sliceIndex_ + 1) + "/" +
+            std::to_string(slicePlaneCount()) + ".";
+    }
+
+    void stepSlice(int delta) {
+        if (!sliceCache_.slicing() || view3D_) {
+            return;
+        }
+        const std::size_t planes = slicePlaneCount();
+        if (planes == 0) {
+            return;
+        }
+        const long long wanted =
+            static_cast<long long>(sliceIndex_) + delta;
+        setSlicePlane(
+            sliceAxis_,
+            static_cast<std::size_t>(std::clamp(
+                wanted, 0LL, static_cast<long long>(planes) - 1)));
+    }
+
+    void setViewMode(bool volumetricView) {
+        if (view3D_ == volumetricView) {
+            return;
+        }
+        view3D_ = volumetricView;
+        if (view3D_) {
+            if (viewport3D_.frame() != activeFrame_) {
+                viewport3D_.setFrame(activeFrame_);
+                syncViewportSettings();
+                viewport3D_.frameAll();
+            }
+            status_ =
+                "3D view: drag to orbit, middle-drag to pan, wheel to zoom, "
+                "click to select. F frames it all.";
+        } else {
+            resultTextureCacheValid_ = false;
+            status_ = sliceCache_.slicing()
+                ? std::string("2D view: slice ") + sliceAxisName() + " " +
+                      std::to_string(sliceIndex_ + 1) + "/" +
+                      std::to_string(slicePlaneCount()) +
+                      ". Up and down move the plane, X, Y and Z pick the axis."
+                : std::string("2D view.");
+        }
+        savePreferences();
+        updateLayout(layoutSize_);
+    }
+
+    const char* volumeFieldName(VolumeField field) const {
+        switch (field) {
+        case VolumeField::Pressure: return "pressure";
+        case VolumeField::Speed: return "speed";
+        case VolumeField::VelocityX: return "u";
+        case VolumeField::VelocityY: return "v";
+        case VolumeField::VelocityZ: return "w";
+        case VolumeField::Vorticity: return "vorticity";
+        case VolumeField::QCriterion: return "Q";
+        default: return "scalar";
+        }
+    }
+
+    void cycleVolumeField() {
+        static const std::array<VolumeField, 7> order{{
+            VolumeField::Speed, VolumeField::Pressure, VolumeField::VelocityX,
+            VolumeField::VelocityY, VolumeField::VelocityZ,
+            VolumeField::Vorticity, VolumeField::QCriterion}};
+        std::size_t next = 0;
+        for (std::size_t index = 0; index < order.size(); ++index)
+            if (order[index] == view3DSettings_.colourBy)
+                next = index + 1;
+        view3DSettings_.colourBy = order[next % order.size()];
+        syncViewportSettings();
+        status_ = std::string("3D view coloured by ") +
+            volumeFieldName(view3DSettings_.colourBy) + ".";
+    }
+
+    std::size_t viewTrackPlanes(std::size_t track) const {
+        if (!activeFrame_) {
+            return 1;
+        }
+        if (track == TrackSliceX) return activeFrame_->nx;
+        if (track == TrackSliceY) return activeFrame_->ny;
+        if (track == TrackSliceZ) return activeFrame_->nz;
+        return slicePlaneCount();
+    }
+
+    float viewTrackFraction(std::size_t track) const {
+        const auto planeFraction = [](std::size_t index, std::size_t count) {
+            return count <= 1
+                ? 0.0f
+                : static_cast<float>(index) / static_cast<float>(count - 1u);
+        };
+        switch (track) {
+        case TrackSliceX:
+            return planeFraction(view3DSettings_.sliceIndexX,
+                                 viewTrackPlanes(track));
+        case TrackSliceY:
+            return planeFraction(view3DSettings_.sliceIndexY,
+                                 viewTrackPlanes(track));
+        case TrackSliceZ:
+            return planeFraction(view3DSettings_.sliceIndexZ,
+                                 viewTrackPlanes(track));
+        case TrackIso:
+            return view3DSettings_.isoLevel;
+        case TrackVortex:
+            return view3DSettings_.vortexLevel;
+        default:
+            return planeFraction(sliceIndex_, viewTrackPlanes(track));
+        }
+    }
+
+    std::string viewTrackLabel(std::size_t track) const {
+        const auto planeText = [this](const char* name, std::size_t index,
+                                      std::size_t count) {
+            return std::string(name) + " " + std::to_string(index + 1) + "/" +
+                std::to_string(count);
+        };
+        switch (track) {
+        case TrackSliceX:
+            return planeText("Slice X", view3DSettings_.sliceIndexX,
+                             viewTrackPlanes(track));
+        case TrackSliceY:
+            return planeText("Slice Y", view3DSettings_.sliceIndexY,
+                             viewTrackPlanes(track));
+        case TrackSliceZ:
+            return planeText("Slice Z", view3DSettings_.sliceIndexZ,
+                             viewTrackPlanes(track));
+        case TrackIso:
+            return "Isosurface " +
+                formatValue(view3DSettings_.isoLevel, false, std::string());
+        case TrackVortex:
+            return "Vortex Q " +
+                formatValue(view3DSettings_.vortexLevel, false, std::string());
+        default:
+            return planeText(
+                (std::string("Slice ") + sliceAxisName()).c_str(),
+                sliceIndex_, viewTrackPlanes(track));
+        }
+    }
+
+    void setViewTrackFromX(std::size_t track, float mouseX) {
+        const sf::FloatRect& rail = viewTracks_[track];
+        const double fraction = std::clamp(
+            static_cast<double>((mouseX - rail.position.x) / rail.size.x),
+            0.0, 1.0);
+        const auto planeOf = [&fraction](std::size_t count) {
+            return count <= 1
+                ? std::size_t(0)
+                : static_cast<std::size_t>(std::llround(
+                      fraction * static_cast<double>(count - 1u)));
+        };
+        switch (track) {
+        case TrackSliceX:
+            view3DSettings_.sliceIndexX = planeOf(viewTrackPlanes(track));
+            break;
+        case TrackSliceY:
+            view3DSettings_.sliceIndexY = planeOf(viewTrackPlanes(track));
+            break;
+        case TrackSliceZ:
+            view3DSettings_.sliceIndexZ = planeOf(viewTrackPlanes(track));
+            break;
+        case TrackIso:
+            view3DSettings_.isoLevel = static_cast<float>(fraction);
+            break;
+        case TrackVortex:
+            view3DSettings_.vortexLevel = static_cast<float>(fraction);
+            break;
+        default:
+            setSlicePlane(sliceAxis_, planeOf(viewTrackPlanes(track)));
+            return;
+        }
+        syncViewportSettings();
+    }
+
+    bool handleViewControl(std::size_t control) {
+        switch (control) {
+        case ControlFrameAll:
+            viewport3D_.frameAll();
+            return true;
+        case ControlOrtho:
+            viewport3D_.camera().orthographic =
+                !viewport3D_.camera().orthographic;
+            return true;
+        case ControlBox:
+            view3DSettings_.showBox = !view3DSettings_.showBox;
+            break;
+        case ControlGrid:
+            view3DSettings_.showGrid = !view3DSettings_.showGrid;
+            break;
+        case ControlSolid:
+            view3DSettings_.showSolid = !view3DSettings_.showSolid;
+            break;
+        case ControlWire:
+            view3DSettings_.wireframeSolid = !view3DSettings_.wireframeSolid;
+            break;
+        case ControlSliceX:
+            view3DSettings_.sliceX = !view3DSettings_.sliceX;
+            break;
+        case ControlSliceY:
+            view3DSettings_.sliceY = !view3DSettings_.sliceY;
+            break;
+        case ControlSliceZ:
+            view3DSettings_.sliceZ = !view3DSettings_.sliceZ;
+            break;
+        case ControlIso:
+            view3DSettings_.showIsosurface = !view3DSettings_.showIsosurface;
+            view3DSettings_.isoField = view3DSettings_.colourBy;
+            break;
+        case ControlVortices:
+            view3DSettings_.showVortices = !view3DSettings_.showVortices;
+            break;
+        case ControlStreamlines:
+            view3DSettings_.showStreamlines =
+                !view3DSettings_.showStreamlines;
+            break;
+        case ControlTracers:
+            view3DSettings_.animateTracers = !view3DSettings_.animateTracers;
+            break;
+        case ControlColour:
+            cycleVolumeField();
+            updateLayout(layoutSize_);
+            return true;
+        case ControlFront:
+            viewport3D_.setView(2, false);
+            return true;
+        case ControlBack:
+            viewport3D_.setView(2, true);
+            return true;
+        case ControlLeft:
+            viewport3D_.setView(0, true);
+            return true;
+        case ControlRight:
+            viewport3D_.setView(0, false);
+            return true;
+        case ControlTop:
+            viewport3D_.setView(1, false);
+            return true;
+        case ControlBottom:
+            viewport3D_.setView(1, true);
+            return true;
+        case ControlAxisX:
+            setSlicePlane(SliceAxis::X, sliceIndex_);
+            return true;
+        case ControlAxisY:
+            setSlicePlane(SliceAxis::Y, sliceIndex_);
+            return true;
+        default:
+            setSlicePlane(SliceAxis::Z, sliceIndex_);
+            return true;
+        }
+        syncViewportSettings();
+        updateLayout(layoutSize_);
+        return true;
+    }
+
+    void applyPickSelection(const Viewport3D::Pick& pick) {
+        const PickSelection selection = selectionForPick(pick);
+        if (selection.target == PickTarget::Body) {
+            sliders_[BodySelect].value = selection.body;
+            loadBodyRows();
+            focusedSlider_ = BodySelect;
+            scrollRowIntoView(BodySelect);
+            status_ = "Selected body " + std::to_string(selection.body) +
+                ". The BODIES rows on the right are about it now.";
+            return;
+        }
+        if (selection.target == PickTarget::Boundary) {
+            const std::size_t row = boundaryKindRow(selection.side);
+            focusedSlider_ = row;
+            scrollRowIntoView(row);
+            status_ = std::string("Selected the ") + sliders_[row].label +
+                ": it is " + sliders_[row].choice() + ", and " +
+                sliders_[boundarySpeedRow(selection.side)].label +
+                " is under it.";
+            return;
+        }
+        status_ = "Nothing under the cursor there.";
+    }
+
+    std::string pickDescription(const Viewport3D::Pick& pick) const {
+        if (!pick.hit || !activeFrame_) {
+            return std::string();
+        }
+        const VtkFrame& frame = *activeFrame_;
+        std::ostringstream text;
+        text << "cell " << pick.i << ", " << pick.j << ", " << pick.k
+             << "   x " << formatValue(pick.x, false, "m")
+             << "   y " << formatValue(pick.y, false, "m")
+             << "   z " << formatValue(pick.z, false, "m");
+        const std::size_t index = frame.cellIndex(pick.i, pick.j, pick.k);
+        if (pick.solidHit) {
+            text << "   solid, object " << pick.objectId;
+            return text.str();
+        }
+        if (index < frame.pressure.size()) {
+            text << "   p " << formatValue(frame.pressure[index], false, "Pa")
+                 << "   speed "
+                 << formatValue(frame.velocityMagnitude[index], false, "m/s");
+        }
+        if (pick.face >= 0 && pick.face < 6) {
+            text << "   " << sliders_[boundaryKindRow(pick.face)].label;
+        }
+        return text.str();
     }
 
     // Which numbers the colour scale is stretched between.
@@ -7441,20 +8141,20 @@ private:
     }
 
     DataRange resultDisplayRange() const {
-        if (!activeFrame_) {
+        if (!sliceCache_.view()) {
             return {};
         }
         if (resultQuantity_ == ResultQuantity::Scalar) {
             const auto trimmed =
-                activeFrame_->scalarTrimmedRanges.find(activeScalarName_);
+                displayFrame().scalarTrimmedRanges.find(activeScalarName_);
             if (trimmedRange_ &&
-                trimmed != activeFrame_->scalarTrimmedRanges.end() &&
+                trimmed != displayFrame().scalarTrimmedRanges.end() &&
                 trimmed->second.available)
                 return trimmed->second;
             const auto full =
-                activeFrame_->scalarRanges.find(activeScalarName_);
-            return full == activeFrame_->scalarRanges.end() ? DataRange{}
-                                                            : full->second;
+                displayFrame().scalarRanges.find(activeScalarName_);
+            return full == displayFrame().scalarRanges.end() ? DataRange{}
+                                                             : full->second;
         }
         const bool pressure = resultQuantity_ == ResultQuantity::Pressure;
         DataRange range;
@@ -7467,13 +8167,13 @@ private:
             }
         } else {
             range = trimmedRange_
-                ? (pressure ? activeFrame_->pressureTrimmedRange
-                            : activeFrame_->velocityMagnitudeTrimmedRange)
-                : (pressure ? activeFrame_->pressureRange
-                            : activeFrame_->velocityMagnitudeRange);
+                ? (pressure ? displayFrame().pressureTrimmedRange
+                            : displayFrame().velocityMagnitudeTrimmedRange)
+                : (pressure ? displayFrame().pressureRange
+                            : displayFrame().velocityMagnitudeRange);
             if (!range.available) {
-                range = pressure ? activeFrame_->pressureRange
-                                 : activeFrame_->velocityMagnitudeRange;
+                range = pressure ? displayFrame().pressureRange
+                                 : displayFrame().velocityMagnitudeRange;
             }
         }
         return range;
@@ -7483,7 +8183,7 @@ private:
     // drawn over the pressure view as well, where the display range is a
     // pressure and means nothing to them.
     DataRange velocityDisplayRange() const {
-        if (!activeFrame_) {
+        if (!sliceCache_.view()) {
             return {};
         }
         DataRange range;
@@ -7494,17 +8194,17 @@ private:
             }
         } else {
             range = trimmedRange_
-                ? activeFrame_->velocityMagnitudeTrimmedRange
-                : activeFrame_->velocityMagnitudeRange;
+                ? displayFrame().velocityMagnitudeTrimmedRange
+                : displayFrame().velocityMagnitudeRange;
             if (!range.available) {
-                range = activeFrame_->velocityMagnitudeRange;
+                range = displayFrame().velocityMagnitudeRange;
             }
         }
         return range;
     }
 
     void drawResultCells() {
-        const VtkFrame& frame = *activeFrame_;
+        const VtkFrame& frame = displayFrame();
         const DataRange range = resultDisplayRange();
         const ResultImageTransform transform = resultImageTransform(frame);
         const float cellWidth = static_cast<float>(transform.pixelWidth);
@@ -7668,12 +8368,66 @@ private:
             TEXT));
     }
 
+    void drawResultControls() {
+        playbackButton_.draw(*window_, font_, lastMouse_);
+        recoverSetupButton_.draw(*window_, font_, lastMouse_);
+        viewModeButton_.draw(*window_, font_, lastMouse_);
+        for (const Button& control : viewControls_)
+            if (control.enabled)
+                control.draw(*window_, font_, lastMouse_);
+        for (std::size_t track = 0; track < viewTracks_.size(); ++track) {
+            if (viewTracks_[track].position.y < 0.0f)
+                continue;
+            drawSimpleTrack(
+                viewTracks_[track],
+                viewTrackFraction(track),
+                viewTrackLabel(track));
+        }
+    }
+
+    void drawViewportOverlay() {
+        window_->draw(makeText(
+            font_,
+            frameProgressLabel(*activeFrame_),
+            14,
+            {
+                resultViewport_.position.x + 10.0f,
+                resultViewport_.position.y +
+                    (resultsWarning_.empty() ? 8.0f : 42.0f)
+            },
+            TEXT));
+        std::ostringstream counts;
+        counts << viewport3D_.triangleCount() << " triangles, "
+               << viewport3D_.lineCount() << " lines, coloured by "
+               << volumeFieldName(view3DSettings_.colourBy);
+        window_->draw(makeText(
+            font_,
+            counts.str(),
+            12,
+            {
+                resultViewport_.position.x + 10.0f,
+                resultViewport_.position.y + resultViewport_.size.y - 20.0f
+            },
+            MUTED));
+        if (!pickText_.empty()) {
+            window_->draw(makeText(
+                font_,
+                pickText_,
+                12,
+                {
+                    resultViewport_.position.x + 10.0f,
+                    resultViewport_.position.y + resultViewport_.size.y - 38.0f
+                },
+                ACCENT));
+        }
+    }
+
     void drawResultTooltip() {
         if (!activeFrame_ || panningResults_ || draggingFrame_ ||
             draggingZoom_ || !resultViewport_.contains(lastMouse_)) {
             return;
         }
-        const VtkFrame& frame = *activeFrame_;
+        const VtkFrame& frame = displayFrame();
         const std::optional<VtkPixelSample> sample = sampleVtkPixel(
             frame,
             resultImageTransform(frame),
@@ -7716,8 +8470,13 @@ private:
                          "Pa");
         }
 
+        if (sliceCache_.slicing()) {
+            value << "\nSlice " << sliceAxisName() << ' '
+                  << (sliceIndex_ + 1) << '/' << slicePlaneCount();
+        }
+
         constexpr float tooltipWidth = 270.0f;
-        constexpr float tooltipHeight = 110.0f;
+        const float tooltipHeight = sliceCache_.slicing() ? 126.0f : 110.0f;
         sf::Vector2f position = lastMouse_ + sf::Vector2f{14.0f, 14.0f};
         position.x = std::clamp(
             position.x,
@@ -7902,11 +8661,13 @@ private:
     }
 
     void drawResultSliders() {
-        drawSimpleTrack(
-            zoomTrack_,
-            static_cast<float>(
-                std::log(resultZoom_ / 0.5f) / std::log(16.0)),
-            "Zoom " + formatValue(resultZoom_, false, "x"));
+        if (!view3D_) {
+            drawSimpleTrack(
+                zoomTrack_,
+                static_cast<float>(
+                    std::log(resultZoom_ / 0.5f) / std::log(16.0)),
+                "Zoom " + formatValue(resultZoom_, false, "x"));
+        }
         const std::size_t displayedFrame =
             desiredFrame_.value_or(selectedFrame_);
         const float frameFraction =
@@ -7978,14 +8739,181 @@ private:
         window_->draw(handle);
     }
 
-    void drawTopTabs() {
-        setupTab_.draw(*window_, font_);
-        resultsTab_.draw(*window_, font_);
-        openVtkButton_.draw(*window_, font_);
-        stopSimulationButton_.draw(*window_, font_);
-        revealVtkButton_.draw(*window_, font_);
-        solverExeButton_.draw(*window_, font_);
+    void drawArea(const sf::FloatRect& bounds, const sf::Color& fill) {
+        sf::RectangleShape area(bounds.size);
+        area.setPosition(bounds.position);
+        area.setFillColor(fill);
+        window_->draw(area);
     }
+
+    void drawDivider(float x, float y, float width, float height) {
+        sf::RectangleShape line({width, height});
+        line.setPosition({x, y});
+        line.setFillColor(BORDER);
+        window_->draw(line);
+    }
+
+    void drawAreas() {
+        const float width = static_cast<float>(layoutSize_.x);
+        const float height = static_cast<float>(layoutSize_.y);
+        drawArea({{0.0f, 0.0f}, {width, HEADER_HEIGHT}}, HEADER);
+        drawDivider(0.0f, HEADER_HEIGHT - 1.0f, width, 1.0f);
+        drawArea(
+            {{panelX_, HEADER_HEIGHT},
+             {width - panelX_, height - HEADER_HEIGHT}},
+            PANEL);
+        drawDivider(panelX_, HEADER_HEIGHT, 1.0f, height - HEADER_HEIGHT);
+        const sf::FloatRect outliner = outlinerBounds();
+        drawDivider(
+            outliner.position.x,
+            outliner.position.y + outliner.size.y,
+            outliner.size.x,
+            1.0f);
+        drawArea({{0.0f, height - 108.0f}, {panelX_, 84.0f}}, HEADER);
+        drawDivider(0.0f, height - 108.0f, panelX_, 1.0f);
+    }
+
+    void drawTopTabs() {
+        setupTab_.draw(*window_, font_, lastMouse_);
+        resultsTab_.draw(*window_, font_, lastMouse_);
+        openVtkButton_.draw(*window_, font_, lastMouse_);
+        stopSimulationButton_.draw(*window_, font_, lastMouse_);
+        revealVtkButton_.draw(*window_, font_, lastMouse_);
+        solverExeButton_.draw(*window_, font_, lastMouse_);
+        importButton_.draw(*window_, font_, lastMouse_);
+        outputFolderButton_.draw(*window_, font_, lastMouse_);
+        drawOutliner();
+    }
+
+    void rebuildOutliner() {
+        outlinerRows_.clear();
+        const auto split = [](const std::string& line) {
+            std::vector<std::string> parts;
+            std::size_t at = 0;
+            while (at <= line.size()) {
+                const std::size_t mark = line.find(';', at);
+                const std::string piece = line.substr(
+                    at, mark == std::string::npos ? std::string::npos
+                                                  : mark - at);
+                if (!piece.empty())
+                    parts.push_back(piece);
+                if (mark == std::string::npos)
+                    break;
+                at = mark + 1;
+            }
+            return parts;
+        };
+        const std::size_t bodies = std::max<std::size_t>(solidBodyCount_, 1u);
+        for (std::size_t body = 1; body <= bodies; ++body) {
+            OutlinerRow row;
+            row.label = "Body " + std::to_string(body);
+            const std::string travel = motionEntryOf(
+                sliders_[BodyMotionLine].text, static_cast<int>(body));
+            const std::string wall = motionEntryOf(
+                sliders_[WallMotionLine].text, static_cast<int>(body));
+            if (!travel.empty())
+                row.label += motionSetting(travel, "free", 0.0) >= 0.5
+                    ? "  free" : "  travel";
+            else if (!wall.empty())
+                row.label += motionSetting(wall, "slip", 0.0) >= 0.5
+                    ? "  slip" : "  drag";
+            row.row = BodySelect;
+            row.body = static_cast<int>(body);
+            outlinerRows_.push_back(row);
+        }
+        std::size_t number = 1;
+        for (const std::string& source : split(sliders_[SourceLine].text)) {
+            OutlinerRow row;
+            row.label = "Source " + std::to_string(number++) + "  " + source;
+            row.row = SourceLine;
+            outlinerRows_.push_back(row);
+        }
+        number = 1;
+        for (const std::string& mic : split(sliders_[MicrophoneLine].text)) {
+            OutlinerRow row;
+            row.label = "Microphone " + std::to_string(number++) + "  " + mic;
+            row.row = MicrophoneLine;
+            outlinerRows_.push_back(row);
+        }
+        const int sides = volumeRun() ? 6 : 4;
+        for (int side = 0; side < sides; ++side) {
+            const std::size_t kind = boundaryKindRow(side);
+            OutlinerRow row;
+            row.label = sliders_[kind].label + "  " + sliders_[kind].choice();
+            row.row = kind;
+            outlinerRows_.push_back(row);
+        }
+    }
+
+    sf::FloatRect outlinerBounds() const {
+        return {{panelX_, OUTLINER_TOP}, {LEFT_PANEL_WIDTH, OUTLINER_HEIGHT}};
+    }
+
+    void drawOutliner() {
+        const sf::FloatRect bounds = outlinerBounds();
+        window_->draw(makeText(
+            font_, "SCENE", 11,
+            {bounds.position.x + 20.0f, bounds.position.y + 6.0f}, ACCENT));
+        const float rowHeight = 17.0f;
+        const float top = bounds.position.y + 24.0f;
+        const float visible = bounds.size.y - 28.0f;
+        const std::size_t first = static_cast<std::size_t>(
+            std::max(0.0f, outlinerScroll_) / rowHeight);
+        for (std::size_t index = first; index < outlinerRows_.size(); ++index) {
+            const float y = top +
+                static_cast<float>(index) * rowHeight - outlinerScroll_;
+            if (y < top - rowHeight)
+                continue;
+            if (y > top + visible - rowHeight)
+                break;
+            const bool selected =
+                focusedSlider_.has_value() &&
+                *focusedSlider_ == outlinerRows_[index].row &&
+                (outlinerRows_[index].body == 0 ||
+                 outlinerRows_[index].body == selectedBody());
+            if (selected) {
+                sf::RectangleShape band(
+                    {bounds.size.x - 24.0f, rowHeight - 1.0f});
+                band.setPosition({bounds.position.x + 12.0f, y});
+                band.setFillColor(ACCENT_DARK);
+                window_->draw(band);
+            }
+            std::string label = outlinerRows_[index].label;
+            if (label.size() > 42) {
+                label.resize(39);
+                label += "...";
+            }
+            window_->draw(makeText(
+                font_, label, 12,
+                {bounds.position.x + 20.0f, y + 1.0f},
+                selected ? TEXT : MUTED));
+        }
+    }
+
+    bool handleOutlinerClick(sf::Vector2f position) {
+        const sf::FloatRect bounds = outlinerBounds();
+        if (!bounds.contains(position))
+            return false;
+        const float rowHeight = 17.0f;
+        const float top = bounds.position.y + 24.0f;
+        if (position.y < top)
+            return true;
+        const std::size_t index = static_cast<std::size_t>(
+            (position.y - top + outlinerScroll_) / rowHeight);
+        if (index >= outlinerRows_.size())
+            return true;
+        const OutlinerRow& row = outlinerRows_[index];
+        if (row.body > 0) {
+            sliders_[BodySelect].value = row.body;
+            loadBodyRows();
+        }
+        focusedSlider_ = row.row;
+        scrollRowIntoView(row.row);
+        status_ = row.label + " selected.";
+        return true;
+    }
+
+
 
     void drawLoadingIndicator() {
         std::string label;
@@ -8004,8 +8932,8 @@ private:
         constexpr float width = 204.0f;
         constexpr float height = 38.0f;
         const sf::Vector2f position{
-            std::max(8.0f, static_cast<float>(layoutSize_.x) - width - 12.0f),
-            std::max(58.0f, static_cast<float>(layoutSize_.y) - height - 34.0f)
+            std::max(8.0f, panelX_ - width - 12.0f),
+            std::max(58.0f, static_cast<float>(layoutSize_.y) - height - 118.0f)
         };
         sf::RectangleShape background({width, height});
         background.setPosition(position);
@@ -8031,7 +8959,7 @@ private:
                 static_cast<float>(std::sin(angle) * 9.0)
             });
             circle.setFillColor(
-                dot == activeDot ? ACCENT : sf::Color{68, 90, 72, 150});
+                dot == activeDot ? ACCENT : sf::Color{90, 90, 90, 150});
             window_->draw(circle);
         }
         window_->draw(makeText(
@@ -8100,8 +9028,9 @@ private:
             24.0f
         });
         background.setPosition({0.0f, y});
-        background.setFillColor(sf::Color{5, 7, 6, 235});
+        background.setFillColor(HEADER);
         window_->draw(background);
+        drawDivider(0.0f, y, static_cast<float>(layoutSize_.x), 1.0f);
 
         std::string display = status_;
         if (display.size() > 180) {
@@ -8114,6 +9043,13 @@ private:
             12,
             {10.0f, y + 3.0f},
             MUTED));
+        if (mode_ == DisplayMode::Results && view3D_ && !pickText_.empty()) {
+            sf::Text under = makeText(
+                font_, pickText_, 12, {0.0f, y + 3.0f}, TEXT);
+            under.setOrigin({under.getLocalBounds().size.x, 0.0f});
+            under.setPosition({panelX_ - 10.0f, y + 3.0f});
+            window_->draw(under);
+        }
     }
 
     std::filesystem::path executablePath_;
@@ -8152,8 +9088,8 @@ private:
     Button importButton_{"Import STL / OBJ"};
     Button outputFolderButton_{"Output folder"};
     Button resetDefaultsButton_{"Reset defaults"};
-    Button saveConfigButton_{"Save setup"};
-    Button loadConfigButton_{"Load setup"};
+    Button saveConfigButton_{"Save config"};
+    Button loadConfigButton_{"Load config"};
     Button generateButton_{"Run simulation"};
     Button pressureButton_{"Pressure"};
     Button velocityButton_{"Velocity"};
@@ -8163,6 +9099,30 @@ private:
     Button rangeButton_{"Range: Series"};
     Button playbackButton_{"Play"};
     Button runDetailsButton_{"Run details"};
+    Button recoverSetupButton_{"Recover setup"};
+    Button viewModeButton_{"View: 2D"};
+    struct OutlinerRow {
+        std::string label;
+        std::size_t row = ParameterCount;
+        int body = 0;
+    };
+    std::vector<OutlinerRow> outlinerRows_;
+    float outlinerScroll_ = 0.0f;
+    std::array<Button, ViewControlCount> viewControls_;
+    std::array<sf::FloatRect, ViewTrackCount> viewTracks_{};
+    std::optional<std::size_t> draggingViewTrack_;
+    Viewport3D viewport3D_;
+    Viewport3DSettings view3DSettings_;
+    bool view3D_ = false;
+    SliceCache sliceCache_;
+    SliceAxis sliceAxis_ = SliceAxis::Z;
+    std::size_t sliceIndex_ = 0;
+    bool orbiting3D_ = false;
+    bool orbitMoved_ = false;
+    bool panning3D_ = false;
+    std::string pickText_;
+    float panelX_ = 0.0f;
+    float resultBarBottom_ = 0.0f;
 
     sf::FloatRect setupViewport_{{0.0f, 0.0f}, {1.0f, 1.0f}};
     sf::FloatRect resultViewport_{{0.0f, 0.0f}, {1.0f, 1.0f}};

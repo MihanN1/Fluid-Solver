@@ -10,8 +10,10 @@ namespace maskui {
 struct FluidSolverRunConfig {
     double Lx = 1.0;
     double Ly = 1.0;
+    double Lz = 1.0;
     int nx = 50;
     int ny = 50;
+    int nz = 1;
 
     double U0 = 1.0;
     double nu = 0.01;
@@ -33,9 +35,12 @@ struct FluidSolverRunConfig {
 
     std::filesystem::path geometryFile;
     double sliceAngleX = 0.0;
+    double sliceAngleY = 0.0;
     double sliceAngleZ = 0.0;
     double sliceRotation = 0.0;
     bool invertSection = false;
+
+    bool supportsVolume = false;
 
     // ---- continuing an earlier run ----------------------------------------
     // restartFile is a solution_*.vtk, or the folder holding them, in which
@@ -68,6 +73,7 @@ struct FluidSolverRunConfig {
     bool gravityEnabled = false;
     double gravityAccel = 9.81;   // m/s^2
     double gravityAngle = 0.0;    // degrees, clockwise, 0 = down
+    double gravityTilt = 0.0;
 
     bool supportsWallMotion = false;
     // "1:rot=90,slideX=0.5;2:slip=1". Empty means every wall is static no-slip,
@@ -143,6 +149,7 @@ struct FluidSolverRunConfig {
     double phaseLevel = 0.5;
     double phaseX = 0.5;
     double phaseY = 0.5;
+    double phaseZ = 0.5;
     std::string vofScheme = "hric";
 
     bool supportsTension = false;
@@ -156,10 +163,13 @@ struct FluidSolverRunConfig {
 
     bool supportsBoundaries = false;
 
-    std::string boundaryKind[4] = {"inlet", "outlet", "slip", "slip"};
-    double boundarySpeed[4] = {0.0, 0.0, 0.0, 0.0};
+    std::string boundaryKind[6] = {
+        "inlet", "outlet", "slip", "slip", "slip", "slip"};
+    double boundarySpeed[6] = {0.0, 0.0, 0.0, 0.0, 0.0, 0.0};
     double inletFrom = 0.0;
     double inletTo = 1.0;
+    double inletFrom2 = 0.0;
+    double inletTo2 = 1.0;
     std::string inletProfile = "uniform";
 };
 

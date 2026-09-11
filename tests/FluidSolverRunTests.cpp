@@ -632,6 +632,85 @@ int main() {
         return fail("dropping the acoustics did not settle it: " + error);
     }
 
+    config.caseType = "channel";
+    config.supportsBoundaries = true;
+    config.boundaryKind[0] = "inlet";
+    config.boundaryKind[1] = "outlet";
+    for (int side = 2; side < 6; ++side) {
+        config.boundaryKind[side] = "slip";
+    }
+    if (!maskui::buildFluidSolverArguments(config, output, arguments, error)) {
+        return fail("a plane run stopped building arguments: " + error);
+    }
+    if (hasPrefix(arguments, "nz=") || hasPrefix(arguments, "Lz=") ||
+        hasPrefix(arguments, "bcFront=") ||
+        hasPrefix(arguments, "gravityTilt=") ||
+        hasPrefix(arguments, "sliceAngleY=") ||
+        hasPrefix(arguments, "inletFrom2=")) {
+        return fail("a solver that knows nothing of the third dimension was "
+                    "sent its keys anyway, and it exits on the first one");
+    }
+
+    config.supportsVolume = true;
+    config.Lz = 0.5;
+    config.nz = 32;
+    config.gravityTilt = 15.0;
+    config.sliceAngleY = 30.0;
+    config.phaseZ = 0.25;
+    config.inletFrom2 = 0.1;
+    config.inletTo2 = 0.9;
+    config.boundaryKind[4] = "wall";
+    config.boundaryKind[5] = "movingWall";
+    config.boundarySpeed[5] = 1.25;
+    config.inletProfile = "parabolicSpan";
+    if (!maskui::buildFluidSolverArguments(config, output, arguments, error)) {
+        return fail("volume arguments failed: " + error);
+    }
+    if (!contains(arguments, "nz=32") || !contains(arguments, "Lz=0.5") ||
+        !contains(arguments, "bcFront=wall") ||
+        !contains(arguments, "bcBack=movingWall") ||
+        !contains(arguments, "bcBackSpeed=1.25") ||
+        !hasPrefix(arguments, "inletFrom2=0.1") ||
+        !hasPrefix(arguments, "inletTo2=0.9") ||
+        !contains(arguments, "inletProfile=parabolicSpan") ||
+        !contains(arguments, "sliceAngleY=30") ||
+        !contains(arguments, "gravityTilt=15")) {
+        return fail("the volume arguments are incomplete");
+    }
+    if (contains(arguments, "bcFrontSpeed=0")) {
+        return fail("a zero front speed was written out again");
+    }
+
+    config.nz = 0;
+    if (maskui::validateFluidSolverRunConfig(config, error)) {
+        return fail("a run zero cells deep was accepted");
+    }
+    config.nz = 32;
+    config.Lz = 0.0;
+    if (maskui::validateFluidSolverRunConfig(config, error)) {
+        return fail("a run with no depth at all was accepted");
+    }
+    config.Lz = 0.5;
+    config.inletFrom2 = 0.9;
+    config.inletTo2 = 0.1;
+    if (maskui::validateFluidSolverRunConfig(config, error)) {
+        return fail("an inlet window with nothing in it was accepted");
+    }
+    config.inletFrom2 = 0.0;
+    config.inletTo2 = 1.0;
+    config.nx = 1024;
+    config.ny = 1024;
+    config.nz = 1024;
+    if (maskui::validateFluidSolverRunConfig(config, error)) {
+        return fail("a billion cells were accepted");
+    }
+    config.nx = 50;
+    config.ny = 50;
+    config.nz = 32;
+    if (!maskui::validateFluidSolverRunConfig(config, error)) {
+        return fail("a sane volume was refused: " + error);
+    }
+
     std::error_code cleanupError;
     std::filesystem::remove_all(root, cleanupError);
     return 0;

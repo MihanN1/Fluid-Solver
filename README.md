@@ -1,7 +1,16 @@
 # CFD Mask UI Optimized
 
+The solver it drives solves a volume now, and `nz = 1` is the plane it used to
+solve. So does this. There is a real 3D viewport, the old 2D view is still here
+and is a slice through that volume, and every row the third dimension added is
+on the panel — hidden while `nz = 1`, because a plane run should look exactly
+like it always did and not like a 3D tool with half its controls greyed out.
+
+Everything this UI did before it does now, unchanged, on a flat frame.
+
 This package builds the GUI independently of the CFD solver source tree.
-`CFD-Solver-2D-main` is not a build dependency and must not be modified for GUI work.
+A checkout of the solver (`Fluid-Solver`, called `CFD-Solver-2D` before 1.0) is
+not a build dependency and must not be modified for GUI work.
 
 ## Requirements
 
@@ -103,9 +112,13 @@ A row whose name promises OpenMP is configured with
 fails the row instead of quietly publishing a single-threaded binary under a name
 that says otherwise.
 
-On Windows an OpenMP row needs `vcomp140.dll` beside it, because MSVC has no
-static OpenMP runtime. The solver's own `omp` archives already ship that DLL, and
-a `-ui` archive is that archive plus the UI binary, so the pairing supplies it.
+On Windows an OpenMP row needs the OpenMP runtime DLL beside it, because MSVC
+has no static one. Since the solver moved its own loops onto `collapse`, which
+classic `/openmp` does not have, a solver `omp` archive now ships
+`libomp140.<arch>.dll` rather than `vcomp140.dll`; a `-ui` archive is that
+archive plus the UI binary, so the pairing supplies whichever of the two the
+solver was built against. The UI itself has no `collapse` in it and builds
+under either.
 
 Each binary archive contains one top-level folder with the same stem,
 `Fluid Solver UI[.exe]`, `README-UI.md`, `BUILD_INFO-UI.md`, and an empty
@@ -154,6 +167,22 @@ is not there:
 | `mixing` `diffusivity` `surfaceTension` `contactAngle` | `surfaceTension` |
 | `turbulence` `Cs` `turbIntensity` `turbLengthScale` | `turbLengthScale` |
 | `regime` `gamma` `R` `T0` `pInf` `machInlet` … `micInterval` `micAudio` `micAudioRate` `micAudioSpeed` | `machInlet` |
+| `nz` `Lz` `bcFront` `bcBack` `bcFrontSpeed` `bcBackSpeed` `inletFrom2` `inletTo2` `gravityTilt` `phaseZ` `sliceAngleY` | `nz` |
+
+The last row is the whole third dimension and it is found by one key, `nz`,
+for the same reason as every block above it: point this UI at a solver that
+predates the port and none of those eleven keys reach the command line, `nz`
+is not on the panel to be set in the first place, and what gets launched is the
+plane run that solver knows how to run. Sending `nz=1` to a solver that has
+never heard of it would not be harmless — it exits on the first argument it
+does not know.
+
+The settings that live *inside* an existing key are not separate blocks and
+cannot be: `z=` and `elev=` in `sources`, `z=` and `ay=` in `profiles`,
+`rotX= rotY= slideZ=` in `wallMotion`, the eight new `bodyMotion` components,
+and the third coordinate in `microphones` are all text this UI hands over
+untouched. It writes them only when `nz` is on the panel, which is the same
+test, done once.
 
 `bc<Side>Speed` is only written when that side is a `movingWall` or the speed is
 not zero. Writing `bcLeftSpeed=0` for an inlet would tell the solver a standstill
@@ -183,19 +212,43 @@ number is not known until the mask is generated.
     BODIES   Body               which one the rows below are about
              Behaviour          static | drag | slip | travel | free
              Surface spin       deg/s      \
-             Surface slide X    m/s         > drag: the surface moves, the
-             Surface slide Y    m/s        /  body does not
+             Surface spin X     deg/s       |
+             Surface spin Y     deg/s       > drag: the surface moves, the
+             Surface slide X    m/s         |  body does not
+             Surface slide Y    m/s         |
+             Surface slide Z    m/s        /
              Body velocity X    m/s        \
-             Body velocity Y    m/s         > travel: the body itself moves.
-             Body spin          deg/s      /  Under free, what it starts with
+             Body velocity Y    m/s         |
+             Body velocity Z    m/s         > travel: the body itself moves.
+             Body spin          deg/s       |  Under free, what it starts with
+             Body spin X        deg/s       |
+             Body spin Y        deg/s      /
              Body mass          kg/m       \
-             Body density       kg/m3       > free only
+             Body density       kg/m3       |
+             Inertia X          kg m2       > free only
+             Inertia Y          kg m2      /
              Pinned             which degrees of freedom are held
+             Pin Z              hold it still in depth
+             Pin rot X          hold that rotation
+             Pin rot Y          hold that one
              Body motion        text, the solver's grammar
+             Body path          text, the poses the Layout view drew
              Coupling           weak | added | strong
              Collisions         off, bodies pass through each other
              Bounciness         how much of the closing speed survives
              Report forces      work the force out for set paths too
+
+The nine rows the third dimension added — two more surface spins, a third
+surface slide, a third body velocity, two more body spins, two more inertias
+and three more pins — **are not on the panel while `nz` is 1**. A plane has one
+axis a body can spin about and two it can slide along, and a row for a degree
+of freedom that does not exist is a row somebody will set and then wonder about.
+They appear the moment `nz` goes above 1 and they keep their values when it
+goes back, exactly the way the regime rows already come and go.
+
+`Surface spin` is `rotZ` and `Body spin` is `omegaZ`; the solver keeps `rot=`
+and `omega=` as the names for those, so an old line still reads back into the
+old rows.
 
 The two text rows are the truth and the rows above them are a way of writing
 into one entry of each - exactly as the brush is a way of writing into the
@@ -302,7 +355,17 @@ button always lays down the other, so a stroke can be taken back without
 reaching for anything.
 
 Changing nx or ny throws the painting away rather than stretching it into
-something nobody drew.
+something nobody drew. Changing nz does not, and that is not an oversight —
+see below.
+
+**The brush paints a plane, which is what a brush is.** `initial-phase.txt` is
+`nx*ny` fractions whatever `nz` says, and the solver extrudes a single plane's
+worth through the depth when that is what it is handed. So a painted start
+shape in a volume is a prism: the stroke you drew, all the way through. That is
+honest about what was actually drawn. Painting a volume needs a tool nobody has
+written, and treating a 2D stroke as though it meant a sphere would be
+inventing an intention nobody had. When a sphere is what you want,
+`phaseInit=drop` with **Start shape Z** is the row that makes one.
 
 **Run simulation** is no longer greyed out without a model. That was the last
 place where "the profile is optional" was not actually true: an empty domain is
@@ -323,9 +386,12 @@ with a cylinder sitting in the middle of it.
 
 The compressible solver can now put its cells where they are needed, and its
 frames come out as `RECTILINEAR_GRID` with a list of face positions per axis
-instead of one `SPACING`. The reader takes both: `VtkFrame` grows a `faceX` and
-a `faceY`, empty on an evenly spaced frame, and everything that used to
-multiply by `spacingX` asks the frame for the cell instead.
+instead of one `SPACING`. The reader takes both: `VtkFrame` grows a `faceX`,
+a `faceY` and — since the volume port, because the solver's stretched grid grew
+its z axis too — a `faceZ`, each empty on an evenly spaced frame, and
+everything that used to multiply by `spacingX` asks the frame for the cell
+instead. `spacingZ` is a real spacing now rather than a placeholder, so the
+same question has the same answer on all three axes.
 
 Drawing it needed one change and it is worth naming, because getting it wrong
 looks fine. The result view builds one texture pixel per cell and stretches it
@@ -357,6 +423,11 @@ them. Four rows in the GAS / COMPRESSIBLE group drive it - `Refinement levels`,
 `Refine on`, `Refine above` and `Regrid every` - with the last three appearing
 only once a level is asked for.
 
+Patches are volumes now — the solver's `AmrBox` carries a `k0` and an `nz`, the
+clustering splits along the longest of three axes, and averaging down is the
+mean of eight cells rather than four — and none of that reaches this UI either,
+for the same reason as everything below.
+
 The UI needs nothing else, and that is deliberate on the solver's side: a
 refined run still writes the ordinary `.vtk` frame on the base grid, with the
 fine levels averaged into it, so every frame this UI could read before it stays
@@ -372,6 +443,70 @@ zero being refused (it refines the whole domain), rebuilding every zero steps
 being refused, and the three detail keys staying off the command line when
 refinement is off.
 
+## The 3D viewport
+
+A real one, on OpenGL, in the same window. `<SFML/OpenGL.hpp>` gives OpenGL 1.1
+with vertex arrays, `pushGLStates()` / `popGLStates()` is how raw GL and SFML
+drawing share a window, and that is the whole of the new dependency list —
+which is to say there isn't one.
+
+What it draws, each switched on by its own button along the viewport:
+
+| | |
+|---|---|
+| **Box** | the domain, as an outline |
+| **Grid** | the cell grid on the domain faces |
+| **Solid** | the body's surface. **Wire** draws it as a wireframe instead |
+| **Slice X / Y / Z** | a plane of cells, coloured by the current field, moved through the volume on its own track |
+| **Iso** | an isosurface of the colour field, by marching cubes |
+| **Vortices** | a Q-criterion isosurface, with its **core lines** drawn through it |
+| **Streams** | 3D streamlines seeded through the volume |
+| **Tracers** | dots that run along those streamlines, animated |
+| **Colour** | which field everything is coloured by: pressure, speed, u, v, w, vorticity, Q, or any scalar the frame carries |
+| **Ortho** | orthographic instead of perspective |
+| **Frame all** | put the whole volume back in view |
+| **Front / Back / Left / Right / Top / Bottom** | the six axis views |
+
+Everything above is built into vertex arrays **once per frame change**, not per
+redraw, and the isosurface, the vortex surface and the streamlines are built
+off the redraw path entirely. That is what keeps a 128^3 volume interactive
+while you drag it around. Turning a layer off does not merely stop drawing it —
+it stops being rebuilt.
+
+### Clicking in it selects something
+
+Left-click without dragging is a pick, and the viewport answers with what is
+under the cursor:
+
+- **a body** selects it — the `Body` row in the BODIES group moves to that
+  number, and every row under it is about that body from then on. This is the
+  thing the panel could never do: the BODIES group could always *describe* a
+  body's motion and could never *point* at one, and the object numbers come out
+  of the solver's flood fill rather than out of the order you listed the models
+  in, so pointing was the only reliable way to mean a particular body.
+- **a domain face** focuses that face's boundary row, and says in the status
+  line what it currently is and what its speed row holds. Six faces, six rows,
+  and no counting which one `bcFront` is.
+
+Hovering reads out the cell under the cursor without selecting anything.
+
+## The 2D view is a slice through the volume
+
+The old view is kept whole. Not reimplemented, not ported, not "mostly the
+same" — the colour maps, the vectors, the tracers, the probe readout, the
+legend, the zoom and the pan are the code they always were, and on a flat frame
+every pixel of it is what it used to be.
+
+What changed is where its data comes from. On a volume it draws a **slice**:
+pick the axis with **Axis X**, **Axis Y** or **Axis Z**, and move the plane
+along that axis with the track beside it. The frame underneath is the volume;
+what the 2D view gets handed is one plane of cells out of it.
+
+**`V` switches between the two views**, and it is the same key in both
+directions. A frame that is a volume opens in the 3D viewport; a frame that is
+flat opens in the 2D view, because a 3D viewport showing a slab one cell thick
+is a worse picture of a plane than the plane is.
+
 ## Result fields
 
 A frame carries pressure, the solid mask and velocity. Anything else the solver
@@ -380,6 +515,32 @@ was asked to write - `vorticity`, `divergence`, `speed`, `objectId`, `phase`,
 the name the frame used, and the **Field** button walks whatever turned up and
 back round to pressure. Nothing in the UI has a list of which fields exist, so a
 field the solver learns to write later shows up without this project changing.
+
+That last sentence earned itself back during the port. `vorticity` is a scalar
+in a plane and a **vector** in a volume, and the registry did not have to be
+told: a vector array arrives under the same name with three components instead
+of one, and the viewport colours by its magnitude the way it colours by any
+other. `divergence` and `speed` simply gained their z term and are still one
+number.
+
+### Reading a volume frame
+
+`DIMENSIONS nx+1 ny+1 nz+1`, a real `SPACING dz`, `CELL_DATA nx*ny*nz` in
+`(k*ny + j)*nx + i` order, and `VECTORS velocity` as `3*nx*ny*nz` interleaved
+`(u, v, w)` in that same order. A plane run writes `nz+1 == 2` and is read as a
+volume one cell deep.
+
+A frame written by **any earlier version** — a third `DIMENSIONS` token of `1`,
+no `w` at all — still loads, as a volume one cell deep with `w` zero. That is
+not a compatibility shim bolted on the side; it is the same reader taking `nz`
+as 1, which is what those frames have always described. `VolumeFrameTests`
+holds the whole of it, and rather more: the new layout parsed back with the
+right cell in the right place, an old flat frame still reporting itself flat, a
+rectilinear volume with a face list per axis, slices out of a volume matching
+the cells they were cut from, marching cubes, the Q and vorticity criteria, the
+vortex core lines, the streamline tracer, the picking arithmetic, and the
+viewport's vertex-array builds themselves. None of it needs a window, which is
+the only reason any of it could be checked here at all.
 
 Where a scalar sits in the file is the writer's business, and it took a while to
 admit it. The reader used to refuse any array it did not recognise until it had
@@ -408,7 +569,7 @@ a hash lookup to get there.
     ACOUSTICS           Acoustic fields     SPL, pitch and p' on the grid
                         Acoustic window     how far back the mean looks
                         0 dB reference      2e-5 Pa is the usual one
-                        Microphones         x=0.5,y=0.2;... - the accurate half
+                        Microphones         x=0.5,y=0.2,z=0.5;... - the accurate half
                         Mic interval        steps between samples
                         Write .wav          one file per microphone
                         Audio rate          44100 is what everything plays
@@ -437,17 +598,59 @@ nothing for every case that is not a cavity, now appears only for the cavity.
 The mechanics: the panel is one list laid out by walking it, so hiding a row is
 a matter of not advancing the cursor for it and parking it off screen, and a
 group whose rows are all hidden loses its header with them rather than leaving
-a title standing over nothing. Which rows are hidden is a function of five
-other rows, so rather than hang a relayout off every path that can change one
-of them, the signature of those five is read once a frame and the layout redone
+a title standing over nothing. Which rows are hidden is a function of a handful
+of other rows, so rather than hang a relayout off every path that can change one
+of them, the signature of those rows is read once a frame and the layout redone
 when it moves.
+
+### The rows the third dimension added
+
+`nz` is one of the rows the layout signature watches, and every row below is
+**off the panel while it is 1**. Not greyed out — off, the same way the
+incompressible rows go off under `regime=compressible`, and keeping its value
+while it is away.
+
+    GRID         Depth Lz                m, how deep the volume is
+                 nz                      cells through the depth. 1 is a plane
+    BOUNDARIES   Front                   the z = 0 side, same five kinds
+                 Back                    the z = Lz side
+                 Front speed             what a movingWall there slides at
+                 Back speed              the same, at the back
+                 Inlet from 2            the window along the face's second axis
+                 Inlet to 2              the other end of it
+    FLOW         Gravity tilt            deg out of the xy plane towards +z
+    FLUIDS       Start shape Z           where the drop sits in depth
+    GEOMETRY     Slice angle Y           the third model rotation
+
+Plus the nine BODIES rows listed above, and `Inlet profile`, which is on the
+panel either way and grows a third option, `parabolicSpan`, once there is a
+second axis for it to mean something along. `parabolic` bends both axes and is
+duct flow; `parabolicSpan` bends the first and leaves the second flat, which is
+a plane channel extruded through the depth. At `nz = 1` they are the same thing,
+which is why the option only appears when it is not.
+
+`nz` itself sits next to `nx` and `ny` and defaults to 1, so a fresh UI on a
+fresh install is configuring exactly the plane run it always configured, and
+the panel is the length it always was until somebody types a 2 into it.
+
+Every one of these rows has its own hover hint like every other row, and
+`ParameterInfoTests` fails the build if one of them does not — which is how
+they came to have them, rather than by anybody remembering.
 
 ### The preview is on the solver's grid, not on a better one
 
-The UI cuts the section itself, writes it out as `section-adapter.obj`, and
-then compares the mask the solver rasterised out of that file against the one
-it drew for the preview. They used to disagree, by three cells out of 2500, on
-a cube.
+On a plane run the UI cuts the section itself, writes it out as
+`section-adapter.obj`, and then compares the mask the solver rasterised out of
+that file against the one it drew for the preview. They used to disagree, by
+three cells out of 2500, on a cube.
+
+**On a volume run there is no adapter at all.** The solver voxelises the whole
+model rather than cutting a contour out of it, so what goes on the command line
+is the model file itself — the `.stl` or `.obj` you imported — and nothing is
+written in between. That is strictly better and it is also the only thing that
+can be right: a section adapter is a flat outline, and handing one to a
+voxeliser would describe a body with no thickness. The section-cutting code
+below still runs for the preview and for the plane case, and is untouched.
 
 The solver keeps its grid spacing in `float`: `dx = float(Lx)/nx`. The preview
 computed it in `double`. For `Lx = 1, nx = 50` that is 0.019999999552965164
@@ -511,7 +714,7 @@ the unit and a number to aim at:
     CFL              How far the flow may cross a cell in one step. Under 1
                      keeps it stable; lower is safer and slower.
 
-Every one of the 104 rows has one. That is not a claim, it is a test:
+Every one of the 133 rows has one. That is not a claim, it is a test:
 `ParameterInfoTests` walks the whole list and fails if a row has no hint, if a
 hint is under twenty characters (a label, not an explanation), over two hundred
 (that belongs in the long help), does not end in a full stop, or has stray
@@ -529,10 +732,119 @@ long help, the groups and the tabs - moved out of `Application.cpp` into
 `ParameterInfo.{hpp,cpp}`, which is what makes them testable without a window
 and takes six hundred lines out of a file that had nine thousand.
 
-## Keyboard
+## Saving and loading a configuration
+
+**Save** writes the whole setup as `key=value` lines, one per row, in the
+solver's own grammar — which means the file is not a description of a command
+line, it *is* one. Feed it to the solver and it runs: the keys are the keys the
+solver takes, the spelling is the spelling it takes, and nothing in the file
+needs translating on the way out. A handful of UI-only lines ride along
+(`format`, `model`, `outputRoot`, `solver`, `invertSection`, and the `ui`-
+prefixed rows such as the body track), and the solver skips keys it does not
+know, which is the same rule that lets an old frame load into a new build.
+
+**Load** reads one back. Rows the file does not mention keep what they have;
+rows it mentions that this panel does not know are listed rather than
+swallowed, so a configuration written by a newer build tells you what it
+brought that could not be shown.
+
+### Recovering one out of a `.vtk` frame
+
+**Recover setup**, next to the result view's other buttons, is the useful half.
+Every frame the solver writes carries its own configuration in a `configText`
+block at the end — that is how a continuation works — so the settings of any
+run can be read straight back out of any frame it produced:
+
+- point the UI at a folder of frames, pick one, press **Recover setup**;
+- the panel fills in with what that run was actually launched with, down to
+  `nz`, `Lz`, the six boundary kinds and the body grammar;
+- the view switches back to Setup, and the status line names the solver step it
+  came from.
+
+That closes the one gap that used to need a lab notebook: a folder of frames
+from three weeks ago is now self-describing, and a run can be reproduced,
+tweaked and relaunched without anybody remembering what was typed. A frame with
+no `configText` — one written before the block existed — says so instead of
+loading half a configuration.
+
+## Body paths are curves
+
+A body's path through the Layout view is a **Catmull-Rom curve** through its
+control points by default, in three dimensions, rather than a series of
+straight runs between them. Drop three poses in a rough arc and the body flies
+the arc, instead of flying to the middle one, stopping dead and turning.
+
+Straight keyframes have not gone anywhere. They are what the curve is made of
+and what it is written out as — see *Layout* below for the conversion — and a
+track set to interpolate linearly behaves exactly as it did before this, which
+is what every existing `.cfdui` gets.
+
+The curve carries `z` alongside `x`, `y` and the rotation, so a path can leave
+the plane it started in. On a flat run every control point has the same `z`, the
+z term of the curve is a constant, and the path is the 2D path it always was.
+
+`BodyTrackTests` covers the curve as it covers the rest: the round trip, the
+sort, a keyframe replaced at the same instant, the interpolation surviving the
+trip into `bodyMotion`, the clamp outside the track, and two poses at the same
+instant not turning into a division by zero.
+
+## The window is laid out the way Blender lays one out
+
+Not as a compliment to Blender — as the thing to copy when a window has to hold
+a viewport, several hundred parameters and a timeline at once, because that is
+a problem somebody has already solved and users already know the answer to.
+
+- a **header strip** across the top;
+- the **viewport** filling the middle — the 3D one, or the 2D slice view, or
+  the setup preview, depending on what you are doing;
+- a **properties column** down the right, holding the parameter groups, with
+  its tab strip and its search;
+- a **scene outliner** above that column, listing the domain, its six sides and
+  the bodies in the mask — click a row and the panel goes to it, the same way
+  clicking the thing itself in the viewport does;
+- a **timeline** along the bottom, carrying the frame range, the playback
+  cursor, and a tick per keyframe for the selected body.
+
+The orbit, pan and zoom bindings below are Blender's too, numpad views
+included, for exactly the same reason.
+
+## Keyboard and mouse
 
 The window used to answer to the mouse and nothing else, which is fine until
 you have typed a number in and want it back.
+
+**In the 3D viewport:**
+
+| | |
+|---|---|
+| left-drag | orbit |
+| middle-drag | pan |
+| wheel | zoom |
+| left-click, without dragging | pick: a body selects it, a domain face focuses that face's boundary row |
+| hover | read out the cell under the cursor |
+| `V` | switch between the 3D viewport and the 2D view |
+| `F` | frame the whole volume |
+| `Numpad 1` / `Numpad 3` / `Numpad 7` | front, right and top views; hold `Ctrl` for the opposite side |
+| `Numpad 5` | orthographic or perspective |
+
+**In the 2D view, on a volume:**
+
+| | |
+|---|---|
+| `X`, `Y`, `Z` | which axis the slice is cut along |
+| `Up`, `Down` | move the slice plane one cell |
+| wheel | zoom, as it always did |
+| `V` | back to the 3D viewport |
+
+**Anywhere in the result view:**
+
+| | |
+|---|---|
+| `Left`, `Right` | previous and next frame |
+| `Home`, `End` | first and last frame |
+| `Space` | play and pause |
+
+**In the setup view:**
 
 | | |
 |---|---|
@@ -605,9 +917,19 @@ clicking anywhere on a row focuses it.
 
 The BODIES group could always describe a body's motion; it could never point
 at one. **Layout**, next to Paint in the setup viewport, draws the domain as
-the solver will see it - the section rasterised onto the run's own grid, flood
-filled into the same 8-connected objects the solver numbers, in the same scan
-order, so the number under the cursor is the number `bodyMotion` means.
+the solver will see it - the geometry rasterised onto the run's own grid, flood
+filled into the same objects the solver numbers, in the same scan order, so the
+number under the cursor is the number `bodyMotion` means.
+
+Same objects means same connectivity: **8-connected on a plane, 26-connected in
+a volume**, matching the solver exactly. Getting that wrong would be the worst
+kind of wrong — two cells meeting only at a corner counted as one body here and
+two bodies there, and every number after the disagreement pointing at something
+else. Same scan order too, `i` inside `j` inside `k`, which in a volume means
+the whole of the front plane is numbered before any of the one behind it.
+
+In the result view the 3D viewport picks bodies the same way and means the same
+numbers; Layout is where you do it before there is a run to look at.
 
 - **Click a body** to select it. That sets the Body row in the panel too, so
   the existing mass, pins and coupling controls follow the selection.
@@ -620,12 +942,24 @@ order, so the number under the cursor is the number `bodyMotion` means.
 
 What it writes is the interesting part. A keyframe in a user's head is a
 *pose*: this body, here, at this moment. `bodyMotion` is *velocities*. So the
-UI keeps the poses in its own row, `uiBodyTrack` - `@t=..,x=..,y=..,rot=..`
+UI keeps the poses in its own row, `uiBodyTrack` - `@t=..,x=..,y=..,z=..,rot=..`
 per keyframe, per object, saved in the `.cfdui` and never sent anywhere - and
-every time it changes, `bodyMotion` is rewritten from it: each consecutive pair
-of poses becomes the constant velocity that carries the body from one to the
-other, plus a final keyframe of zeroes so it stops rather than sailing on.
-`interp=` and `ease=` ride along on the pose that opens each segment.
+every time it changes, `bodyMotion` is rewritten from it.
+
+By default the poses are read as a **Catmull-Rom curve** through the control
+points rather than as straight runs between them, and the curve is sampled to
+produce the velocities that carry the body along it, plus a final keyframe of
+zeroes so it stops rather than sailing on. A curve through three points is what
+somebody dropping three points meant; a polyline through them is a body that
+flies to the middle one, stops dead and turns. Straight keyframes are still
+there and are what a linear segment produces, so a track written before this
+behaves the way it did. `interp=` and `ease=` ride along on the pose that opens
+each segment.
+
+The curve runs in three dimensions: `z` is interpolated exactly as `x` and `y`
+are, so a body can be told to swing out of the plane it started in. On a flat
+run every pose has the same `z` and the z term is a constant, which is the
+2D path unchanged.
 
 Editing `bodyMotion` by hand still works and still wins - it is what is sent.
 It just means the Layout view no longer knows where the body is supposed to be,
@@ -634,8 +968,13 @@ because the poses it was drawing are no longer the ones the solver will follow.
 The conversion is its own translation unit, `BodyTrack.cpp`, so it is testable
 without a window: `BodyTrackTests` covers the round trip, the sort, the
 replacement of a keyframe at the same instant, the interpolation surviving the
-trip to `bodyMotion`, the clamp outside the track, and two poses at the same
-instant not turning into a division by zero.
+trip to `bodyMotion`, the clamp outside the track, two poses at the same
+instant not turning into a division by zero, and the curve — eight poses round
+a circle staying on the circle between the poses, the curve measuring longer
+than the straight legs through the same points, a track that leaves the plane
+writing a `vz`, enough keyframes emitted to be a curve rather than a polyline,
+each emitted key landing where the curve says, and the last one ending where
+the curve ends.
 
 ## Current UI revision — 2026-08-21
 
@@ -656,28 +995,37 @@ Implemented UI behavior:
   physical, geometry, grid, timestep, multigrid, output, and backend purpose;
 - provides integer +/- adjustment, inline invalid-field highlighting, and
   parameter help text;
-- displays derived grid/runtime information including `dx`, `dy`, cell count,
-  Reynolds number, approximate timestep, approximate VTK count, and estimated
-  multigrid levels;
+- displays derived grid/runtime information including `dx`, `dy`, `dz`, cell
+  count, Reynolds number, approximate timestep, approximate VTK count, and
+  estimated multigrid levels;
 - persists the output-root preference and supports Save/Load of `.cfdui`
-  configuration files;
+  configuration files, and recovers a configuration out of a `.vtk` frame's
+  `configText`;
 - writes UI-owned run metadata with solver identity and requested parameters;
 - exposes a configurable decoded-VTK cache budget;
-- shows `u`, `v`, speed, and pressure for result inspection;
+- shows `u`, `v`, `w`, speed, and pressure for result inspection;
 - adds result-frame keyboard navigation, playback, series/current-frame range
   selection, and a Run details viewer;
+- draws a volume frame in a 3D viewport and a plane of one in the 2D view,
+  switched with `V`;
 - retains VTK restart parsing infrastructure but does not expose unsupported
   restart/continuation launch arguments.
 
-Current fresh-run CLI compatibility remains the 24-key Fluid Solver contract.
-Gravity and continuation keys are not emitted.
+The two lines that used to close this list — that CLI compatibility was the
+24-key contract and that gravity and continuation keys were not emitted — have
+been untrue for several branches and are gone rather than reworded. What the UI
+emits is decided per block by looking the key up in the selected executable's
+own parameter table, which is the table under *Solver integration*, and `nz` is
+the newest row in it.
 
 ## Validation status of this source revision
 
 Performed in the available Linux validation environment:
 
 - Full Linux Release link of `Fluid Solver UI`, with and without AVX2/OpenMP.
-- `FluidSolverRunTests`, `GeometryProcessorTests`, `VtkFrameTests`: passed.
+- All ten test suites green, `VolumeFrameTests` among them: the volume frame
+  layout, an old flat frame still read as an old flat frame, the velocity's
+  third component, and a slice matching the cells it was cut from.
 - Reader equivalence: the same data written as BINARY and as ASCII decodes to
   bit-identical pressure, solid, velocity, speed, finite masks and ranges,
   including frames carrying NaN and infinity.
@@ -696,3 +1044,12 @@ Not performed here:
 
 - Windows and macOS builds;
 - GUI launch and interactive visual verification (the container has no display).
+
+That second line is worth reading twice now that there is a 3D viewport in
+here. Everything in this UI that is not pure drawing is covered by the suites
+in `tests/`, which link `mask_ui_core` and need no window — the volume reader,
+the slicing, the marching cubes, the streamline tracer, the picking arithmetic,
+the body track and the configuration file all have tests. What nobody in this
+environment has done is *look at it*. The orbit feeling right, the isosurface
+being the shape you expected and the colours being legible are not things a
+headless container can tell you.

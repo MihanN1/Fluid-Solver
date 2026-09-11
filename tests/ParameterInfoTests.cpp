@@ -91,6 +91,61 @@ int main() {
                         "' is on no tab but All, so those rows are only "
                         "reachable one way");
 
+    const auto groupOf = [](std::size_t index) {
+        std::size_t found = 0;
+        for (std::size_t group = 0; group < PARAMETER_GROUPS.size(); ++group)
+            if (PARAMETER_GROUPS[group].firstIndex <= index)
+                found = group;
+        return std::string(PARAMETER_GROUPS[found].label);
+    };
+
+    const std::pair<const char*, const char*> volumeRows[] = {
+        {"nz", "DOMAIN / GRID"}, {"Lz", "DOMAIN / GRID"},
+        {"bcFront", "BOUNDARIES"}, {"bcBack", "BOUNDARIES"},
+        {"bcFrontSpeed", "BOUNDARIES"}, {"bcBackSpeed", "BOUNDARIES"},
+        {"inletFrom2", "BOUNDARIES"}, {"inletTo2", "BOUNDARIES"},
+        {"gravityTilt", "FLUIDS"}, {"phaseZ", "FLUIDS"},
+        {"sliceAngleY", "GEOMETRY"},
+        {"uiBodyRotX", "BODIES"}, {"uiBodyRotY", "BODIES"},
+        {"uiBodySlideZ", "BODIES"}, {"uiBodyVz", "BODIES"},
+        {"uiBodySpinX", "BODIES"}, {"uiBodySpinY", "BODIES"},
+        {"uiBodyInertiaX", "BODIES"}, {"uiBodyInertiaY", "BODIES"},
+        {"uiBodyPinZ", "BODIES"}, {"uiBodyPinRotX", "BODIES"},
+        {"uiBodyPinRotY", "BODIES"}, {"uiBodyPath", "BODIES"}
+    };
+    for (const auto& row : volumeRows) {
+        const std::size_t index = parameterIndexForKey(row.first);
+        if (index >= ParameterCount)
+            return fail(std::string("there is no row for '") + row.first + "'");
+        if (groupOf(index) != row.second)
+            return fail(std::string("'") + row.first + "' sits in " +
+                        groupOf(index) + " rather than beside its 2D sibling "
+                        "in " + row.second);
+        if (parameterHelp(index).empty())
+            return fail(std::string("'") + row.first +
+                        "' has no help text, and every row the panel gained "
+                        "gets one");
+        if (parameterHelp(index).size() < 40)
+            return fail(std::string("the help for '") + row.first +
+                        "' is a label rather than an explanation");
+    }
+
+    if (parameterIndexForKey("nx") != CellsX ||
+        parameterIndexForKey("bcTop") != BcTop ||
+        parameterIndexForKey("nowhere") != ParameterCount)
+        return fail("a key does not find the row it names");
+
+    if (parameterHelp(SourceLine).find("z=") == std::string::npos ||
+        parameterHelp(SourceLine).find("elev=") == std::string::npos)
+        return fail("the sources help does not cover z= and elev=, which the "
+                    "solver now reads");
+    if (parameterHelp(MicrophoneLine).find("z=") == std::string::npos)
+        return fail("the microphones help does not cover the third "
+                    "coordinate");
+    if (parameterHelp(InletProfileKind).find("parabolicSpan") ==
+        std::string::npos)
+        return fail("the inlet profile help does not cover parabolicSpan");
+
     std::cout << "ParameterInfoTests OK\n";
     return 0;
 }

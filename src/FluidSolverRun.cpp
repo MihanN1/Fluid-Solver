@@ -62,11 +62,19 @@ bool validateGrid(const FluidSolverRunConfig& config, std::string& error) {
         return fail(error, "ny must be in [8, 1000000]");
     }
 
+    if (config.nz < 1 || config.nz > kMaximumGridDimension) {
+        return fail(error, "nz must be in [1, 1000000]");
+    }
+
     const std::size_t width = static_cast<std::size_t>(config.nx);
     const std::size_t height = static_cast<std::size_t>(config.ny);
+    const std::size_t depth = static_cast<std::size_t>(config.nz);
     if (width > std::numeric_limits<std::size_t>::max() / height ||
         width * height > kMaximumGridCells) {
         return fail(error, "nx * ny exceeds the 100000000-cell limit");
+    }
+    if (width * height > kMaximumGridCells / depth) {
+        return fail(error, "nx * ny * nz exceeds the 100000000-cell limit");
     }
     return true;
 }
@@ -157,6 +165,7 @@ bool validateFluidSolverRunConfig(const FluidSolverRunConfig& config,
     if (!validateGrid(config, error) ||
         !requirePositive("Lx", config.Lx, error) ||
         !requirePositive("Ly", config.Ly, error) ||
+        !requirePositive("Lz", config.Lz, error) ||
         !requireNonNegative("U0", config.U0, error) ||
         !requirePositive("nu", config.nu, error) ||
         !requirePositive("ro", config.ro, error) ||
@@ -167,6 +176,7 @@ bool validateFluidSolverRunConfig(const FluidSolverRunConfig& config,
         !requirePositive("smootherOmega", config.smootherOmega, error) ||
         !requirePositive("mgTolerance", config.mgTolerance, error) ||
         !requireFinite("sliceAngleX", config.sliceAngleX, error) ||
+        !requireFinite("sliceAngleY", config.sliceAngleY, error) ||
         !requireFinite("sliceAngleZ", config.sliceAngleZ, error) ||
         !requireFinite("sliceRotation", config.sliceRotation, error)) {
         return false;
@@ -203,7 +213,8 @@ bool validateFluidSolverRunConfig(const FluidSolverRunConfig& config,
         return fail(error, "threads must be zero (all cores) or positive");
     }
     if (!requireNonNegative("gravityAccel", config.gravityAccel, error) ||
-        !requireFinite("gravityAngle", config.gravityAngle, error)) {
+        !requireFinite("gravityAngle", config.gravityAngle, error) ||
+        !requireFinite("gravityTilt", config.gravityTilt, error)) {
         return false;
     }
     if (config.wallMotion.find_first_of("\r\n") != std::string::npos) {
@@ -382,9 +393,9 @@ bool validateFluidSolverRunConfig(const FluidSolverRunConfig& config,
             return fail(error, "phaseInit is layer, drop, column or file");
         }
         for (double fraction : {config.phaseLevel, config.phaseX,
-                                config.phaseY}) {
+                                config.phaseY, config.phaseZ}) {
             if (!(fraction >= 0.0 && fraction <= 1.0))
-                return fail(error, "phaseLevel, phaseX and phaseY are "
+                return fail(error, "phaseLevel, phaseX, phaseY and phaseZ are "
                                    "fractions of the domain, so they live "
                                    "between 0 and 1");
         }
@@ -435,10 +446,20 @@ bool validateFluidSolverRunConfig(const FluidSolverRunConfig& config,
         return fail(error, "inletFrom must be below inletTo, or the band the "
                            "inlet occupies is empty");
     }
+    if (!(config.inletFrom2 >= 0.0 && config.inletFrom2 <= 1.0) ||
+        !(config.inletTo2 >= 0.0 && config.inletTo2 <= 1.0)) {
+        return fail(error, "inletFrom2 and inletTo2 are fractions of a side, "
+                           "so they live between 0 and 1");
+    }
+    if (config.inletFrom2 >= config.inletTo2) {
+        return fail(error, "inletFrom2 must be below inletTo2, or the window "
+                           "the inlet occupies is empty");
+    }
     {
         bool anyOutlet = false;
         bool anyInlet = false;
-        for (int side = 0; side < 4; ++side) {
+        const int sides = config.supportsVolume && config.nz > 1 ? 6 : 4;
+        for (int side = 0; side < sides; ++side) {
             if (config.boundaryKind[side] == "outlet")
                 anyOutlet = true;
             if (config.boundaryKind[side] == "inlet")
@@ -531,11 +552,20 @@ bool buildFluidSolverArguments(
     } else {
         arguments.push_back("geometryFile=" + config.geometryFile.u8string());
         arguments.push_back("sliceAngleX=" + serializeDouble(config.sliceAngleX));
+        if (config.supportsVolume) {
+            arguments.push_back(
+                "sliceAngleY=" + serializeDouble(config.sliceAngleY));
+        }
         arguments.push_back("sliceAngleZ=" + serializeDouble(config.sliceAngleZ));
         arguments.push_back(
             "sliceRotation=" + serializeDouble(config.sliceRotation));
         arguments.push_back(
             "invertSection=" + std::string(config.invertSection ? "1" : "0"));
+    }
+
+    if (config.supportsVolume && !config.restart) {
+        arguments.push_back("Lz=" + serializeDouble(config.Lz));
+        arguments.push_back("nz=" + std::to_string(config.nz));
     }
 
     if (config.supportsRuntimeSwitches) {
@@ -556,6 +586,10 @@ bool buildFluidSolverArguments(
             "gravityAccel=" + serializeDouble(config.gravityAccel));
         arguments.push_back(
             "gravityAngle=" + serializeDouble(config.gravityAngle));
+        if (config.supportsVolume) {
+            arguments.push_back(
+                "gravityTilt=" + serializeDouble(config.gravityTilt));
+        }
     }
     if (config.supportsWallMotion) {
         arguments.push_back("wallMotion=" + config.wallMotion);
@@ -682,6 +716,10 @@ bool buildFluidSolverArguments(
                                     serializeDouble(config.phaseLevel));
                 arguments.push_back("phaseX=" + serializeDouble(config.phaseX));
                 arguments.push_back("phaseY=" + serializeDouble(config.phaseY));
+                if (config.supportsVolume) {
+                    arguments.push_back("phaseZ=" +
+                                        serializeDouble(config.phaseZ));
+                }
             }
         }
         arguments.push_back("sources=" + config.sources);
@@ -694,11 +732,13 @@ bool buildFluidSolverArguments(
             "steadyTolerance=" + serializeDouble(config.steadyTolerance));
     }
     if (config.supportsBoundaries && config.caseType != "cavity") {
-        static const char* const kKind[4] = {
-            "bcLeft", "bcRight", "bcBottom", "bcTop"};
-        static const char* const kSpeed[4] = {
-            "bcLeftSpeed", "bcRightSpeed", "bcBottomSpeed", "bcTopSpeed"};
-        for (int side = 0; side < 4; ++side) {
+        static const char* const kKind[6] = {
+            "bcLeft", "bcRight", "bcBottom", "bcTop", "bcFront", "bcBack"};
+        static const char* const kSpeed[6] = {
+            "bcLeftSpeed", "bcRightSpeed", "bcBottomSpeed", "bcTopSpeed",
+            "bcFrontSpeed", "bcBackSpeed"};
+        const int sides = config.supportsVolume ? 6 : 4;
+        for (int side = 0; side < sides; ++side) {
             arguments.push_back(std::string(kKind[side]) + "=" +
                                 config.boundaryKind[side]);
 
@@ -709,6 +749,11 @@ bool buildFluidSolverArguments(
         }
         arguments.push_back("inletFrom=" + serializeDouble(config.inletFrom));
         arguments.push_back("inletTo=" + serializeDouble(config.inletTo));
+        if (config.supportsVolume) {
+            arguments.push_back(
+                "inletFrom2=" + serializeDouble(config.inletFrom2));
+            arguments.push_back("inletTo2=" + serializeDouble(config.inletTo2));
+        }
         arguments.push_back("inletProfile=" + config.inletProfile);
     }
     return true;
