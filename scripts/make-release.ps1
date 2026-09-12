@@ -14,7 +14,7 @@
     There is no 32-bit CUDA and has not been since CUDA 9, and no AVX2 or CUDA
     on ARM at all - AVX2 is an x86 instruction set and the toolkit has no
     Windows-on-ARM target. "plain" - no AVX2, no OpenMP, no CUDA - is the row
-    that runs on anything, and the only one with no vcomp140.dll beside it.
+    that runs on anything, and the only one with no OpenMP runtime beside it.
 
     The installer is ONE file for all three architectures: it reads the
     processor at run time and unpacks the matching build, so nobody downloading
@@ -114,16 +114,26 @@ function Resolve-CudaArchs {
     return "75;80;86;89;90"
 }
 
-function Find-Vcomp($Bits) {
+function Find-OpenMpRuntime($Bits) {
+    # /openmp:llvm links libomp140.<arch>.dll, which sits beside vcomp140.dll in
+    # the same redist tree. vcomp140.dll is still looked for after it, so a
+    # toolchain that fell back to the classic runtime still packs.
+    $names = switch ($Bits) {
+        "x64"   { @("libomp140.x86_64.dll", "vcomp140.dll") }
+        "arm64" { @("libomp140.aarch64.dll", "vcomp140.dll") }
+        default { @("libomp140.i386.dll", "vcomp140.dll") }
+    }
     $roots = @()
     if ($env:VCToolsRedistDir) { $roots += $env:VCToolsRedistDir }
     $roots += "${env:ProgramFiles}\Microsoft Visual Studio"
     $roots += "${env:ProgramFiles(x86)}\Microsoft Visual Studio"
-    foreach ($root in $roots) {
-        if (-not (Test-Path $root)) { continue }
-        $hit = Get-ChildItem $root -Recurse -Filter vcomp140.dll -ErrorAction SilentlyContinue |
-               Where-Object { $_.FullName -match "\\$Bits\\" } | Select-Object -First 1
-        if ($hit) { return $hit.FullName }
+    foreach ($name in $names) {
+        foreach ($root in $roots) {
+            if (-not (Test-Path $root)) { continue }
+            $hit = Get-ChildItem $root -Recurse -Filter $name -ErrorAction SilentlyContinue |
+                   Where-Object { $_.FullName -match "\\$Bits\\" } | Select-Object -First 1
+            if ($hit) { return $hit.FullName }
+        }
     }
     return $null
 }
@@ -258,9 +268,12 @@ function Build-Row($Row, $Archs) {
             "ARM64" { "arm64" }
             default { "x86" }
         }
-        $dll = Find-Vcomp $bits
-        if ($dll) { Copy-Item $dll $rowDir -Force; $extra = " + vcomp140.dll" }
-        else { $problems.Add("$name - vcomp140.dll not found, this build will not start") }
+        $dll = Find-OpenMpRuntime $bits
+        if ($dll) {
+            Copy-Item $dll $rowDir -Force
+            $extra = " + " + (Split-Path $dll -Leaf)
+        }
+        else { $problems.Add("$name - no OpenMP runtime DLL found, this build will not start") }
     }
 
     # Signed here, one row at a time, rather than after the fact: the installer

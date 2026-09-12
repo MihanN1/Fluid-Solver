@@ -28,11 +28,18 @@ static void printUsage(const char* exe) {
         "                                       which download to take\n"
         "  " << exe << " --check-updates        ask GitHub for a newer release\n"
         "\n"
-        "Keys: Lx Ly nx ny U0 nu CFL totalTime dtUpdateInterval dtSafety\n"
+        "Keys: Lx Ly Lz nx ny nz U0 nu CFL totalTime dtUpdateInterval dtSafety\n"
         "      omega smootherOmega mgIterations mgTolerance mgMinCoarseSize\n"
-        "      saveInterval outputDir geometryFile sliceAngleX sliceAngleZ\n"
-        "      sliceRotation invertSection ro useCuda restart restartFile addTime\n"
-        "      gravityEnabled gravityAccel gravityAngle wallMotion\n"
+        "      saveInterval outputDir geometryFile sliceAngleX sliceAngleY\n"
+        "      sliceAngleZ sliceRotation invertSection ro useCuda restart\n"
+        "      restartFile addTime gravityEnabled gravityAccel gravityAngle\n"
+        "      gravityTilt phaseZ wallMotion bcFront bcBack bcFrontSpeed\n"
+        "      bcBackSpeed inletFrom2 inletTo2\n"
+        "\n"
+        "nz is 1 by default, which is the plane case every earlier version\n"
+        "solved. nz>1 turns the same run into a volume: every feature - phases,\n"
+        "gravity, turbulence, moving bodies, the compressible solver, AMR -\n"
+        "works there, and Lz says how deep the box is.\n"
         "\n"
         "Rules:\n"
         "  key=value, no spaces around '='  nx=256      not  nx = 256\n"
@@ -43,7 +50,8 @@ static void printUsage(const char* exe) {
         "  quote paths with spaces          \"geometryFile=C:\\my models\\a.stl\"\n"
         "  wallMotion has a grammar of its own:\n"
         "        <object>:<setting>=<value>,<setting>=<value>;<next object>:...\n"
-        "        settings are rot=<deg/s>, slideX=<m/s>, slideY=<m/s>, slip=1\n"
+        "        settings are rotX/rotY/rotZ=<deg/s>, slideX/slideY/slideZ=\n"
+        "        <m/s>, slip=1 (rot= is rotZ=)\n"
         "        \"wallMotion=1:rot=90,slideX=0.5;2:slip=1\"\n"
         "        an object either moves (rot/slide) or slips, never both\n"
         "\n"
@@ -130,7 +138,7 @@ static void warnAboutScheme(const Config& cfg) {
 
 int main(int argc, char** argv) {
     (void)kBuildMarkersKeepAlive;
-    std::cout << "=== CFD-Solver-2D " << CFD_RELEASE_VERSION << " ("
+    std::cout << "=== Fluid Solver " << CFD_RELEASE_VERSION << " ("
               << CFD_BUILD_FEATURES << ") ===\n\n";
 
     // Read before anything asks a question, so the answers the user gave last
@@ -404,7 +412,8 @@ int main(int argc, char** argv) {
 
     std::string balanceError;
     if (!checkBoundaryMassBalance(cfg.boundaries, cfg.U0,
-                                  DomainExtent{cfg.Lx, cfg.Ly, cfg.nx, cfg.ny},
+                                  DomainExtent{cfg.Lx, cfg.Ly, cfg.Lz,
+                                               cfg.nx, cfg.ny, cfg.nz},
                                   mesh.solid, balanceError, sourceInflow)) {
         std::cerr << "\n!!! " << balanceError << "\n\nNothing has been "
                      "started.\n";

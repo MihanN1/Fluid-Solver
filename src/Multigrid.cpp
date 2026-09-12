@@ -17,8 +17,9 @@ static const int PARALLEL_ROWS_MIN = 32;
 namespace {
 // On the coarsest level the smoother acts as a solver, so it needs enough
 // sweeps to push information across the whole grid
-int coarseSweeps(int nx, int ny) {
-    const int wanted = 2 * (nx > ny ? nx : ny);
+int coarseSweeps(int nx, int ny, int nz) {
+    const int planar = (nx > ny) ? nx : ny;
+    const int wanted = 2 * ((planar > nz) ? planar : nz);
     if (wanted < COARSE_SMOOTH_SWEEPS) return COARSE_SMOOTH_SWEEPS;
     return (wanted > 400) ? 400 : wanted;
 }
@@ -36,12 +37,15 @@ float horizontalSum(__m256 v) {
 #endif
 }
 
-Multigrid::Multigrid(int nx, int ny, float dx, float dy, int minCoarseSize)
+Multigrid::Multigrid(int nx, int ny, int nz, float dx, float dy, float dz,
+                     int minCoarseSize)
     :
     nx(nx),
     ny(ny),
+    nz(nz),
     dx(dx),
     dy(dy),
+    dz(dz),
     minCoarseSize(minCoarseSize < 4 ? 4 : minCoarseSize)
 {
 }
@@ -56,18 +60,22 @@ void Multigrid::buildHierarchy() {
     gridLevels.clear();
     int curNx = nx;
     int curNy = ny;
+    int curNz = nz;
     float curDx = dx;
     float curDy = dy;
+    float curDz = dz;
 
     while (true) {
         Level grid;
         grid.nx = curNx;
         grid.ny = curNy;
-        grid.cellCount = curNx * curNy;
+        grid.nz = curNz;
+        grid.cellCount = curNx * curNy * curNz;
         grid.dx = curDx;
         grid.dy = curDy;
+        grid.dz = curDz;
 
-        const int halo = std::max(curNx, 8);
+        const int halo = std::max(curNx * curNy, 8);
         grid.pressure.init(grid.cellCount, halo);
         grid.residual.init(grid.cellCount, halo);
 
@@ -77,13 +85,17 @@ void Multigrid::buildHierarchy() {
         grid.coefE.assign(padded, 0.0f);
         grid.coefS.assign(padded, 0.0f);
         grid.coefN.assign(padded, 0.0f);
+        grid.coefF.assign(padded, 0.0f);
+        grid.coefB.assign(padded, 0.0f);
         grid.diag.assign(padded, 0.0f);
         grid.invDiag.assign(padded, 0.0f);
         grid.solid.assign(static_cast<size_t>(grid.cellCount), 0);
         grid.faceX.assign(
-            static_cast<size_t>(grid.nx + 1) * grid.ny, 1.0f);
+            static_cast<size_t>(grid.nx + 1) * grid.ny * grid.nz, 1.0f);
         grid.faceY.assign(
-            static_cast<size_t>(grid.nx) * (grid.ny + 1), 1.0f);
+            static_cast<size_t>(grid.nx) * (grid.ny + 1) * grid.nz, 1.0f);
+        grid.faceZ.assign(
+            static_cast<size_t>(grid.nx) * grid.ny * (grid.nz + 1), 1.0f);
         gridLevels.push_back(std::move(grid));
 
         // Semi-coarsening: a point smoother only damps the error along the axis
@@ -94,26 +106,35 @@ void Multigrid::buildHierarchy() {
         // transpose of prolongation, which makes the V-cycle diverge.
         bool canX = (curNx > minCoarseSize) && (curNx % 2 == 0);
         bool canY = (curNy > minCoarseSize) && (curNy % 2 == 0);
+        bool canZ = (curNz > minCoarseSize) && (curNz % 2 == 0);
 
         // Not a strict comparison: a ratio of exactly two is the case the rule
         // exists for, and Lx=2, Ly=1 on a square cell count lands on it every
         // time. Letting it through as isotropic carried the anisotropy down
         // the whole hierarchy and cost a level and most of the convergence.
-        if (canX && canY) {
-            if (curDx <= 0.5f * curDy)      canY = false;
-            else if (curDy <= 0.5f * curDx) canX = false;
-        }
-        if (!canX && !canY)
+        float smallest = 0.0f;
+        if (canX && (smallest == 0.0f || curDx < smallest)) smallest = curDx;
+        if (canY && (smallest == 0.0f || curDy < smallest)) smallest = curDy;
+        if (canZ && (smallest == 0.0f || curDz < smallest)) smallest = curDz;
+        if (canX && curDx >= 2.0f * smallest) canX = false;
+        if (canY && curDy >= 2.0f * smallest) canY = false;
+        if (canZ && curDz >= 2.0f * smallest) canZ = false;
+
+        if (!canX && !canY && !canZ)
             break;
 
         const int nextNx = canX ? (curNx + 1) / 2 : curNx;
         const int nextNy = canY ? (curNy + 1) / 2 : curNy;
+        const int nextNz = canZ ? (curNz + 1) / 2 : curNz;
         curDx *= static_cast<float>(curNx) / static_cast<float>(nextNx);
         curDy *= static_cast<float>(curNy) / static_cast<float>(nextNy);
+        curDz *= static_cast<float>(curNz) / static_cast<float>(nextNz);
         gridLevels.back().refineX = canX ? 2 : 1;
         gridLevels.back().refineY = canY ? 2 : 1;
+        gridLevels.back().refineZ = canZ ? 2 : 1;
         curNx = nextNx;
         curNy = nextNy;
+        curNz = nextNz;
     }
 
     levels = static_cast<int>(gridLevels.size());
@@ -157,6 +178,7 @@ void Multigrid::buildTransferTables(int fineLevel) {
     const int coarseLevel = fineLevel + 1;
     fine.transferX.clear();
     fine.transferY.clear();
+    fine.transferZ.clear();
     if (coarseLevel >= levels)
         return;
     const Level& coarse = gridLevels[coarseLevel];
@@ -170,6 +192,11 @@ void Multigrid::buildTransferTables(int fineLevel) {
     for (int j = 0; j < fine.ny; ++j) {
         const Stencil1D s = transferStencil(j, fine.refineY, coarse.ny);
         fine.transferY[j] = {s.coarse0, s.coarse1, s.weight0, s.weight1};
+    }
+    fine.transferZ.resize(static_cast<size_t>(fine.nz));
+    for (int k = 0; k < fine.nz; ++k) {
+        const Stencil1D s = transferStencil(k, fine.refineZ, coarse.nz);
+        fine.transferZ[k] = {s.coarse0, s.coarse1, s.weight0, s.weight1};
     }
 
     const auto invert = [](const std::vector<Level::Transfer>& forward,
@@ -199,6 +226,7 @@ void Multigrid::buildTransferTables(int fineLevel) {
     };
     invert(fine.transferX, coarse.nx, fine.gatherX);
     invert(fine.transferY, coarse.ny, fine.gatherY);
+    invert(fine.transferZ, coarse.nz, fine.gatherZ);
 }
 
 void Multigrid::markSolidLevels() {
@@ -219,35 +247,55 @@ void Multigrid::buildTransferWeights(int fineLevel) {
 
     fine.prolongWeight.assign(static_cast<size_t>(fine.cellCount), 0.0f);
 
-    if (fine.transferX.empty() || fine.transferY.empty())
+    if (fine.transferX.empty() || fine.transferY.empty() ||
+        fine.transferZ.empty())
         buildTransferTables(fineLevel);
     if (coarseLevel >= levels)
         return;
 
     const Level& coarse = gridLevels[coarseLevel];
-    #pragma omp parallel for schedule(static) if (fine.ny >= PARALLEL_ROWS_MIN)
-    for (int j = 0; j < fine.ny; ++j) {
-        const Level::Transfer sy = fine.transferY[j];
-        for (int i = 0; i < fine.nx; ++i) {
-            const int fineId = j * fine.nx + i;
-            if (fine.solid[fineId] || fine.diag[fineId] == 0.0f)
-                continue;
-            const Level::Transfer sx = fine.transferX[i];
-
-            const int coarseX[4] = {sx.coarse0, sx.coarse1, sx.coarse0, sx.coarse1};
-            const int coarseY[4] = {sy.coarse0, sy.coarse0, sy.coarse1, sy.coarse1};
-            const float weights[4] = {
-                sx.weight0 * sy.weight0, sx.weight1 * sy.weight0,
-                sx.weight0 * sy.weight1, sx.weight1 * sy.weight1};
-
-            float weight = 0.0f;
-            for (int k = 0; k < 4; ++k) {
-                if (weights[k] == 0.0f)
+    const int coarsePlane = coarse.nx * coarse.ny;
+    #pragma omp parallel for collapse(2) schedule(static) \
+        if (fine.nz * fine.ny >= PARALLEL_ROWS_MIN)
+    for (int k = 0; k < fine.nz; ++k) {
+        for (int j = 0; j < fine.ny; ++j) {
+            const Level::Transfer sz = fine.transferZ[k];
+            const Level::Transfer sy = fine.transferY[j];
+            for (int i = 0; i < fine.nx; ++i) {
+                const int fineId = (k * fine.ny + j) * fine.nx + i;
+                if (fine.solid[fineId] || fine.diag[fineId] == 0.0f)
                     continue;
-                if (!coarse.solid[coarseY[k] * coarse.nx + coarseX[k]])
-                    weight += weights[k];
+                const Level::Transfer sx = fine.transferX[i];
+
+                const int coarseX[8] = {
+                    sx.coarse0, sx.coarse1, sx.coarse0, sx.coarse1,
+                    sx.coarse0, sx.coarse1, sx.coarse0, sx.coarse1};
+                const int coarseY[8] = {
+                    sy.coarse0, sy.coarse0, sy.coarse1, sy.coarse1,
+                    sy.coarse0, sy.coarse0, sy.coarse1, sy.coarse1};
+                const int coarseZ[8] = {
+                    sz.coarse0, sz.coarse0, sz.coarse0, sz.coarse0,
+                    sz.coarse1, sz.coarse1, sz.coarse1, sz.coarse1};
+                const float weights[8] = {
+                    sx.weight0 * sy.weight0 * sz.weight0,
+                    sx.weight1 * sy.weight0 * sz.weight0,
+                    sx.weight0 * sy.weight1 * sz.weight0,
+                    sx.weight1 * sy.weight1 * sz.weight0,
+                    sx.weight0 * sy.weight0 * sz.weight1,
+                    sx.weight1 * sy.weight0 * sz.weight1,
+                    sx.weight0 * sy.weight1 * sz.weight1,
+                    sx.weight1 * sy.weight1 * sz.weight1};
+
+                float weight = 0.0f;
+                for (int c = 0; c < 8; ++c) {
+                    if (weights[c] == 0.0f)
+                        continue;
+                    if (!coarse.solid[coarseZ[c] * coarsePlane +
+                                      coarseY[c] * coarse.nx + coarseX[c]])
+                        weight += weights[c];
+                }
+                fine.prolongWeight[fineId] = weight;
             }
-            fine.prolongWeight[fineId] = weight;
         }
     }
 }
@@ -255,58 +303,76 @@ void Multigrid::buildTransferWeights(int fineLevel) {
 void Multigrid::buildCoefficients(Level& grid) {
     const int nx = grid.nx;
     const int ny = grid.ny;
+    const int nz = grid.nz;
+    const int plane = nx * ny;
     const float invDx2 = 1.0f / (grid.dx * grid.dx);
     const float invDy2 = 1.0f / (grid.dy * grid.dy);
+    const float invDz2 = 1.0f / (grid.dz * grid.dz);
 
-    #pragma omp parallel for schedule(static) if (ny >= PARALLEL_ROWS_MIN)
-    for (int j = 0; j < ny; ++j) {
-        const int row = j * nx;
-        for (int i = 0; i < nx; ++i) {
-            const int id = row + i;
+    #pragma omp parallel for collapse(2) schedule(static) \
+        if (nz * ny >= PARALLEL_ROWS_MIN)
+    for (int k = 0; k < nz; ++k) {
+        for (int j = 0; j < ny; ++j) {
+            const int row = (k * ny + j) * nx;
+            for (int i = 0; i < nx; ++i) {
+                const int id = row + i;
 
-            if (grid.solid[id]) {
-                grid.coefW[id] = grid.coefE[id] = 0.0f;
-                grid.coefS[id] = grid.coefN[id] = 0.0f;
-                grid.diag[id] = 0.0f;
-                grid.invDiag[id] = 0.0f;
-                continue;
-            }
-            // A link is only opened towards a fluid neighbour, so the solid
-            // walls are baked into the stencil instead of patched afterwards
-            const int faceRowX = j * (nx + 1);
-            const int faceRowY = j * nx;
-            const float wW = grid.faceX[faceRowX + i];
-            const float wE = grid.faceX[faceRowX + i + 1];
-            const float wS = grid.faceY[faceRowY + i];
-            const float wN = grid.faceY[faceRowY + nx + i];
+                if (grid.solid[id]) {
+                    grid.coefW[id] = grid.coefE[id] = 0.0f;
+                    grid.coefS[id] = grid.coefN[id] = 0.0f;
+                    grid.coefF[id] = grid.coefB[id] = 0.0f;
+                    grid.diag[id] = 0.0f;
+                    grid.invDiag[id] = 0.0f;
+                    continue;
+                }
+                // A link is only opened towards a fluid neighbour, so the solid
+                // walls are baked into the stencil instead of patched afterwards
+                const int faceRowX = (k * ny + j) * (nx + 1);
+                const int faceRowY = (k * (ny + 1) + j) * nx;
+                const int faceRowZ = row;
+                const float wW = grid.faceX[faceRowX + i];
+                const float wE = grid.faceX[faceRowX + i + 1];
+                const float wS = grid.faceY[faceRowY + i];
+                const float wN = grid.faceY[faceRowY + nx + i];
+                const float wF = grid.faceZ[faceRowZ + i];
+                const float wB = grid.faceZ[faceRowZ + plane + i];
 
-            const float coefW = (i > 0      && !grid.solid[id - 1])  ? wW * invDx2 : 0.0f;
-            const float coefE = (i < nx - 1 && !grid.solid[id + 1])  ? wE * invDx2 : 0.0f;
-            const float coefS = (j > 0      && !grid.solid[id - nx]) ? wS * invDy2 : 0.0f;
-            const float coefN = (j < ny - 1 && !grid.solid[id + nx]) ? wN * invDy2 : 0.0f;
+                const float coefW = (i > 0      && !grid.solid[id - 1])  ? wW * invDx2 : 0.0f;
+                const float coefE = (i < nx - 1 && !grid.solid[id + 1])  ? wE * invDx2 : 0.0f;
+                const float coefS = (j > 0      && !grid.solid[id - nx]) ? wS * invDy2 : 0.0f;
+                const float coefN = (j < ny - 1 && !grid.solid[id + nx]) ? wN * invDy2 : 0.0f;
+                const float coefF = (k > 0      && !grid.solid[id - plane]) ? wF * invDz2 : 0.0f;
+                const float coefB = (k < nz - 1 && !grid.solid[id + plane]) ? wB * invDz2 : 0.0f;
 
-            float diag = coefW + coefE + coefS + coefN;
+                float diag = coefW + coefE + coefS + coefN + coefF + coefB;
 
-            if (i == 0 && pressureBC.left == PressureSideBC::Dirichlet)
-                diag += 2.0f * wW * invDx2;
-            if (i == nx - 1 && pressureBC.right == PressureSideBC::Dirichlet)
-                diag += 2.0f * wE * invDx2;
-            if (j == 0 && pressureBC.bottom == PressureSideBC::Dirichlet)
-                diag += 2.0f * wS * invDy2;
-            if (j == ny - 1 && pressureBC.top == PressureSideBC::Dirichlet)
-                diag += 2.0f * wN * invDy2;
+                if (i == 0 && pressureBC.left == PressureSideBC::Dirichlet)
+                    diag += 2.0f * wW * invDx2;
+                if (i == nx - 1 && pressureBC.right == PressureSideBC::Dirichlet)
+                    diag += 2.0f * wE * invDx2;
+                if (j == 0 && pressureBC.bottom == PressureSideBC::Dirichlet)
+                    diag += 2.0f * wS * invDy2;
+                if (j == ny - 1 && pressureBC.top == PressureSideBC::Dirichlet)
+                    diag += 2.0f * wN * invDy2;
+                if (k == 0 && pressureBC.front == PressureSideBC::Dirichlet)
+                    diag += 2.0f * wF * invDz2;
+                if (k == nz - 1 && pressureBC.back == PressureSideBC::Dirichlet)
+                    diag += 2.0f * wB * invDz2;
 
-            grid.coefW[id] = coefW;
-            grid.coefE[id] = coefE;
-            grid.coefS[id] = coefS;
-            grid.coefN[id] = coefN;
+                grid.coefW[id] = coefW;
+                grid.coefE[id] = coefE;
+                grid.coefS[id] = coefS;
+                grid.coefN[id] = coefN;
+                grid.coefF[id] = coefF;
+                grid.coefB[id] = coefB;
 
-            if (diag > 0.0f) {
-                grid.diag[id] = diag;
-                grid.invDiag[id] = 1.0f / diag;
-            } else {
-                grid.diag[id] = 0.0f;
-                grid.invDiag[id] = 0.0f;
+                if (diag > 0.0f) {
+                    grid.diag[id] = diag;
+                    grid.invDiag[id] = 1.0f / diag;
+                } else {
+                    grid.diag[id] = 0.0f;
+                    grid.invDiag[id] = 0.0f;
+                }
             }
         }
     }
@@ -326,20 +392,26 @@ void Multigrid::setGeometry(const std::vector<uint8_t>& solid,
         const Level& fine = gridLevels[l - 1];
         Level& coarse = gridLevels[l];
 
-        for (int j = 0; j < coarse.ny; ++j) {
-            for (int i = 0; i < coarse.nx; ++i) {
-                const int i0 = i * fine.refineX;
-                const int i1 = std::min(i0 + fine.refineX - 1, fine.nx - 1);
-                const int j0 = j * fine.refineY;
-                const int j1 = std::min(j0 + fine.refineY - 1, fine.ny - 1);
+        for (int k = 0; k < coarse.nz; ++k) {
+            for (int j = 0; j < coarse.ny; ++j) {
+                for (int i = 0; i < coarse.nx; ++i) {
+                    const int i0 = i * fine.refineX;
+                    const int i1 = std::min(i0 + fine.refineX - 1, fine.nx - 1);
+                    const int j0 = j * fine.refineY;
+                    const int j1 = std::min(j0 + fine.refineY - 1, fine.ny - 1);
+                    const int k0 = k * fine.refineZ;
+                    const int k1 = std::min(k0 + fine.refineZ - 1, fine.nz - 1);
 
-                bool allSolid = true;
-                for (int jj = j0; jj <= j1 && allSolid; ++jj)
-                    for (int ii = i0; ii <= i1 && allSolid; ++ii)
-                        if (!fine.solid[jj * fine.nx + ii])
-                            allSolid = false;
+                    bool allSolid = true;
+                    for (int kk = k0; kk <= k1 && allSolid; ++kk)
+                        for (int jj = j0; jj <= j1 && allSolid; ++jj)
+                            for (int ii = i0; ii <= i1 && allSolid; ++ii)
+                                if (!fine.solid[(kk * fine.ny + jj) * fine.nx + ii])
+                                    allSolid = false;
 
-                coarse.solid[j * coarse.nx + i] = allSolid ? 1 : 0;
+                    coarse.solid[(k * coarse.ny + j) * coarse.nx + i] =
+                        allSolid ? 1 : 0;
+                }
             }
         }
     }
@@ -369,18 +441,22 @@ void Multigrid::setPressureBC(const MultigridBC& bc) {
         bc.left != PressureSideBC::Dirichlet &&
         bc.right != PressureSideBC::Dirichlet &&
         bc.bottom != PressureSideBC::Dirichlet &&
-        bc.top != PressureSideBC::Dirichlet;
+        bc.top != PressureSideBC::Dirichlet &&
+        bc.front != PressureSideBC::Dirichlet &&
+        bc.back != PressureSideBC::Dirichlet;
     if (geometryReady)
         rebuildCoefficients();
 }
 
 void Multigrid::setCoefficients(const std::vector<float>& faceX,
-                                const std::vector<float>& faceY) {
+                                const std::vector<float>& faceY,
+                                const std::vector<float>& faceZ) {
     if (gridLevels.empty())
         buildHierarchy();
 
-    const size_t wantX = static_cast<size_t>(nx + 1) * ny;
-    const size_t wantY = static_cast<size_t>(nx) * (ny + 1);
+    const size_t wantX = static_cast<size_t>(nx + 1) * ny * nz;
+    const size_t wantY = static_cast<size_t>(nx) * (ny + 1) * nz;
+    const size_t wantZ = static_cast<size_t>(nx) * ny * (nz + 1);
     const bool uniform = faceX.size() < wantX || faceY.size() < wantY;
 
     if (uniform) {
@@ -388,12 +464,19 @@ void Multigrid::setCoefficients(const std::vector<float>& faceX,
             return;
         std::fill(gridLevels[0].faceX.begin(), gridLevels[0].faceX.end(), 1.0f);
         std::fill(gridLevels[0].faceY.begin(), gridLevels[0].faceY.end(), 1.0f);
+        std::fill(gridLevels[0].faceZ.begin(), gridLevels[0].faceZ.end(), 1.0f);
         coefficientsUniform = true;
     } else {
         std::copy(faceX.begin(), faceX.begin() + wantX,
                   gridLevels[0].faceX.begin());
         std::copy(faceY.begin(), faceY.begin() + wantY,
                   gridLevels[0].faceY.begin());
+        if (faceZ.size() < wantZ)
+            std::fill(gridLevels[0].faceZ.begin(), gridLevels[0].faceZ.end(),
+                      1.0f);
+        else
+            std::copy(faceZ.begin(), faceZ.begin() + wantZ,
+                      gridLevels[0].faceZ.begin());
         coefficientsUniform = false;
     }
 
@@ -419,6 +502,8 @@ void Multigrid::coarsenFaceWeights() {
                       gridLevels[l].faceX.end(), 1.0f);
             std::fill(gridLevels[l].faceY.begin(),
                       gridLevels[l].faceY.end(), 1.0f);
+            std::fill(gridLevels[l].faceZ.begin(),
+                      gridLevels[l].faceZ.end(), 1.0f);
         }
         return;
     }
@@ -428,40 +513,80 @@ void Multigrid::coarsenFaceWeights() {
         Level& coarse = gridLevels[l];
         const int rx = fine.refineX;
         const int ry = fine.refineY;
+        const int rz = fine.refineZ;
 
-        #pragma omp parallel for schedule(static) \
-            if (coarse.ny >= PARALLEL_ROWS_MIN)
-        for (int j = 0; j < coarse.ny; ++j) {
-            for (int i = 0; i <= coarse.nx; ++i) {
-                const int fi = std::min(i * rx, fine.nx);
-                float total = 0.0f;
-                int count = 0;
-                for (int jj = j * ry;
-                     jj < std::min((j + 1) * ry, fine.ny);
-                     ++jj) {
-                    total += fine.faceX[jj * (fine.nx + 1) + fi];
-                    ++count;
+        #pragma omp parallel for collapse(2) schedule(static) \
+            if (coarse.nz * coarse.ny >= PARALLEL_ROWS_MIN)
+        for (int k = 0; k < coarse.nz; ++k) {
+            for (int j = 0; j < coarse.ny; ++j) {
+                for (int i = 0; i <= coarse.nx; ++i) {
+                    const int fi = std::min(i * rx, fine.nx);
+                    float total = 0.0f;
+                    int count = 0;
+                    for (int kk = k * rz;
+                         kk < std::min((k + 1) * rz, fine.nz);
+                         ++kk) {
+                        for (int jj = j * ry;
+                             jj < std::min((j + 1) * ry, fine.ny);
+                             ++jj) {
+                            total += fine.faceX[(kk * fine.ny + jj) *
+                                                (fine.nx + 1) + fi];
+                            ++count;
+                        }
+                    }
+                    coarse.faceX[(k * coarse.ny + j) * (coarse.nx + 1) + i] =
+                        count ? total / static_cast<float>(count) : 1.0f;
                 }
-                coarse.faceX[j * (coarse.nx + 1) + i] =
-                    count ? total / static_cast<float>(count) : 1.0f;
             }
         }
 
-        #pragma omp parallel for schedule(static) \
-            if (coarse.ny >= PARALLEL_ROWS_MIN)
-        for (int j = 0; j <= coarse.ny; ++j) {
-            const int fj = std::min(j * ry, fine.ny);
-            for (int i = 0; i < coarse.nx; ++i) {
-                float total = 0.0f;
-                int count = 0;
-                for (int ii = i * rx;
-                     ii < std::min((i + 1) * rx, fine.nx);
-                     ++ii) {
-                    total += fine.faceY[fj * fine.nx + ii];
-                    ++count;
+        #pragma omp parallel for collapse(2) schedule(static) \
+            if (coarse.nz * coarse.ny >= PARALLEL_ROWS_MIN)
+        for (int k = 0; k < coarse.nz; ++k) {
+            for (int j = 0; j <= coarse.ny; ++j) {
+                const int fj = std::min(j * ry, fine.ny);
+                for (int i = 0; i < coarse.nx; ++i) {
+                    float total = 0.0f;
+                    int count = 0;
+                    for (int kk = k * rz;
+                         kk < std::min((k + 1) * rz, fine.nz);
+                         ++kk) {
+                        for (int ii = i * rx;
+                             ii < std::min((i + 1) * rx, fine.nx);
+                             ++ii) {
+                            total += fine.faceY[(kk * (fine.ny + 1) + fj) *
+                                                fine.nx + ii];
+                            ++count;
+                        }
+                    }
+                    coarse.faceY[(k * (coarse.ny + 1) + j) * coarse.nx + i] =
+                        count ? total / static_cast<float>(count) : 1.0f;
                 }
-                coarse.faceY[j * coarse.nx + i] =
-                    count ? total / static_cast<float>(count) : 1.0f;
+            }
+        }
+
+        #pragma omp parallel for collapse(2) schedule(static) \
+            if (coarse.nz * coarse.ny >= PARALLEL_ROWS_MIN)
+        for (int k = 0; k <= coarse.nz; ++k) {
+            for (int j = 0; j < coarse.ny; ++j) {
+                const int fk = std::min(k * rz, fine.nz);
+                for (int i = 0; i < coarse.nx; ++i) {
+                    float total = 0.0f;
+                    int count = 0;
+                    for (int jj = j * ry;
+                         jj < std::min((j + 1) * ry, fine.ny);
+                         ++jj) {
+                        for (int ii = i * rx;
+                             ii < std::min((i + 1) * rx, fine.nx);
+                             ++ii) {
+                            total += fine.faceZ[(fk * fine.ny + jj) *
+                                                fine.nx + ii];
+                            ++count;
+                        }
+                    }
+                    coarse.faceZ[(k * coarse.ny + j) * coarse.nx + i] =
+                        count ? total / static_cast<float>(count) : 1.0f;
+                }
             }
         }
     }
@@ -531,6 +656,8 @@ void Multigrid::smoothSOR(
     Level& grid = gridLevels[level];
     const int nx = grid.nx;
     const int ny = grid.ny;
+    const int nz = grid.nz;
+    const int plane = nx * ny;
 
     float* const       pressure = grid.pressure.data();
     const float* const rhs      = grid.rhs.data();
@@ -538,6 +665,8 @@ void Multigrid::smoothSOR(
     const float* const coefE    = grid.coefE.data();
     const float* const coefS    = grid.coefS.data();
     const float* const coefN    = grid.coefN.data();
+    const float* const coefF    = grid.coefF.data();
+    const float* const coefB    = grid.coefB.data();
     const float* const invDiag  = grid.invDiag.data();
 
 #ifdef __AVX2__
@@ -547,66 +676,78 @@ void Multigrid::smoothSOR(
     const __m256 omegaVec  = _mm256_set1_ps(omega);
 #endif
 
-    #pragma omp parallel if (ny >= PARALLEL_ROWS_MIN)
+    #pragma omp parallel if (nz * ny >= PARALLEL_ROWS_MIN)
     for (int sweep = 0; sweep < sweeps; ++sweep) {
         for (int color = 0; color < 2; ++color) {
-            #pragma omp for schedule(static)
-            for (int j = 0; j < ny; ++j) {
-                const int row = j * nx;
-                const int parity = color ^ (j & 1);
+            #pragma omp for collapse(2) schedule(static)
+            for (int k = 0; k < nz; ++k) {
+                for (int j = 0; j < ny; ++j) {
+                    const int row = (k * ny + j) * nx;
+                    const int parity = color ^ ((j + k) & 1);
 
-                int i = 0;
+                    int i = 0;
 #ifdef __AVX2__
-                const __m256i lane = parity ? laneOdd : laneEven;
-                for (; runtime::avx2 && i + 8 <= nx; i += 8) {
-                    const int id = row + i;
+                    const __m256i lane = parity ? laneOdd : laneEven;
+                    for (; runtime::avx2 && i + 8 <= nx; i += 8) {
+                        const int id = row + i;
 
-                    const __m256 pCentre =
-                        _mm256_loadu_ps(pressure + id);
-                    const __m256 pLeft =
-                        _mm256_loadu_ps(pressure + id - 1);
-                    const __m256 pRight =
-                        _mm256_loadu_ps(pressure + id + 1);
-                    const __m256 pBot =
-                        _mm256_loadu_ps(pressure + id - nx);
-                    const __m256 pTop =
-                        _mm256_loadu_ps(pressure + id + nx);
+                        const __m256 pCentre =
+                            _mm256_loadu_ps(pressure + id);
+                        const __m256 pLeft =
+                            _mm256_loadu_ps(pressure + id - 1);
+                        const __m256 pRight =
+                            _mm256_loadu_ps(pressure + id + 1);
+                        const __m256 pBot =
+                            _mm256_loadu_ps(pressure + id - nx);
+                        const __m256 pTop =
+                            _mm256_loadu_ps(pressure + id + nx);
+                        const __m256 pFront =
+                            _mm256_loadu_ps(pressure + id - plane);
+                        const __m256 pBack =
+                            _mm256_loadu_ps(pressure + id + plane);
 
-                    __m256 sum =
-                        _mm256_mul_ps(_mm256_loadu_ps(coefW + id), pLeft);
-                    sum = _mm256_add_ps(sum,
-                        _mm256_mul_ps(_mm256_loadu_ps(coefE + id), pRight));
-                    sum = _mm256_add_ps(sum,
-                        _mm256_mul_ps(_mm256_loadu_ps(coefS + id), pBot));
-                    sum = _mm256_add_ps(sum,
-                        _mm256_mul_ps(_mm256_loadu_ps(coefN + id), pTop));
+                        __m256 sum =
+                            _mm256_mul_ps(_mm256_loadu_ps(coefW + id), pLeft);
+                        sum = _mm256_add_ps(sum,
+                            _mm256_mul_ps(_mm256_loadu_ps(coefE + id), pRight));
+                        sum = _mm256_add_ps(sum,
+                            _mm256_mul_ps(_mm256_loadu_ps(coefS + id), pBot));
+                        sum = _mm256_add_ps(sum,
+                            _mm256_mul_ps(_mm256_loadu_ps(coefN + id), pTop));
+                        sum = _mm256_add_ps(sum,
+                            _mm256_mul_ps(_mm256_loadu_ps(coefF + id), pFront));
+                        sum = _mm256_add_ps(sum,
+                            _mm256_mul_ps(_mm256_loadu_ps(coefB + id), pBack));
 
-                    const __m256 pNew =
-                        _mm256_mul_ps(
-                            _mm256_sub_ps(sum, _mm256_loadu_ps(rhs + id)),
-                            _mm256_loadu_ps(invDiag + id));
-
-                    const __m256 relaxed =
-                        _mm256_add_ps(
-                            pCentre,
+                        const __m256 pNew =
                             _mm256_mul_ps(
-                                omegaVec,
-                                _mm256_sub_ps(pNew, pCentre)));
+                                _mm256_sub_ps(sum, _mm256_loadu_ps(rhs + id)),
+                                _mm256_loadu_ps(invDiag + id));
 
-                    _mm256_maskstore_ps(pressure + id, lane, relaxed);
-                }
+                        const __m256 relaxed =
+                            _mm256_add_ps(
+                                pCentre,
+                                _mm256_mul_ps(
+                                    omegaVec,
+                                    _mm256_sub_ps(pNew, pCentre)));
+
+                        _mm256_maskstore_ps(pressure + id, lane, relaxed);
+                    }
 #endif
-                // Whatever the vector loop left, and on a build without AVX2
-                // the whole row: same red-black stride, same arithmetic.
-                for (int ii = i + parity; ii < nx; ii += 2) {
-                    const int id = row + ii;
-                    const float sum =
-                        coefW[id] * pressure[id - 1] +
-                        coefE[id] * pressure[id + 1] +
-                        coefS[id] * pressure[id - nx] +
-                        coefN[id] * pressure[id + nx];
-                    const float pNew = (sum - rhs[id]) * invDiag[id];
-                    pressure[id] += omega * (pNew - pressure[id]);
+                    // Whatever the vector loop left, and on a build without AVX2
+                    // the whole row: same red-black stride, same arithmetic.
+                    for (int ii = i + parity; ii < nx; ii += 2) {
+                        const int id = row + ii;
+                        const float sum =
+                            coefW[id] * pressure[id - 1] +
+                            coefE[id] * pressure[id + 1] +
+                            coefS[id] * pressure[id - nx] +
+                            coefN[id] * pressure[id + nx] +
+                            coefF[id] * pressure[id - plane] +
+                            coefB[id] * pressure[id + plane];
+                        const float pNew = (sum - rhs[id]) * invDiag[id];
+                        pressure[id] += omega * (pNew - pressure[id]);
+                    }
                 }
             }
         }
@@ -617,6 +758,8 @@ void Multigrid::computeResidual(int level) {
     Level& grid = gridLevels[level];
     const int nx = grid.nx;
     const int ny = grid.ny;
+    const int nz = grid.nz;
+    const int plane = nx * ny;
 
     const float* const pressure = grid.pressure.data();
     const float* const rhs      = grid.rhs.data();
@@ -624,57 +767,72 @@ void Multigrid::computeResidual(int level) {
     const float* const coefE    = grid.coefE.data();
     const float* const coefS    = grid.coefS.data();
     const float* const coefN    = grid.coefN.data();
+    const float* const coefF    = grid.coefF.data();
+    const float* const coefB    = grid.coefB.data();
     const float* const diag     = grid.diag.data();
     float* const       residual = grid.residual.data();
 
-    #pragma omp parallel for schedule(static) if (ny >= PARALLEL_ROWS_MIN)
-    for (int j = 0; j < ny; ++j) {
-        const int row = j * nx;
+    #pragma omp parallel for collapse(2) schedule(static) \
+        if (nz * ny >= PARALLEL_ROWS_MIN)
+    for (int k = 0; k < nz; ++k) {
+        for (int j = 0; j < ny; ++j) {
+            const int row = (k * ny + j) * nx;
 
-        int i = 0;
+            int i = 0;
 #ifdef __AVX2__
-        for (; runtime::avx2 && i + 8 <= nx; i += 8) {
-            const int id = row + i;
-            const __m256 pCentre =
-                _mm256_loadu_ps(pressure + id);
-            const __m256 pLeft =
-                _mm256_loadu_ps(pressure + id - 1);
-            const __m256 pRight =
-                _mm256_loadu_ps(pressure + id + 1);
-            const __m256 pBot =
-                _mm256_loadu_ps(pressure + id - nx);
-            const __m256 pTop =
-                _mm256_loadu_ps(pressure + id + nx);
+            for (; runtime::avx2 && i + 8 <= nx; i += 8) {
+                const int id = row + i;
+                const __m256 pCentre =
+                    _mm256_loadu_ps(pressure + id);
+                const __m256 pLeft =
+                    _mm256_loadu_ps(pressure + id - 1);
+                const __m256 pRight =
+                    _mm256_loadu_ps(pressure + id + 1);
+                const __m256 pBot =
+                    _mm256_loadu_ps(pressure + id - nx);
+                const __m256 pTop =
+                    _mm256_loadu_ps(pressure + id + nx);
+                const __m256 pFront =
+                    _mm256_loadu_ps(pressure + id - plane);
+                const __m256 pBack =
+                    _mm256_loadu_ps(pressure + id + plane);
 
-            __m256 sum =
-                _mm256_mul_ps(_mm256_loadu_ps(coefW + id), pLeft);
-            sum = _mm256_add_ps(sum,
-                _mm256_mul_ps(_mm256_loadu_ps(coefE + id), pRight));
-            sum = _mm256_add_ps(sum,
-                _mm256_mul_ps(_mm256_loadu_ps(coefS + id), pBot));
-            sum = _mm256_add_ps(sum,
-                _mm256_mul_ps(_mm256_loadu_ps(coefN + id), pTop));
+                __m256 sum =
+                    _mm256_mul_ps(_mm256_loadu_ps(coefW + id), pLeft);
+                sum = _mm256_add_ps(sum,
+                    _mm256_mul_ps(_mm256_loadu_ps(coefE + id), pRight));
+                sum = _mm256_add_ps(sum,
+                    _mm256_mul_ps(_mm256_loadu_ps(coefS + id), pBot));
+                sum = _mm256_add_ps(sum,
+                    _mm256_mul_ps(_mm256_loadu_ps(coefN + id), pTop));
+                sum = _mm256_add_ps(sum,
+                    _mm256_mul_ps(_mm256_loadu_ps(coefF + id), pFront));
+                sum = _mm256_add_ps(sum,
+                    _mm256_mul_ps(_mm256_loadu_ps(coefB + id), pBack));
 
-            // Ap = (neighbour sum) - diag * p, residual = rhs - Ap
-            const __m256 Ap =
-                _mm256_sub_ps(
-                    sum,
-                    _mm256_mul_ps(_mm256_loadu_ps(diag + id), pCentre));
+                // Ap = (neighbour sum) - diag * p, residual = rhs - Ap
+                const __m256 Ap =
+                    _mm256_sub_ps(
+                        sum,
+                        _mm256_mul_ps(_mm256_loadu_ps(diag + id), pCentre));
 
-            _mm256_storeu_ps(
-                residual + id,
-                _mm256_sub_ps(_mm256_loadu_ps(rhs + id), Ap));
-        }
+                _mm256_storeu_ps(
+                    residual + id,
+                    _mm256_sub_ps(_mm256_loadu_ps(rhs + id), Ap));
+            }
 #endif
 
-        for (; i < nx; ++i) {
-            const int id = row + i;
-            const float sum =
-                coefW[id] * pressure[id - 1] +
-                coefE[id] * pressure[id + 1] +
-                coefS[id] * pressure[id - nx] +
-                coefN[id] * pressure[id + nx];
-            residual[id] = rhs[id] - (sum - diag[id] * pressure[id]);
+            for (; i < nx; ++i) {
+                const int id = row + i;
+                const float sum =
+                    coefW[id] * pressure[id - 1] +
+                    coefE[id] * pressure[id + 1] +
+                    coefS[id] * pressure[id - nx] +
+                    coefN[id] * pressure[id + nx] +
+                    coefF[id] * pressure[id - plane] +
+                    coefB[id] * pressure[id + plane];
+                residual[id] = rhs[id] - (sum - diag[id] * pressure[id]);
+            }
         }
     }
 }
@@ -683,42 +841,57 @@ void Multigrid::applyOperator(int level, const float* x, float* out) const {
     const Level& grid = gridLevels[level];
     const int nx = grid.nx;
     const int ny = grid.ny;
+    const int nz = grid.nz;
+    const int plane = nx * ny;
     const float* const coefW = grid.coefW.data();
     const float* const coefE = grid.coefE.data();
     const float* const coefS = grid.coefS.data();
     const float* const coefN = grid.coefN.data();
+    const float* const coefF = grid.coefF.data();
+    const float* const coefB = grid.coefB.data();
     const float* const diag = grid.diag.data();
 
-    #pragma omp parallel for schedule(static) if (ny >= PARALLEL_ROWS_MIN)
-    for (int j = 0; j < ny; ++j) {
-        const int row = j * nx;
-        int i = 0;
+    #pragma omp parallel for collapse(2) schedule(static) \
+        if (nz * ny >= PARALLEL_ROWS_MIN)
+    for (int k = 0; k < nz; ++k) {
+        for (int j = 0; j < ny; ++j) {
+            const int row = (k * ny + j) * nx;
+            int i = 0;
 #ifdef __AVX2__
-        for (; runtime::avx2 && i + 8 <= nx; i += 8) {
-            const int id = row + i;
-            __m256 sum = _mm256_mul_ps(_mm256_loadu_ps(coefW + id),
-                                       _mm256_loadu_ps(x + id - 1));
-            sum = _mm256_add_ps(sum,
-                _mm256_mul_ps(_mm256_loadu_ps(coefE + id),
-                              _mm256_loadu_ps(x + id + 1)));
-            sum = _mm256_add_ps(sum,
-                _mm256_mul_ps(_mm256_loadu_ps(coefS + id),
-                              _mm256_loadu_ps(x + id - nx)));
-            sum = _mm256_add_ps(sum,
-                _mm256_mul_ps(_mm256_loadu_ps(coefN + id),
-                              _mm256_loadu_ps(x + id + nx)));
-            _mm256_storeu_ps(
-                out + id,
-                _mm256_sub_ps(_mm256_mul_ps(_mm256_loadu_ps(diag + id),
-                                            _mm256_loadu_ps(x + id)),
-                              sum));
-        }
+            for (; runtime::avx2 && i + 8 <= nx; i += 8) {
+                const int id = row + i;
+                __m256 sum = _mm256_mul_ps(_mm256_loadu_ps(coefW + id),
+                                           _mm256_loadu_ps(x + id - 1));
+                sum = _mm256_add_ps(sum,
+                    _mm256_mul_ps(_mm256_loadu_ps(coefE + id),
+                                  _mm256_loadu_ps(x + id + 1)));
+                sum = _mm256_add_ps(sum,
+                    _mm256_mul_ps(_mm256_loadu_ps(coefS + id),
+                                  _mm256_loadu_ps(x + id - nx)));
+                sum = _mm256_add_ps(sum,
+                    _mm256_mul_ps(_mm256_loadu_ps(coefN + id),
+                                  _mm256_loadu_ps(x + id + nx)));
+                sum = _mm256_add_ps(sum,
+                    _mm256_mul_ps(_mm256_loadu_ps(coefF + id),
+                                  _mm256_loadu_ps(x + id - plane)));
+                sum = _mm256_add_ps(sum,
+                    _mm256_mul_ps(_mm256_loadu_ps(coefB + id),
+                                  _mm256_loadu_ps(x + id + plane)));
+                _mm256_storeu_ps(
+                    out + id,
+                    _mm256_sub_ps(_mm256_mul_ps(_mm256_loadu_ps(diag + id),
+                                                _mm256_loadu_ps(x + id)),
+                                  sum));
+            }
 #endif
-        for (; i < nx; ++i) {
-            const int id = row + i;
-            out[id] = diag[id] * x[id] -
-                      (coefW[id] * x[id - 1] + coefE[id] * x[id + 1] +
-                       coefS[id] * x[id - nx] + coefN[id] * x[id + nx]);
+            for (; i < nx; ++i) {
+                const int id = row + i;
+                out[id] = diag[id] * x[id] -
+                          (coefW[id] * x[id - 1] + coefE[id] * x[id + 1] +
+                           coefS[id] * x[id - nx] + coefN[id] * x[id + nx] +
+                           coefF[id] * x[id - plane] +
+                           coefB[id] * x[id + plane]);
+            }
         }
     }
 }
@@ -743,7 +916,7 @@ float Multigrid::solvePCG(std::vector<float>& pressure,
                           float rhsScale) {
     Level& finest = gridLevels[0];
     const int count = finest.cellCount;
-    const int halo = finest.nx + 8;
+    const int halo = finest.nx * finest.ny + 8;
 
     if (static_cast<int>(cgPrevR.size()) != count) {
         cgX.init(count, halo);
@@ -921,7 +1094,7 @@ float Multigrid::computeResidualNorm(int level) const {
 }
 
 // Grid transfer. The restriction is the exact transpose of the prolongation
-// divided by the number of fine cells per coarse cell: R = P^T / (refineX*refineY).
+// divided by the number of fine cells per coarse cell.
 // The previous implementation restricted with a plain 2x2 average while
 // prolongating bilinearly, so R was not P^T, and for some grid sizes the
 // V-cycle amplified the error instead of reducing it - which is exactly what
@@ -938,40 +1111,51 @@ void Multigrid::restrictField(int fineLevel, const float* fineSrc) {
 
     const int refineX = fine.refineX;
     const int refineY = fine.refineY;
-    const float scale = 1.0f / static_cast<float>(refineX * refineY);
+    const int refineZ = fine.refineZ;
+    const float scale = 1.0f / static_cast<float>(refineX * refineY * refineZ);
+    const int finePlane = fine.nx * fine.ny;
 
     float* const coarseRhs = coarse.rhs.data();
     const float* const prolongWeight = fine.prolongWeight.data();
     const Level::Gather* const gatherX = fine.gatherX.data();
     const Level::Gather* const gatherY = fine.gatherY.data();
+    const Level::Gather* const gatherZ = fine.gatherZ.data();
 
-    #pragma omp parallel for schedule(static) if (coarse.ny >= PARALLEL_ROWS_MIN)
-    for (int j = 0; j < coarse.ny; ++j) {
-        for (int i = 0; i < coarse.nx; ++i) {
-            const int coarseId = j * coarse.nx + i;
+    #pragma omp parallel for collapse(2) schedule(static) \
+        if (coarse.nz * coarse.ny >= PARALLEL_ROWS_MIN)
+    for (int k = 0; k < coarse.nz; ++k) {
+        for (int j = 0; j < coarse.ny; ++j) {
+            for (int i = 0; i < coarse.nx; ++i) {
+                const int coarseId = (k * coarse.ny + j) * coarse.nx + i;
 
-            if (coarse.solid[coarseId] || coarse.diag[coarseId] == 0.0f) {
-                coarseRhs[coarseId] = 0.0f;
-                continue;
-            }
-            const Level::Gather& gy = gatherY[j];
-            const Level::Gather& gx = gatherX[i];
-
-            float sum = 0.0f;
-            for (int b = 0; b < gy.count; ++b) {
-                const int fineRow = gy.fine[b] * fine.nx;
-                const float wy = gy.weight[b];
-                for (int a = 0; a < gx.count; ++a) {
-                    const int fineId = fineRow + gx.fine[a];
-                    const float norm = prolongWeight[fineId];
-                    if (norm <= 0.0f)
-                        continue;
-                    const float share = gx.weight[a] * wy;
-                    sum += ((norm == 1.0f) ? share : share / norm) *
-                           fineSrc[fineId];
+                if (coarse.solid[coarseId] || coarse.diag[coarseId] == 0.0f) {
+                    coarseRhs[coarseId] = 0.0f;
+                    continue;
                 }
+                const Level::Gather& gz = gatherZ[k];
+                const Level::Gather& gy = gatherY[j];
+                const Level::Gather& gx = gatherX[i];
+
+                float sum = 0.0f;
+                for (int c = 0; c < gz.count; ++c) {
+                    const int finePage = gz.fine[c] * finePlane;
+                    const float wz = gz.weight[c];
+                    for (int b = 0; b < gy.count; ++b) {
+                        const int fineRow = finePage + gy.fine[b] * fine.nx;
+                        const float wy = gy.weight[b] * wz;
+                        for (int a = 0; a < gx.count; ++a) {
+                            const int fineId = fineRow + gx.fine[a];
+                            const float norm = prolongWeight[fineId];
+                            if (norm <= 0.0f)
+                                continue;
+                            const float share = gx.weight[a] * wy;
+                            sum += ((norm == 1.0f) ? share : share / norm) *
+                                   fineSrc[fineId];
+                        }
+                    }
+                }
+                coarseRhs[coarseId] = sum * scale;
             }
-            coarseRhs[coarseId] = sum * scale;
         }
     }
 }
@@ -1000,34 +1184,54 @@ void Multigrid::prolongateCorrection(int coarseLevel) {
 
     const Level::Transfer* const transferX = fine.transferX.data();
     const Level::Transfer* const transferY = fine.transferY.data();
+    const Level::Transfer* const transferZ = fine.transferZ.data();
+    const int coarsePlane = coarse.nx * coarse.ny;
 
-    #pragma omp parallel for schedule(static) if (fine.ny >= PARALLEL_ROWS_MIN)
-    for (int j = 0; j < fine.ny; ++j) {
-        const Level::Transfer sy = transferY[j];
-        for (int i = 0; i < fine.nx; ++i) {
-            const int fineId = j * fine.nx + i;
-            const float norm = fine.prolongWeight[fineId];
-            if (norm <= 0.0f)
-                continue;
-
-            const Level::Transfer sx = transferX[i];
-
-            const int coarseX[4] = {sx.coarse0, sx.coarse1, sx.coarse0, sx.coarse1};
-            const int coarseY[4] = {sy.coarse0, sy.coarse0, sy.coarse1, sy.coarse1};
-            const float weights[4] = {
-                sx.weight0 * sy.weight0, sx.weight1 * sy.weight0,
-                sx.weight0 * sy.weight1, sx.weight1 * sy.weight1};
-
-            float value = 0.0f;
-            for (int k = 0; k < 4; ++k) {
-                if (weights[k] == 0.0f)
+    #pragma omp parallel for collapse(2) schedule(static) \
+        if (fine.nz * fine.ny >= PARALLEL_ROWS_MIN)
+    for (int k = 0; k < fine.nz; ++k) {
+        for (int j = 0; j < fine.ny; ++j) {
+            const Level::Transfer sz = transferZ[k];
+            const Level::Transfer sy = transferY[j];
+            for (int i = 0; i < fine.nx; ++i) {
+                const int fineId = (k * fine.ny + j) * fine.nx + i;
+                const float norm = fine.prolongWeight[fineId];
+                if (norm <= 0.0f)
                     continue;
-                const int coarseId = coarseY[k] * coarse.nx + coarseX[k];
-                if (!coarse.solid[coarseId])
-                    value += weights[k] * coarsePressure[coarseId];
-            }
 
-            finePressure[fineId] += (norm == 1.0f) ? value : value / norm;
+                const Level::Transfer sx = transferX[i];
+
+                const int coarseX[8] = {
+                    sx.coarse0, sx.coarse1, sx.coarse0, sx.coarse1,
+                    sx.coarse0, sx.coarse1, sx.coarse0, sx.coarse1};
+                const int coarseY[8] = {
+                    sy.coarse0, sy.coarse0, sy.coarse1, sy.coarse1,
+                    sy.coarse0, sy.coarse0, sy.coarse1, sy.coarse1};
+                const int coarseZ[8] = {
+                    sz.coarse0, sz.coarse0, sz.coarse0, sz.coarse0,
+                    sz.coarse1, sz.coarse1, sz.coarse1, sz.coarse1};
+                const float weights[8] = {
+                    sx.weight0 * sy.weight0 * sz.weight0,
+                    sx.weight1 * sy.weight0 * sz.weight0,
+                    sx.weight0 * sy.weight1 * sz.weight0,
+                    sx.weight1 * sy.weight1 * sz.weight0,
+                    sx.weight0 * sy.weight0 * sz.weight1,
+                    sx.weight1 * sy.weight0 * sz.weight1,
+                    sx.weight0 * sy.weight1 * sz.weight1,
+                    sx.weight1 * sy.weight1 * sz.weight1};
+
+                float value = 0.0f;
+                for (int c = 0; c < 8; ++c) {
+                    if (weights[c] == 0.0f)
+                        continue;
+                    const int coarseId = coarseZ[c] * coarsePlane +
+                                         coarseY[c] * coarse.nx + coarseX[c];
+                    if (!coarse.solid[coarseId])
+                        value += weights[c] * coarsePressure[coarseId];
+                }
+
+                finePressure[fineId] += (norm == 1.0f) ? value : value / norm;
+            }
         }
     }
 }
@@ -1046,34 +1250,54 @@ void Multigrid::prolongateSolution(int coarseLevel) {
 
     const Level::Transfer* const transferX = fine.transferX.data();
     const Level::Transfer* const transferY = fine.transferY.data();
+    const Level::Transfer* const transferZ = fine.transferZ.data();
+    const int coarsePlane = coarse.nx * coarse.ny;
 
-    #pragma omp parallel for schedule(static) if (fine.ny >= PARALLEL_ROWS_MIN)
-    for (int j = 0; j < fine.ny; ++j) {
-        const Level::Transfer sy = transferY[j];
-        for (int i = 0; i < fine.nx; ++i) {
-            const int fineId = j * fine.nx + i;
-            const float norm = fine.prolongWeight[fineId];
-            if (norm <= 0.0f)
-                continue;
-
-            const Level::Transfer sx = transferX[i];
-
-            const int coarseX[4] = {sx.coarse0, sx.coarse1, sx.coarse0, sx.coarse1};
-            const int coarseY[4] = {sy.coarse0, sy.coarse0, sy.coarse1, sy.coarse1};
-            const float weights[4] = {
-                sx.weight0 * sy.weight0, sx.weight1 * sy.weight0,
-                sx.weight0 * sy.weight1, sx.weight1 * sy.weight1};
-
-            float value = 0.0f;
-            for (int k = 0; k < 4; ++k) {
-                if (weights[k] == 0.0f)
+    #pragma omp parallel for collapse(2) schedule(static) \
+        if (fine.nz * fine.ny >= PARALLEL_ROWS_MIN)
+    for (int k = 0; k < fine.nz; ++k) {
+        for (int j = 0; j < fine.ny; ++j) {
+            const Level::Transfer sz = transferZ[k];
+            const Level::Transfer sy = transferY[j];
+            for (int i = 0; i < fine.nx; ++i) {
+                const int fineId = (k * fine.ny + j) * fine.nx + i;
+                const float norm = fine.prolongWeight[fineId];
+                if (norm <= 0.0f)
                     continue;
-                const int coarseId = coarseY[k] * coarse.nx + coarseX[k];
-                if (!coarse.solid[coarseId])
-                    value += weights[k] * coarsePressure[coarseId];
-            }
 
-            finePressure[fineId] = (norm == 1.0f) ? value : value / norm;
+                const Level::Transfer sx = transferX[i];
+
+                const int coarseX[8] = {
+                    sx.coarse0, sx.coarse1, sx.coarse0, sx.coarse1,
+                    sx.coarse0, sx.coarse1, sx.coarse0, sx.coarse1};
+                const int coarseY[8] = {
+                    sy.coarse0, sy.coarse0, sy.coarse1, sy.coarse1,
+                    sy.coarse0, sy.coarse0, sy.coarse1, sy.coarse1};
+                const int coarseZ[8] = {
+                    sz.coarse0, sz.coarse0, sz.coarse0, sz.coarse0,
+                    sz.coarse1, sz.coarse1, sz.coarse1, sz.coarse1};
+                const float weights[8] = {
+                    sx.weight0 * sy.weight0 * sz.weight0,
+                    sx.weight1 * sy.weight0 * sz.weight0,
+                    sx.weight0 * sy.weight1 * sz.weight0,
+                    sx.weight1 * sy.weight1 * sz.weight0,
+                    sx.weight0 * sy.weight0 * sz.weight1,
+                    sx.weight1 * sy.weight0 * sz.weight1,
+                    sx.weight0 * sy.weight1 * sz.weight1,
+                    sx.weight1 * sy.weight1 * sz.weight1};
+
+                float value = 0.0f;
+                for (int c = 0; c < 8; ++c) {
+                    if (weights[c] == 0.0f)
+                        continue;
+                    const int coarseId = coarseZ[c] * coarsePlane +
+                                         coarseY[c] * coarse.nx + coarseX[c];
+                    if (!coarse.solid[coarseId])
+                        value += weights[c] * coarsePressure[coarseId];
+                }
+
+                finePressure[fineId] = (norm == 1.0f) ? value : value / norm;
+            }
         }
     }
 }
@@ -1085,7 +1309,8 @@ void Multigrid::vCycle(
 {
     if (level == levels - 1) {
         smoothSOR(level, coarseOmega,
-                  coarseSweeps(gridLevels[level].nx, gridLevels[level].ny));
+                  coarseSweeps(gridLevels[level].nx, gridLevels[level].ny,
+                               gridLevels[level].nz));
         return;
     }
     smoothSOR(level, smootherOmega, PRE_SMOOTH_SWEEPS);
@@ -1115,7 +1340,8 @@ void Multigrid::fullMultigrid(float smootherOmega, float coarseOmega) {
     const int coarsest = levels - 1;
     if (coarsest == 0) {
         smoothSOR(0, coarseOmega,
-                  coarseSweeps(gridLevels[0].nx, gridLevels[0].ny));
+                  coarseSweeps(gridLevels[0].nx, gridLevels[0].ny,
+                               gridLevels[0].nz));
         return;
     }
     for (int level = 0; level < coarsest; ++level)
@@ -1123,7 +1349,8 @@ void Multigrid::fullMultigrid(float smootherOmega, float coarseOmega) {
 
     gridLevels[coarsest].pressure.zero();
     smoothSOR(coarsest, coarseOmega,
-              coarseSweeps(gridLevels[coarsest].nx, gridLevels[coarsest].ny));
+              coarseSweeps(gridLevels[coarsest].nx, gridLevels[coarsest].ny,
+                           gridLevels[coarsest].nz));
 
     for (int level = coarsest; level > 0; --level) {
         prolongateSolution(level);

@@ -45,7 +45,7 @@
 #endif
 
 #ifndef CFD_REPO_NAME
-#define CFD_REPO_NAME "CFD-Solver-2D"
+#define CFD_REPO_NAME "Fluid-Solver"
 #endif
 
 #ifndef CFD_RELEASES_URL

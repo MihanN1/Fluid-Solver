@@ -32,13 +32,14 @@ constexpr double kIntMax = 2147483647.0;
 // Every key the command line, the prompts and the frame header accept, in the
 // spelling print() and serialize() use. Keep in sync with printUsage().
 const char* const kKeys[] = {
-    "Lx", "Ly", "nx", "ny", "U0", "nu", "ro",
-    "gravityEnabled", "gravityAccel", "gravityAngle",
+    "Lx", "Ly", "Lz", "nx", "ny", "nz", "U0", "nu", "ro",
+    "gravityEnabled", "gravityAccel", "gravityAngle", "gravityTilt",
     "CFL", "totalTime", "dtUpdateInterval", "dtSafety",
     "omega", "smootherOmega",
     "mgIterations", "mgTolerance", "mgMinCoarseSize",
     "useCuda", "saveInterval", "outputDir", "extraFields",
-    "geometryFile", "sliceAngleX", "sliceAngleZ", "sliceRotation",
+    "geometryFile", "sliceAngleX", "sliceAngleY", "sliceAngleZ",
+    "sliceRotation",
     "invertSection", "wallMotion", "profiles",
     "bodyMotion", "bodyCoupling", "bodyIterations",
     "bodyCollisions", "bodyRestitution", "bodyForceReport",
@@ -52,11 +53,12 @@ const char* const kKeys[] = {
     "restart", "restartFile", "addTime",
     "gravityMode", "convection", "limiter", "timeScheme",
     "caseType", "lidSpeed", "steadyTolerance",
-    "bcLeft", "bcRight", "bcBottom", "bcTop",
+    "bcLeft", "bcRight", "bcBottom", "bcTop", "bcFront", "bcBack",
     "bcLeftSpeed", "bcRightSpeed", "bcBottomSpeed", "bcTopSpeed",
-    "inletFrom", "inletTo", "inletProfile",
+    "bcFrontSpeed", "bcBackSpeed",
+    "inletFrom", "inletTo", "inletFrom2", "inletTo2", "inletProfile",
     "phases", "rho1", "rho2", "nu1", "nu2",
-    "phaseInit", "phaseLevel", "phaseX", "phaseY",
+    "phaseInit", "phaseLevel", "phaseX", "phaseY", "phaseZ",
     "initialPhaseFile", "vofScheme", "sources",
     "mixing", "diffusivity", "surfaceTension", "contactAngle",
 };
@@ -465,7 +467,10 @@ const char* speciesModeName(SpeciesMode mode) {
 
 std::string microphoneHelp() {
     return "microphones is a list of points, semicolon separated:\n"
-           "  x=<m>,y=<m>;x=<m>,y=<m>\n"
+           "  x=<m>,y=<m>[,z=<m>];x=<m>,y=<m>[,z=<m>]\n"
+           "z is the one you may leave out: without it the point sits at 0, "
+           "which is the single plane a nz=1 run has and is where every "
+           "microphone written before this one was.\n"
            "Each one records the pressure at that cell every micInterval "
            "steps, and at the end the run writes microphones.txt next to the "
            "frames with the trace and a peak frequency for each.\n"
@@ -529,6 +534,7 @@ bool parseMicrophones(const std::string& text,
             }
             if (name == "x") { mic.x = number; sawX = true; }
             else if (name == "y") { mic.y = number; sawY = true; }
+            else if (name == "z") { mic.z = number; }
             else {
                 error = "'" + name + "' is not a microphone setting. " +
                         microphoneHelp();
@@ -617,20 +623,26 @@ const char* phaseInitName(PhaseInit init) {
 std::string sourcesHelp() {
     return
         "\n--- How to write sources -----------------------------------------\n"
-        "  sources=x=<m>,y=<m>,r=<m>,rate=<m/s>[,angle=<deg>][,phase=<0..1>];...\n"
+        "  sources=x=<m>,y=<m>[,z=<m>],r=<m>,rate=<m/s>[,angle=<deg>]\n"
+        "          [,elev=<deg>][,phase=<0..1>];...\n"
         "\n"
-        "  A source is a disc inside the domain that pushes fluid out of itself.\n"
+        "  A source is a disc inside the domain that pushes fluid out of itself,\n"
+        "  a ball of one once nz>1.\n"
         "  Unlike an inlet it is not on a side, so it needs a direction:\n"
-        "    x, y     centre, in metres\n"
+        "    x, y, z  centre, in metres. Left out, z is 0.\n"
         "    r        radius, in metres. Under one cell nothing comes out.\n"
         "    rate     speed the fluid leaves at, m/s. Negative drains instead.\n"
         "    angle    degrees, 0 is +x and it turns counter-clockwise\n"
+        "    elev     degrees out of the xy plane towards +z. angle still aims\n"
+        "             the jet inside the plane and elev lifts it out of it, so\n"
+        "             elev=90 fires straight along +z whatever angle says.\n"
         "    phase    which fluid comes out, 1 or 0. Ignored at one phase.\n"
         "\n"
         "  Everything a source adds has to leave somewhere, so a case with one\n"
         "  needs an outlet exactly as an inlet does, and is refused without one.\n"
         "\n"
         "    sources=\"x=0.5,y=0.2,r=0.05,rate=2,angle=90,phase=1\"\n"
+        "    sources=\"x=0.5,y=0.2,z=0.3,r=0.05,rate=2,angle=90,elev=30\"\n"
         "------------------------------------------------------------------\n";
 }
 
@@ -683,6 +695,7 @@ bool parseSources(const std::string& text,
             }
             if (name == "x") source.x = static_cast<float>(value);
             else if (name == "y") source.y = static_cast<float>(value);
+            else if (name == "z") source.z = static_cast<float>(value);
             else if (name == "r" || name == "radius")
                 source.radius = static_cast<float>(value);
             else if (name == "rate" || name == "speed") {
@@ -690,6 +703,8 @@ bool parseSources(const std::string& text,
                 sawRate = true;
             }
             else if (name == "angle") source.angle = static_cast<float>(value);
+            else if (name == "elev" || name == "elevation")
+                source.elevation = static_cast<float>(value);
             else if (name == "phase")
                 source.phase = static_cast<float>(std::min(1.0, std::max(0.0, value)));
             else if (name == "body" || name == "on") {
@@ -703,8 +718,8 @@ bool parseSources(const std::string& text,
             }
             else {
                 error = "'" + name +
-                        "' is not a setting of a source. Use x, y, r, rate, "
-                        "angle, phase or body.";
+                        "' is not a setting of a source. Use x, y, z, r, rate, "
+                        "angle, elev, phase or body.";
                 return false;
             }
         }
@@ -731,10 +746,12 @@ std::string profilesHelp() {
         "  because a Windows path already owns the colon.\n"
         "\n"
         "  Settings, all optional:\n"
-        "    x, y     where the centre of this model lands, in metres\n"
+        "    x, y, z  where the centre of this model lands, in metres. z is\n"
+        "             read once nz>1 and ignored while the run is one plane\n"
         "    size     the larger side of its section, in metres\n"
         "    rot      turn it in the plane, degrees\n"
-        "    ax, az   slice angles for this model alone, degrees\n"
+        "    ax, ay, az  slice angles for this model alone, degrees. angleX,\n"
+        "             angleY and angleZ are the same three written out\n"
         "    invert   1 mirrors it, same as invertSection but per model\n"
         "\n"
         "  A file with no '@' keeps the old behaviour: centred in the domain\n"
@@ -743,6 +760,7 @@ std::string profilesHelp() {
         "  touching the border is a wall, not an obstacle.\n"
         "\n"
         "    profiles=\"wing.stl@x=0.6,y=0.5,size=0.3;ball.obj@x=1.6,y=0.5\"\n"
+        "    profiles=\"wing.stl@x=0.6,y=0.5,z=0.5,size=0.3,ay=15\"\n"
         "------------------------------------------------------------------\n";
 }
 
@@ -810,17 +828,19 @@ bool parseProfiles(const std::string& text,
 
                 if (name == "x")           { profile.x = float(number); profile.placed = true; }
                 else if (name == "y")      { profile.y = float(number); profile.placed = true; }
+                else if (name == "z")      { profile.z = float(number); profile.placed = true; }
                 else if (name == "size")   { profile.size = float(number); }
                 else if (name == "rot")    { profile.rotation = float(number); }
-                else if (name == "ax")     { profile.angleX = float(number); profile.angleSet = true; }
-                else if (name == "az")     { profile.angleZ = float(number); profile.angleSet = true; }
+                else if (name == "ax" || name == "anglex")  { profile.angleX = float(number); profile.angleSet = true; }
+                else if (name == "ay" || name == "angley")  { profile.angleY = float(number); profile.angleSet = true; }
+                else if (name == "az" || name == "anglez")  { profile.angleZ = float(number); profile.angleSet = true; }
                 else if (name == "invert") { profile.invert = number != 0.0; profile.invertSet = true; }
                 else if (name == "attach") { profile.attach = number != 0.0; }
                 else {
                     error = badValue("profiles", pair,
                                      "'" + name +
                                          "' is not a profile setting. Use x, y,"
-                                         " size, rot, ax, az or invert");
+                                         " z, size, rot, ax, ay, az or invert");
                     return false;
                 }
             }
@@ -855,11 +875,15 @@ std::string wallMotionHelp() {
         "     rot=<deg/s>    the surface turns about this object's own centre,\n"
         "                    counter-clockwise. rot=90 is a quarter turn a\n"
         "                    second; a spinning cylinder, a blade, a valve\n"
+        "     rotX=<deg/s>   the same about the x axis through that centre,\n"
+        "                    right handed, and rotY=<deg/s> about the y one.\n"
+        "                    rotZ= is another way of writing rot=\n"
         "     slideX=<m/s>   the surface runs along +x, like a conveyor belt\n"
         "     slideY=<m/s>   the same along +y\n"
+        "     slideZ=<m/s>   the same along +z\n"
         "     The body itself never moves, only the velocity its surface hands\n"
-        "     to the fluid. rot, slideX and slideY add up, so one object can\n"
-        "     take all three at once.\n"
+        "     to the fluid. All six add up, so one object can take every one of\n"
+        "     them at once.\n"
         "\n"
         "  B. The wall stops holding the fluid at all:\n"
         "     slip=1         free-slip. The fluid slides past the surface and\n"
@@ -876,6 +900,7 @@ std::string wallMotionHelp() {
         "  1:rot=90              object 1 spins at 90 deg/s counter-clockwise\n"
         "  1:slideX=0.5          its surface runs along +x at 0.5 m/s\n"
         "  1:rot=90,slideX=0.5   both at once - one object, one entry\n"
+        "  1:rotX=45,slideZ=0.2  it rolls about x and its surface runs along +z\n"
         "  1:slip=1              object 1 is frictionless instead\n"
         "  1:rot=90;2:slip=1     object 1 spins, object 2 slips\n"
         "------------------------------------------------------------------\n";
@@ -958,8 +983,8 @@ bool parseWallMotion(const std::string& text,
                                    "separator inside one is a dot"
                                  : "'" + token + "' is not a setting. Every "
                                    "setting is name=value, e.g. rot=90, and "
-                                   "the names are rot, slideX, slideY and "
-                                   "slip");
+                                   "the names are rot, rotX, rotY, slideX, "
+                                   "slideY, slideZ and slip");
             return false;
         }
 
@@ -976,19 +1001,26 @@ bool parseWallMotion(const std::string& text,
         if (!parseNumber(name, value, false, parsed, error))
             return false;
 
-        if (name == "rot" || name == "rotation")
+        if (name == "rot" || name == "rotation" || name == "rotz")
             out[current].rotation = static_cast<float>(parsed);
+        else if (name == "rotx")
+            out[current].rotationX = static_cast<float>(parsed);
+        else if (name == "roty")
+            out[current].rotationY = static_cast<float>(parsed);
         else if (name == "slidex")
             out[current].slideX = static_cast<float>(parsed);
         else if (name == "slidey")
             out[current].slideY = static_cast<float>(parsed);
+        else if (name == "slidez")
+            out[current].slideZ = static_cast<float>(parsed);
         else {
             error = badValue("wallMotion", body,
                              "'" + name + "' is not a wall setting. There are "
-                             "four: rot=<deg/s> spins the surface about the "
-                             "object's own centre counter-clockwise, "
-                             "slideX=<m/s> and slideY=<m/s> drag it in a "
-                             "straight line, and slip=1 makes the wall "
+                             "seven: rot=<deg/s> spins the surface about the "
+                             "object's own centre counter-clockwise, rotX and "
+                             "rotY do the same about the other two axes, "
+                             "slideX=<m/s>, slideY=<m/s> and slideZ=<m/s> drag "
+                             "it in a straight line, and slip=1 makes the wall "
                              "frictionless instead of dragging anything");
             return false;
         }
@@ -997,7 +1029,9 @@ bool parseWallMotion(const std::string& text,
     for (const WallMotion& done : out) {
         if (!done.slip)
             continue;
-        if (done.rotation == 0.0f && done.slideX == 0.0f && done.slideY == 0.0f)
+        if (done.rotation == 0.0f && done.rotationX == 0.0f &&
+            done.rotationY == 0.0f && done.slideX == 0.0f &&
+            done.slideY == 0.0f && done.slideZ == 0.0f)
             continue;
 
         // Quoting back the two lines the object could have been given beats
@@ -1011,12 +1045,24 @@ bool parseWallMotion(const std::string& text,
             moving << "rot=" << done.rotation;
             separator = ",";
         }
+        if (done.rotationX != 0.0f) {
+            moving << separator << "rotX=" << done.rotationX;
+            separator = ",";
+        }
+        if (done.rotationY != 0.0f) {
+            moving << separator << "rotY=" << done.rotationY;
+            separator = ",";
+        }
         if (done.slideX != 0.0f) {
             moving << separator << "slideX=" << done.slideX;
             separator = ",";
         }
-        if (done.slideY != 0.0f)
+        if (done.slideY != 0.0f) {
             moving << separator << "slideY=" << done.slideY;
+            separator = ",";
+        }
+        if (done.slideZ != 0.0f)
+            moving << separator << "slideZ=" << done.slideZ;
 
         error = badValue("wallMotion", body,
                          "object " + id + " is asked to slip and to move its "
@@ -1129,19 +1175,29 @@ std::string bodyMotionHelp() {
         "  A. You say where it goes:\n"
         "     vx=<m/s>       the body travels along +x\n"
         "     vy=<m/s>       the same along +y\n"
+        "     vz=<m/s>       the same along +z\n"
         "     omega=<deg/s>  it turns about its own centre, counter-clockwise\n"
+        "     omegaX=<deg/s> it turns about the x axis through that centre,\n"
+        "                    right handed, and omegaY=<deg/s> about the y one.\n"
+        "                    omegaZ= is another way of writing omega=\n"
         "\n"
         "  B. The flow decides where it goes:\n"
         "     free=1         the body is let go and the fluid carries it\n"
-        "     mass=<kg/m>    per metre of depth, since this is a 2D slice\n"
+        "     mass=<kg/m>    per metre of depth while the run is one plane,\n"
+        "                    and kilograms outright once nz>1\n"
         "     density=<kg/m3>  instead of mass, if the shape is easier to\n"
-        "                    weigh than to mass: m = density * its own area\n"
-        "     inertia=<kg m2/m>  about the centre. Left out it is taken as\n"
-        "                    m*r^2/2, which is what a disc of that rim has\n"
-        "     vx, vy, omega  become the velocity it is let go WITH\n"
-        "     pinX=1 pinY=1 pinRot=1   hold one degree of freedom still. A\n"
-        "                    cylinder free to spin but not to drift is\n"
-        "                    free=1,pinX=1,pinY=1\n"
+        "                    weigh than to mass: m = density * its own area,\n"
+        "                    or its own volume once nz>1\n"
+        "     inertia=<kg m2/m>  about z through the centre. Left out it is\n"
+        "                    taken as m*r^2/2, which is what a disc of that\n"
+        "                    rim has, and inertiaX= and inertiaY= are the same\n"
+        "                    two numbers about the other axes\n"
+        "     vx, vy, vz, omega, omegaX, omegaY  become the velocity it is let\n"
+        "                    go WITH\n"
+        "     pinX=1 pinY=1 pinZ=1 pinRot=1   hold one degree of freedom\n"
+        "                    still, and pinRotX=1 pinRotY=1 the two turns that\n"
+        "                    leave the plane. A cylinder free to spin but not\n"
+        "                    to drift is free=1,pinX=1,pinY=1\n"
         "\n"
         "  C. Keyframes, for a prescribed path that is not a constant:\n"
         "     @<t>           opens a keyframe at t seconds; everything after\n"
@@ -1163,6 +1219,7 @@ std::string bodyMotionHelp() {
         "Examples:\n"
         "  1:vx=0.2                    object 1 drifts right at 0.2 m/s\n"
         "  1:vx=0.2,omega=45           and turns while it goes\n"
+        "  1:vz=0.1,omegaX=30          it leaves the plane and rolls about x\n"
         "  1:free=1,mass=2             let go, 2 kg per metre of depth\n"
         "  1:free=1,density=2700       the same, weighed as aluminium\n"
         "  1:free=1,density=2700,pinX=1,pinY=1   pinned, free to spin\n"
@@ -1279,6 +1336,9 @@ bool parseBodyMotion(const std::string& text,
             if (!target.keys.empty()) {
                 frame.vx = target.keys.back().vx;
                 frame.vy = target.keys.back().vy;
+                frame.vz = target.keys.back().vz;
+                frame.omegaX = target.keys.back().omegaX;
+                frame.omegaY = target.keys.back().omegaY;
                 frame.omega = target.keys.back().omega;
                 frame.free = target.keys.back().free;
                 frame.interp = target.keys.back().interp;
@@ -1286,6 +1346,9 @@ bool parseBodyMotion(const std::string& text,
             } else {
                 frame.vx = target.vx;
                 frame.vy = target.vy;
+                frame.vz = target.vz;
+                frame.omegaX = target.omegaX;
+                frame.omegaY = target.omegaY;
                 frame.omega = target.omega;
                 frame.free = target.free;
             }
@@ -1346,8 +1409,23 @@ bool parseBodyMotion(const std::string& text,
                 return false;
             continue;
         }
-        if (name == "pinrot") {
+        if (name == "pinz") {
+            if (!assignBool(target.pinZ, name, value, error))
+                return false;
+            continue;
+        }
+        if (name == "pinrot" || name == "pinrotz") {
             if (!assignBool(target.pinRot, name, value, error))
+                return false;
+            continue;
+        }
+        if (name == "pinrotx") {
+            if (!assignBool(target.pinRotX, name, value, error))
+                return false;
+            continue;
+        }
+        if (name == "pinroty") {
+            if (!assignBool(target.pinRotY, name, value, error))
                 return false;
             continue;
         }
@@ -1364,8 +1442,14 @@ bool parseBodyMotion(const std::string& text,
             (frame ? frame->vx : target.vx) = number;
         } else if (name == "vy") {
             (frame ? frame->vy : target.vy) = number;
-        } else if (name == "omega" || name == "rot") {
+        } else if (name == "vz") {
+            (frame ? frame->vz : target.vz) = number;
+        } else if (name == "omega" || name == "rot" || name == "omegaz") {
             (frame ? frame->omega : target.omega) = number;
+        } else if (name == "omegax") {
+            (frame ? frame->omegaX : target.omegaX) = number;
+        } else if (name == "omegay") {
+            (frame ? frame->omegaY : target.omegaY) = number;
         } else if (name == "mass") {
             if (!(number > 0.0f)) {
                 error = badValue("bodyMotion", body,
@@ -1384,7 +1468,7 @@ bool parseBodyMotion(const std::string& text,
                 return false;
             }
             target.density = number;
-        } else if (name == "inertia") {
+        } else if (name == "inertia" || name == "inertiaz") {
             if (!(number > 0.0f)) {
                 error = badValue("bodyMotion", body,
                                  "inertia=" + cleanValue(value) + " is not a "
@@ -1394,13 +1478,33 @@ bool parseBodyMotion(const std::string& text,
                 return false;
             }
             target.inertia = number;
+        } else if (name == "inertiax") {
+            if (!(number > 0.0f)) {
+                error = badValue("bodyMotion", body,
+                                 "inertiaX=" + cleanValue(value) + " is not a "
+                                 "positive number. Leave it out and it is "
+                                 "taken from the shape, exactly as inertia is");
+                return false;
+            }
+            target.inertiaX = number;
+        } else if (name == "inertiay") {
+            if (!(number > 0.0f)) {
+                error = badValue("bodyMotion", body,
+                                 "inertiaY=" + cleanValue(value) + " is not a "
+                                 "positive number. Leave it out and it is "
+                                 "taken from the shape, exactly as inertia is");
+                return false;
+            }
+            target.inertiaY = number;
         } else {
             error = badValue("bodyMotion", body,
                              "'" + name + "' is not a body setting. The "
-                             "prescribed ones are vx, vy and omega; free=1 "
-                             "hands the trajectory to the flow and then mass "
-                             "or density, inertia, pinX, pinY and pinRot "
-                             "apply; @<seconds> opens a keyframe");
+                             "prescribed ones are vx, vy, vz, omega, omegaX "
+                             "and omegaY; free=1 hands the trajectory to the "
+                             "flow and then mass or density, inertia, "
+                             "inertiaX, inertiaY, pinX, pinY, pinZ, pinRot, "
+                             "pinRotX and pinRotY apply; @<seconds> opens a "
+                             "keyframe");
             return false;
         }
     }
@@ -1421,7 +1525,9 @@ bool parseBodyMotion(const std::string& text,
         }
         if (!everFree &&
             (done.mass > 0.0f || done.density > 0.0f || done.inertia > 0.0f ||
-             done.pinX || done.pinY || done.pinRot)) {
+             done.inertiaX > 0.0f || done.inertiaY > 0.0f ||
+             done.pinX || done.pinY || done.pinZ || done.pinRot ||
+             done.pinRotX || done.pinRotY)) {
             error = badValue("bodyMotion", body,
                              "object " + id + " is given a weight or a pin but "
                              "not free=1, and a body whose path you prescribe "
@@ -1598,7 +1704,7 @@ bool Config::ask(const std::string& key, const std::string& prompt) {
 }
 
 void Config::readFromConsole() {
-    std::cout << "=== CFD-Solver-2D Configuration ===\n";
+    std::cout << "=== Fluid Solver Configuration ===\n";
     std::cout << "Press Enter to keep the value shown in brackets.\n\n";
     std::cout << "Start a new simulation or continue an old one?\n";
     std::cout << "  0 = new simulation\n";
@@ -1617,8 +1723,12 @@ void Config::readFromConsole() {
     }
     if (!ask("Lx", "Enter domain width Lx (m)")) return;
     if (!ask("Ly", "Enter domain height Ly (m)")) return;
+    if (!ask("Lz", "Enter domain depth Lz (m)")) return;
     if (!ask("nx", "Enter number of cells in x-direction nx")) return;
     if (!ask("ny", "Enter number of cells in y-direction ny")) return;
+    if (!ask("nz", "Enter number of cells in z-direction nz (1 is the single "
+                   "plane every earlier version solved; anything above it is "
+                   "what makes the run three-dimensional)")) return;
     if (!ask("U0", "Enter inlet velocity U0 (m/s)")) return;
     if (!ask("phases", "How many fluids share the domain (1 or 2)")) return;
     if (phases > 1) {
@@ -1653,6 +1763,8 @@ void Config::readFromConsole() {
                     return;
             if (phaseInit == PhaseInit::Drop)
                 if (!ask("phaseY", "Drop centre y as a fraction of Ly")) return;
+            if (phaseInit == PhaseInit::Drop && volumetric())
+                if (!ask("phaseZ", "Drop centre z as a fraction of Lz")) return;
         }
         if (!ask("mixing",
                  "Do the two mix? immiscible (oil and water, a surface "
@@ -1692,6 +1804,12 @@ void Config::readFromConsole() {
                  "Enter gravity direction (degrees clockwise from straight "
                  "down: 0 = down, 90 = towards the inlet, 180 = up)"))
             return;
+        if (volumetric())
+            if (!ask("gravityTilt",
+                     "Enter how far gravity leans out of that plane towards +z "
+                     "(degrees: 0 keeps it in the plane, 90 points it straight "
+                     "along +z)"))
+                return;
         if (phases > 1)
             std::cout << "Note: with two fluids the weight difference is what "
                          "moves them, so the force goes\n  into the solve and "
@@ -1724,6 +1842,16 @@ void Config::readFromConsole() {
     if (!ask("bcTop", "Top boundary")) return;
     if (boundaries[BoundarySide::Top].kind == BoundaryKind::MovingWall)
         if (!ask("bcTopSpeed", "Speed the top wall slides at (m/s)")) return;
+    if (volumetric()) {
+        if (!ask("bcFront", "Front boundary (z = 0)")) return;
+        if (boundaries[BoundarySide::Front].kind == BoundaryKind::MovingWall)
+            if (!ask("bcFrontSpeed", "Speed the front wall slides at (m/s)"))
+                return;
+        if (!ask("bcBack", "Back boundary (z = Lz)")) return;
+        if (boundaries[BoundarySide::Back].kind == BoundaryKind::MovingWall)
+            if (!ask("bcBackSpeed", "Speed the back wall slides at (m/s)"))
+                return;
+    }
     }
     if (!ask("steadyTolerance",
              "Stop when the field stops changing? Give the rate, or 0 to run "
@@ -1780,6 +1908,10 @@ void Config::readFromConsole() {
     if (!ask("sliceAngleX",
              "Enter around the axis going towards the observer (degrees)"))
         return;
+    if (volumetric())
+        if (!ask("sliceAngleY",
+                 "Enter around the horizontal axis across the screen (degrees)"))
+            return;
     if (!ask("sliceAngleZ", "Enter around a vertical axis (degrees)")) return;
     if (!ask("sliceRotation",
              "Enter rotation in the simulation plane (degrees)")) return;
@@ -1835,10 +1967,17 @@ void Config::print() const {
         std::cout << "  addTime          = " << addTime
                   << " s (0 = totalTime is used as is)\n";
     }
-    std::cout << "  Lx               = " << Lx << " m\n";
-    std::cout << "  Ly               = " << Ly << " m\n";
-    std::cout << "  nx               = " << nx << "\n";
-    std::cout << "  ny               = " << ny << "\n";
+    if (volumetric()) {
+        std::cout << "  domain           = " << Lx << " x " << Ly << " x " << Lz
+                  << " m\n";
+        std::cout << "  cells            = " << nx << " x " << ny << " x " << nz
+                  << "\n";
+    } else {
+        std::cout << "  Lx               = " << Lx << " m\n";
+        std::cout << "  Ly               = " << Ly << " m\n";
+        std::cout << "  nx               = " << nx << "\n";
+        std::cout << "  ny               = " << ny << "\n";
+    }
     std::cout << "  U0               = " << U0 << " m/s\n";
     if (phases > 1) {
         std::cout << "  phases           = 2\n";
@@ -1849,6 +1988,9 @@ void Config::print() const {
         std::cout << "  phaseInit        = " << phaseInitName(phaseInit);
         if (phaseInit == PhaseInit::File)
             std::cout << " (" << initialPhaseFile << ")";
+        else if (volumetric())
+            std::cout << ", level " << phaseLevel << ", at (" << phaseX << ", "
+                      << phaseY << ", " << phaseZ << ")";
         else
             std::cout << ", level " << phaseLevel << ", at (" << phaseX << ", "
                       << phaseY << ")";
@@ -1877,6 +2019,9 @@ void Config::print() const {
         std::cout << "  gravityAccel     = " << gravityAccel << " m/s^2\n";
         std::cout << "  gravityAngle     = " << gravityAngle
                   << " deg (clockwise, 0 = down)\n";
+        if (gravityTilt != 0.0f)
+            std::cout << "  gravityTilt      = " << gravityTilt
+                      << " deg (out of the xy plane, towards +z)\n";
         std::cout << "  gravityMode      = "
                   << enumName(static_cast<int>(gravityMode), kGravityModes)
                   << (gravityMode == GravityMode::Reduced
@@ -1903,9 +2048,16 @@ void Config::print() const {
               << boundaryKindName(boundaries[BoundarySide::Left].kind) << " | "
               << boundaryKindName(boundaries[BoundarySide::Right].kind) << " | "
               << boundaryKindName(boundaries[BoundarySide::Bottom].kind) << " | "
-              << boundaryKindName(boundaries[BoundarySide::Top].kind)
-              << "   (left | right | bottom | top)\n";
-    for (int side = 0; side < 4; ++side) {
+              << boundaryKindName(boundaries[BoundarySide::Top].kind);
+    if (volumetric())
+        std::cout << " | "
+                  << boundaryKindName(boundaries[BoundarySide::Front].kind)
+                  << " | "
+                  << boundaryKindName(boundaries[BoundarySide::Back].kind)
+                  << "   (left | right | bottom | top | front | back)\n";
+    else
+        std::cout << "   (left | right | bottom | top)\n";
+    for (int side = 0; side < kBoundarySides; ++side) {
         const BoundarySpec& spec = boundaries.side[side];
         if (spec.kind != BoundaryKind::Inlet)
             continue;
@@ -1921,6 +2073,9 @@ void Config::print() const {
         if (spec.from > 0.0f || spec.to < 1.0f)
             std::cout << ", band " << spec.from << ".." << spec.to
                       << " of the side";
+        if (spec.from2 > 0.0f || spec.to2 < 1.0f)
+            std::cout << ", " << spec.from2 << ".." << spec.to2
+                      << " along its second axis";
         std::cout << "\n";
     }
     std::cout << "  CFL              = " << CFL << "\n";
@@ -1937,6 +2092,8 @@ void Config::print() const {
     std::cout << "  outputDir        = " << outputDir << "\n";
     std::cout << "  geometryFile     = " << geometryFile << "\n";
     std::cout << "  sliceAngleX      = " << sliceAngleX << " deg\n";
+    if (volumetric())
+        std::cout << "  sliceAngleY      = " << sliceAngleY << " deg\n";
     std::cout << "  sliceAngleZ      = " << sliceAngleZ << " deg\n";
     std::cout << "  invertSection    = " << invertSection << "\n";
     std::cout << "  sliceRotation    = " << sliceRotation << " deg\n";
@@ -2071,6 +2228,7 @@ std::vector<Profile> Config::resolvedProfiles() const {
     for (Profile& profile : list) {
         if (!profile.angleSet) {
             profile.angleX = sliceAngleX;
+            profile.angleY = sliceAngleY;
             profile.angleZ = sliceAngleZ;
         }
         if (!profile.invertSet)
@@ -2079,6 +2237,20 @@ std::vector<Profile> Config::resolvedProfiles() const {
             profile.rotation = sliceRotation;
     }
     return list;
+}
+
+void Config::gravityVector(float& gx, float& gy, float& gz) const {
+    if (!gravityEnabled) {
+        gx = gy = gz = 0.0f;
+        return;
+    }
+    constexpr float degToRad = 3.14159265358979f / 180.0f;
+    const float rad = gravityAngle * degToRad;
+    const float tilt = gravityTilt * degToRad;
+    const float planar = gravityAccel * std::cos(tilt);
+    gx = -planar * std::sin(rad);
+    gy = -planar * std::cos(rad);
+    gz = gravityAccel * std::sin(tilt);
 }
 
 bool Config::regimeConsistent(std::string& error) const {
@@ -2182,8 +2354,10 @@ std::string Config::serialize() const {
         << "regime=" << regimeName(regime) << "\n"
         << "Lx=" << Lx << "\n"
         << "Ly=" << Ly << "\n"
+        << "Lz=" << Lz << "\n"
         << "nx=" << nx << "\n"
         << "ny=" << ny << "\n"
+        << "nz=" << nz << "\n"
         << "U0=" << U0 << "\n"
         << "nu=" << nu << "\n"
         << "ro=" << ro << "\n"
@@ -2202,6 +2376,7 @@ std::string Config::serialize() const {
         << "phaseLevel=" << phaseLevel << "\n"
         << "phaseX=" << phaseX << "\n"
         << "phaseY=" << phaseY << "\n"
+        << "phaseZ=" << phaseZ << "\n"
         << "initialPhaseFile=" << initialPhaseFile << "\n"
         // Frames written before gravity existed simply do not carry these keys,
         // and setParam is never called for them, so the defaults leave gravity
@@ -2209,6 +2384,7 @@ std::string Config::serialize() const {
         << "gravityEnabled=" << (gravityEnabled ? 1 : 0) << "\n"
         << "gravityAccel=" << gravityAccel << "\n"
         << "gravityAngle=" << gravityAngle << "\n"
+        << "gravityTilt=" << gravityTilt << "\n"
         << "gravityMode="
         << enumName(static_cast<int>(gravityMode), kGravityModes) << "\n"
         << "convection="
@@ -2224,17 +2400,22 @@ std::string Config::serialize() const {
         << "bcRight=" << boundaryKindName(boundaries[BoundarySide::Right].kind) << "\n"
         << "bcBottom=" << boundaryKindName(boundaries[BoundarySide::Bottom].kind) << "\n"
         << "bcTop=" << boundaryKindName(boundaries[BoundarySide::Top].kind) << "\n"
+        << "bcFront=" << boundaryKindName(boundaries[BoundarySide::Front].kind) << "\n"
+        << "bcBack=" << boundaryKindName(boundaries[BoundarySide::Back].kind) << "\n"
         << "inletFrom=" << boundaries[BoundarySide::Left].from << "\n"
         << "inletTo=" << boundaries[BoundarySide::Left].to << "\n"
+        << "inletFrom2=" << boundaries[BoundarySide::Left].from2 << "\n"
+        << "inletTo2=" << boundaries[BoundarySide::Left].to2 << "\n"
         << "inletProfile="
         << inletProfileName(boundaries[BoundarySide::Left].profile) << "\n";
 
-    for (int side = 0; side < 4; ++side) {
+    for (int side = 0; side < kBoundarySides; ++side) {
         const BoundarySpec& spec = boundaries.side[side];
         if (!spec.speedSet)
             continue;
-        static const char* const kNames[4] = {
-            "bcLeftSpeed", "bcRightSpeed", "bcBottomSpeed", "bcTopSpeed"};
+        static const char* const kNames[kBoundarySides] = {
+            "bcLeftSpeed", "bcRightSpeed", "bcBottomSpeed", "bcTopSpeed",
+            "bcFrontSpeed", "bcBackSpeed"};
         out << kNames[side] << "=" << spec.speed << "\n";
     }
 
@@ -2250,6 +2431,7 @@ std::string Config::serialize() const {
         << "saveInterval=" << saveInterval << "\n"
         << "useCuda=" << (useCuda ? 1 : 0) << "\n"
         << "sliceAngleX=" << sliceAngleX << "\n"
+        << "sliceAngleY=" << sliceAngleY << "\n"
         << "sliceAngleZ=" << sliceAngleZ << "\n"
         << "sliceRotation=" << sliceRotation << "\n"
         << "invertSection=" << (invertSection ? 1 : 0) << "\n";
@@ -2333,12 +2515,19 @@ bool Config::setParam(const std::string& key,
              "the domain width must be a positive length in metres", error);
     else if (k == "Ly") ok = assignFloat(Ly, k, value, kTiny, kHuge,
              "the domain height must be a positive length in metres", error);
+    else if (k == "Lz") ok = assignFloat(Lz, k, value, kTiny, kHuge,
+             "the domain depth must be a positive length in metres", error);
     else if (k == "nx") ok = assignInt(nx, k, value, 8, kIntMax,
              "the grid needs at least 8 cells per axis, the multigrid has "
              "nothing to coarsen below that", error);
     else if (k == "ny") ok = assignInt(ny, k, value, 8, kIntMax,
              "the grid needs at least 8 cells per axis, the multigrid has "
              "nothing to coarsen below that", error);
+    else if (k == "nz") ok = assignInt(nz, k, value, 1, kIntMax,
+             "nz counts the cells across the depth and the smallest number of "
+             "them is 1, which is the single plane every earlier version "
+             "solved; raising it is what makes the run three-dimensional",
+             error);
     else if (k == "U0") ok = assignFloat(U0, k, value, -kHuge, kHuge,
              "the inlet velocity must be a finite number", error);
     else if (k == "nu") ok = assignFloat(nu, k, value, 0.0, kHuge,
@@ -2351,6 +2540,10 @@ bool Config::setParam(const std::string& key,
              "other way use gravityAngle=180", error);
     else if (k == "gravityAngle") ok = assignFloat(gravityAngle, k, value, -kHuge, kHuge,
              "the angle must be a finite number of degrees", error);
+    else if (k == "gravityTilt") ok = assignFloat(gravityTilt, k, value, -kHuge, kHuge,
+             "the tilt must be a finite number of degrees; it leans gravity out "
+             "of the xy plane towards +z, and 0 leaves it in the plane where "
+             "gravityAngle alone puts it", error);
     else if (k == "gravityMode") {
         int mode = static_cast<int>(gravityMode);
         ok = assignEnumValue(mode, k, value, kGravityModes, error);
@@ -2402,6 +2595,8 @@ bool Config::setParam(const std::string& key,
              "this is a fraction of Lx, so it lives between 0 and 1", error);
     else if (k == "phaseY") ok = assignFloat(phaseY, k, value, 0.0, 1.0,
              "this is a fraction of Ly, so it lives between 0 and 1", error);
+    else if (k == "phaseZ") ok = assignFloat(phaseZ, k, value, 0.0, 1.0,
+             "this is a fraction of Lz, so it lives between 0 and 1", error);
     else if (k == "initialPhaseFile") { initialPhaseFile = cleanValue(value); ok = true; }
     else if (k == "sources") {
         std::vector<FlowSource> parsed;
@@ -2485,12 +2680,17 @@ bool Config::setParam(const std::string& key,
     else if (k == "bcRight")  ok = assignSideKind(boundaries[BoundarySide::Right], k, value, error);
     else if (k == "bcBottom") ok = assignSideKind(boundaries[BoundarySide::Bottom], k, value, error);
     else if (k == "bcTop")    ok = assignSideKind(boundaries[BoundarySide::Top], k, value, error);
+    else if (k == "bcFront")  ok = assignSideKind(boundaries[BoundarySide::Front], k, value, error);
+    else if (k == "bcBack")   ok = assignSideKind(boundaries[BoundarySide::Back], k, value, error);
     else if (k == "bcLeftSpeed" || k == "bcRightSpeed" ||
-             k == "bcBottomSpeed" || k == "bcTopSpeed") {
+             k == "bcBottomSpeed" || k == "bcTopSpeed" ||
+             k == "bcFrontSpeed" || k == "bcBackSpeed") {
         BoundarySide side = BoundarySide::Left;
         if (k == "bcRightSpeed")       side = BoundarySide::Right;
         else if (k == "bcBottomSpeed") side = BoundarySide::Bottom;
         else if (k == "bcTopSpeed")    side = BoundarySide::Top;
+        else if (k == "bcFrontSpeed")  side = BoundarySide::Front;
+        else if (k == "bcBackSpeed")   side = BoundarySide::Back;
         ok = assignFloat(boundaries[side].speed, k, value, -kHuge, kHuge,
              "the speed this side imposes must be a finite number of m/s", error);
         if (ok) boundaries[side].speedSet = true;
@@ -2501,9 +2701,20 @@ bool Config::setParam(const std::string& key,
              "this is a fraction of the side measured from its low end, so it "
              "lives between 0 and 1", error);
         if (ok)
-            for (int side = 0; side < 4; ++side) {
+            for (int side = 0; side < kBoundarySides; ++side) {
                 if (k == "inletFrom") boundaries.side[side].from = target;
                 else                  boundaries.side[side].to = target;
+            }
+    }
+    else if (k == "inletFrom2" || k == "inletTo2") {
+        float target = 0.0f;
+        ok = assignFloat(target, k, value, 0.0, 1.0,
+             "this is a fraction of the second axis of the side, measured from "
+             "its low end, so it lives between 0 and 1", error);
+        if (ok)
+            for (int side = 0; side < kBoundarySides; ++side) {
+                if (k == "inletFrom2") boundaries.side[side].from2 = target;
+                else                   boundaries.side[side].to2 = target;
             }
     }
     else if (k == "inletProfile") {
@@ -2511,7 +2722,7 @@ bool Config::setParam(const std::string& key,
         std::string why;
         ok = parseInletProfile(trimSpace(cleanValue(value)), profile, why);
         if (!ok) error = badValue(k, cleanValue(value), why);
-        else for (int side = 0; side < 4; ++side)
+        else for (int side = 0; side < kBoundarySides; ++side)
             boundaries.side[side].profile = profile;
     }
     else if (k == "CFL") ok = assignFloat(CFL, k, value, kTiny, kHuge,
@@ -2540,6 +2751,8 @@ bool Config::setParam(const std::string& key,
     else if (k == "outputDir")    { outputDir = cleanValue(value); ok = true; }
     else if (k == "geometryFile") { geometryFile = cleanValue(value); ok = true; }
     else if (k == "sliceAngleX") ok = assignFloat(sliceAngleX, k, value, -kHuge, kHuge,
+             "the angle must be a finite number of degrees", error);
+    else if (k == "sliceAngleY") ok = assignFloat(sliceAngleY, k, value, -kHuge, kHuge,
              "the angle must be a finite number of degrees", error);
     else if (k == "sliceAngleZ") ok = assignFloat(sliceAngleZ, k, value, -kHuge, kHuge,
              "the angle must be a finite number of degrees", error);

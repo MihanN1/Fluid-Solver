@@ -181,6 +181,68 @@ uint32_t hashFaces(const std::vector<float>& values, uint32_t hash) {
     return hash;
 }
 
+bool parseBodyState(const std::string& entry, RestartData::BodyState& state) {
+    const size_t colon = entry.find(':');
+    if (colon == std::string::npos)
+        return false;
+
+    const std::string fields = entry.substr(colon + 1);
+    if (fields.find('=') == std::string::npos) {
+        double theta = 0.0;
+        const int read = std::sscanf(
+            entry.c_str(), "%d:%lf,%lf,%lf,%f,%f,%f",
+            &state.object, &state.x, &state.y, &theta,
+            &state.vx, &state.vy, &state.omega);
+        if (read != 7)
+            return false;
+        state.qw = std::cos(0.5 * theta);
+        state.qz = std::sin(0.5 * theta);
+        return true;
+    }
+
+    state.object = std::atoi(entry.c_str());
+    for (size_t pos = 0; pos < fields.size();) {
+        size_t end = fields.find(',', pos);
+        if (end == std::string::npos)
+            end = fields.size();
+        const std::string field = fields.substr(pos, end - pos);
+        pos = end + 1;
+        const size_t eq = field.find('=');
+        if (eq == std::string::npos || eq == 0)
+            continue;
+
+        const std::string name = field.substr(0, eq);
+        const char* text = field.c_str() + eq + 1;
+        if (name == "x")
+            state.x = std::strtod(text, nullptr);
+        else if (name == "y")
+            state.y = std::strtod(text, nullptr);
+        else if (name == "z")
+            state.z = std::strtod(text, nullptr);
+        else if (name == "qw")
+            state.qw = std::strtod(text, nullptr);
+        else if (name == "qx")
+            state.qx = std::strtod(text, nullptr);
+        else if (name == "qy")
+            state.qy = std::strtod(text, nullptr);
+        else if (name == "qz")
+            state.qz = std::strtod(text, nullptr);
+        else if (name == "vx")
+            state.vx = std::strtof(text, nullptr);
+        else if (name == "vy")
+            state.vy = std::strtof(text, nullptr);
+        else if (name == "vz")
+            state.vz = std::strtof(text, nullptr);
+        else if (name == "omegaX")
+            state.omegaX = std::strtof(text, nullptr);
+        else if (name == "omegaY")
+            state.omegaY = std::strtof(text, nullptr);
+        else if (name == "omega")
+            state.omega = std::strtof(text, nullptr);
+    }
+    return true;
+}
+
 bool fail(std::string& error, const std::string& message) {
     error = message;
     return false;
@@ -345,20 +407,27 @@ std::filesystem::path resolveRestartPath(const std::string& path,
     return given;
 }
 
-std::string packFaceVelocities(int nx, int ny,
+std::string packFaceVelocities(int nx, int ny, int nz,
                                const std::vector<float>& u,
                                const std::vector<float>& v,
+                               const std::vector<float>& w,
                                const std::vector<float>& uCell,
-                               const std::vector<float>& vCell) {
-    const size_t cells = static_cast<size_t>(nx) * ny;
-    if (nx < 1 || ny < 1 ||
-        u.size() != static_cast<size_t>(nx + 1) * ny ||
-        v.size() != static_cast<size_t>(nx) * (ny + 1) ||
-        uCell.size() != cells || vCell.size() != cells)
+                               const std::vector<float>& vCell,
+                               const std::vector<float>& wCell) {
+    const size_t cells = static_cast<size_t>(nx) * ny * nz;
+    if (nx < 1 || ny < 1 || nz < 1 ||
+        u.size() != static_cast<size_t>(nx + 1) * ny * nz ||
+        v.size() != static_cast<size_t>(nx) * (ny + 1) * nz ||
+        w.size() != static_cast<size_t>(nx) * ny * (nz + 1) ||
+        uCell.size() != cells || vCell.size() != cells || wCell.size() != cells)
         return std::string();
 
+    const size_t seeds = static_cast<size_t>(ny) * nz +
+                         static_cast<size_t>(nx) * nz +
+                         static_cast<size_t>(nx) * ny;
+
     std::string out;
-    out.resize(4u + 4u * static_cast<size_t>(nx + ny) + cells * 10u);
+    out.resize(4u + 4u * seeds + cells * 15u);
     char* cursor = out.data();
 
     const auto putWord = [&](uint32_t word) {
@@ -380,36 +449,56 @@ std::string packFaceVelocities(int nx, int ny,
     uint32_t checksum = 2166136261u;
     checksum = hashFaces(u, checksum);
     checksum = hashFaces(v, checksum);
+    checksum = hashFaces(w, checksum);
     putWord(checksum);
 
-    // The two lines the prediction starts from are spelled out. They are one
-    // column and one row, a fraction of a percent of the block, and they save
-    // the reader from having to reproduce how the inlet and the bottom wall
-    // were set on the run that wrote the frame.
+    for (int k = 0; k < nz; ++k)
+        for (int j = 0; j < ny; ++j)
+            putWord(floatBits(
+                u[(static_cast<size_t>(k) * ny + j) * (nx + 1)]));
+    for (int k = 0; k < nz; ++k)
+        for (int i = 0; i < nx; ++i)
+            putWord(floatBits(
+                v[static_cast<size_t>(k) * (ny + 1) * nx + i]));
     for (int j = 0; j < ny; ++j)
-        putWord(floatBits(u[static_cast<size_t>(j) * (nx + 1)]));
-    for (int i = 0; i < nx; ++i)
-        putWord(floatBits(v[i]));
+        for (int i = 0; i < nx; ++i)
+            putWord(floatBits(w[static_cast<size_t>(j) * nx + i]));
 
-    for (int j = 0; j < ny; ++j) {
-        const size_t rowU = static_cast<size_t>(j) * (nx + 1);
-        const size_t rowC = static_cast<size_t>(j) * nx;
-        float previous = u[rowU];
-        for (int i = 0; i < nx; ++i) {
-            const float predicted = predictNextFace(uCell[rowC + i], previous);
-            previous = u[rowU + i + 1];
-            putDelta(floatBits(previous) - floatBits(predicted));
+    for (int k = 0; k < nz; ++k)
+        for (int j = 0; j < ny; ++j) {
+            const size_t rowU = (static_cast<size_t>(k) * ny + j) * (nx + 1);
+            const size_t rowC = (static_cast<size_t>(k) * ny + j) * nx;
+            float previous = u[rowU];
+            for (int i = 0; i < nx; ++i) {
+                const float predicted =
+                    predictNextFace(uCell[rowC + i], previous);
+                previous = u[rowU + i + 1];
+                putDelta(floatBits(previous) - floatBits(predicted));
+            }
         }
-    }
 
-    for (int j = 0; j < ny; ++j) {
-        const size_t rowV = static_cast<size_t>(j) * nx;
-        for (int i = 0; i < nx; ++i) {
-            const float predicted =
-                predictNextFace(vCell[rowV + i], v[rowV + i]);
-            putDelta(floatBits(v[rowV + nx + i]) - floatBits(predicted));
+    for (int k = 0; k < nz; ++k)
+        for (int j = 0; j < ny; ++j) {
+            const size_t rowV = (static_cast<size_t>(k) * (ny + 1) + j) * nx;
+            const size_t rowC = (static_cast<size_t>(k) * ny + j) * nx;
+            for (int i = 0; i < nx; ++i) {
+                const float predicted =
+                    predictNextFace(vCell[rowC + i], v[rowV + i]);
+                putDelta(floatBits(v[rowV + nx + i]) - floatBits(predicted));
+            }
         }
-    }
+
+    const size_t planeW = static_cast<size_t>(nx) * ny;
+    for (int k = 0; k < nz; ++k)
+        for (int j = 0; j < ny; ++j) {
+            const size_t rowW = (static_cast<size_t>(k) * ny + j) * nx;
+            for (int i = 0; i < nx; ++i) {
+                const float predicted =
+                    predictNextFace(wCell[rowW + i], w[rowW + i]);
+                putDelta(floatBits(w[rowW + planeW + i]) -
+                         floatBits(predicted));
+            }
+        }
 
     out.resize(static_cast<size_t>(cursor - out.data()));
     return out;
@@ -417,79 +506,131 @@ std::string packFaceVelocities(int nx, int ny,
 
 namespace {
 // Fails with the outputs emptied, always. loadRestart decides whether a frame
-// is an exact restart by the size of these two, so leaving a half filled array
-// of the right length behind is the one way to make a truncated block look like
-// a complete one - which is exactly what it used to do.
-bool unpackFailed(std::vector<float>& u, std::vector<float>& v) {
+// is an exact restart by the size of these three, so leaving a half filled
+// array of the right length behind is the one way to make a truncated block
+// look like a complete one - which is exactly what it used to do.
+bool unpackFailed(std::vector<float>& u, std::vector<float>& v,
+                  std::vector<float>& w) {
     u.clear();
     v.clear();
+    w.clear();
     return false;
 }
-}
 
-bool unpackFaceVelocities(int nx, int ny,
-                          const std::string& packed,
-                          const std::vector<float>& uCell,
-                          const std::vector<float>& vCell,
-                          std::vector<float>& u,
-                          std::vector<float>& v) {
-    const size_t cells = static_cast<size_t>(nx) * ny;
-    if (nx < 1 || ny < 1 || uCell.size() != cells || vCell.size() != cells)
-        return unpackFailed(u, v);
-
-    u.assign(static_cast<size_t>(nx + 1) * ny, 0.0f);
-    v.assign(static_cast<size_t>(nx) * (ny + 1), 0.0f);
+bool unpackBlock(int nx, int ny, int nz, bool withW,
+                 const std::string& packed,
+                 const std::vector<float>& uCell,
+                 const std::vector<float>& vCell,
+                 const std::vector<float>& wCell,
+                 std::vector<float>& u,
+                 std::vector<float>& v,
+                 std::vector<float>& w) {
+    u.assign(static_cast<size_t>(nx + 1) * ny * nz, 0.0f);
+    v.assign(static_cast<size_t>(nx) * (ny + 1) * nz, 0.0f);
+    w.assign(static_cast<size_t>(nx) * ny * (nz + 1), 0.0f);
 
     size_t pos = 0;
     uint32_t stored = 0;
     if (!takeWord(packed, pos, stored))
-        return unpackFailed(u, v);
+        return false;
 
     uint32_t bits = 0;
-    for (int j = 0; j < ny; ++j) {
-        if (!takeWord(packed, pos, bits))
-            return unpackFailed(u, v);
-        u[static_cast<size_t>(j) * (nx + 1)] = bitsToFloat(bits);
-    }
-    for (int i = 0; i < nx; ++i) {
-        if (!takeWord(packed, pos, bits))
-            return unpackFailed(u, v);
-        v[i] = bitsToFloat(bits);
-    }
+    for (int k = 0; k < nz; ++k)
+        for (int j = 0; j < ny; ++j) {
+            if (!takeWord(packed, pos, bits))
+                return false;
+            u[(static_cast<size_t>(k) * ny + j) * (nx + 1)] =
+                bitsToFloat(bits);
+        }
+    for (int k = 0; k < nz; ++k)
+        for (int i = 0; i < nx; ++i) {
+            if (!takeWord(packed, pos, bits))
+                return false;
+            v[static_cast<size_t>(k) * (ny + 1) * nx + i] = bitsToFloat(bits);
+        }
+    if (withW)
+        for (int j = 0; j < ny; ++j)
+            for (int i = 0; i < nx; ++i) {
+                if (!takeWord(packed, pos, bits))
+                    return false;
+                w[static_cast<size_t>(j) * nx + i] = bitsToFloat(bits);
+            }
 
     // Every face is corrected by its own delta before the next one is predicted
     // from it, so nothing accumulates along the march
     uint32_t delta = 0;
-    for (int j = 0; j < ny; ++j) {
-        const size_t rowU = static_cast<size_t>(j) * (nx + 1);
-        const size_t rowC = static_cast<size_t>(j) * nx;
-        float previous = u[rowU];
-        for (int i = 0; i < nx; ++i) {
-            if (!takeDelta(packed, pos, delta))
-                return unpackFailed(u, v);
-            const float predicted = predictNextFace(uCell[rowC + i], previous);
-            previous = bitsToFloat(floatBits(predicted) + delta);
-            u[rowU + i + 1] = previous;
+    for (int k = 0; k < nz; ++k)
+        for (int j = 0; j < ny; ++j) {
+            const size_t rowU = (static_cast<size_t>(k) * ny + j) * (nx + 1);
+            const size_t rowC = (static_cast<size_t>(k) * ny + j) * nx;
+            float previous = u[rowU];
+            for (int i = 0; i < nx; ++i) {
+                if (!takeDelta(packed, pos, delta))
+                    return false;
+                const float predicted =
+                    predictNextFace(uCell[rowC + i], previous);
+                previous = bitsToFloat(floatBits(predicted) + delta);
+                u[rowU + i + 1] = previous;
+            }
         }
-    }
 
-    for (int j = 0; j < ny; ++j) {
-        const size_t rowV = static_cast<size_t>(j) * nx;
-        for (int i = 0; i < nx; ++i) {
-            if (!takeDelta(packed, pos, delta))
-                return unpackFailed(u, v);
-            const float predicted =
-                predictNextFace(vCell[rowV + i], v[rowV + i]);
-            v[rowV + nx + i] = bitsToFloat(floatBits(predicted) + delta);
+    for (int k = 0; k < nz; ++k)
+        for (int j = 0; j < ny; ++j) {
+            const size_t rowV = (static_cast<size_t>(k) * (ny + 1) + j) * nx;
+            const size_t rowC = (static_cast<size_t>(k) * ny + j) * nx;
+            for (int i = 0; i < nx; ++i) {
+                if (!takeDelta(packed, pos, delta))
+                    return false;
+                const float predicted =
+                    predictNextFace(vCell[rowC + i], v[rowV + i]);
+                v[rowV + nx + i] = bitsToFloat(floatBits(predicted) + delta);
+            }
         }
+
+    if (withW) {
+        const size_t planeW = static_cast<size_t>(nx) * ny;
+        for (int k = 0; k < nz; ++k)
+            for (int j = 0; j < ny; ++j) {
+                const size_t rowW = (static_cast<size_t>(k) * ny + j) * nx;
+                for (int i = 0; i < nx; ++i) {
+                    if (!takeDelta(packed, pos, delta))
+                        return false;
+                    const float predicted =
+                        predictNextFace(wCell[rowW + i], w[rowW + i]);
+                    w[rowW + planeW + i] =
+                        bitsToFloat(floatBits(predicted) + delta);
+                }
+            }
     }
 
     uint32_t checksum = 2166136261u;
     checksum = hashFaces(u, checksum);
     checksum = hashFaces(v, checksum);
-    if (checksum != stored)
-        return unpackFailed(u, v);
-    return true;
+    if (withW)
+        checksum = hashFaces(w, checksum);
+    return checksum == stored;
+}
+}
+
+bool unpackFaceVelocities(int nx, int ny, int nz,
+                          const std::string& packed,
+                          const std::vector<float>& uCell,
+                          const std::vector<float>& vCell,
+                          const std::vector<float>& wCell,
+                          std::vector<float>& u,
+                          std::vector<float>& v,
+                          std::vector<float>& w) {
+    const size_t cells = static_cast<size_t>(nx) * ny * nz;
+    if (nx < 1 || ny < 1 || nz < 1 || uCell.size() != cells ||
+        vCell.size() != cells || wCell.size() != cells)
+        return unpackFailed(u, v, w);
+
+    if (unpackBlock(nx, ny, nz, true, packed, uCell, vCell, wCell, u, v, w))
+        return true;
+    if (nz == 1 &&
+        unpackBlock(nx, ny, nz, false, packed, uCell, vCell, wCell, u, v, w))
+        return true;
+    return unpackFailed(u, v, w);
 }
 
 bool loadRestart(const std::filesystem::path& file,
@@ -531,7 +672,8 @@ bool loadRestart(const std::filesystem::path& file,
             fin >> pointNx >> pointNy >> pointNz;
             out.nx = pointNx - 1;
             out.ny = pointNy - 1;
-            if (pointNz != 1 || out.nx < 1 || out.ny < 1)
+            out.nz = pointNz > 1 ? pointNz - 1 : 1;
+            if (pointNz < 1 || out.nx < 1 || out.ny < 1)
                 return fail(error, "Bad DIMENSIONS in " + pathToConsole(file));
         } else if (token == "ORIGIN") {
             double ox, oy, oz;
@@ -541,10 +683,11 @@ bool loadRestart(const std::filesystem::path& file,
             fin >> sx >> sy >> sz;
             out.dx = static_cast<float>(sx);
             out.dy = static_cast<float>(sy);
+            out.dz = static_cast<float>(sz);
         } else if (token == "CELL_DATA") {
             fin >> declaredCells;
             if (declaredCells !=
-                static_cast<long long>(out.nx) * out.ny)
+                static_cast<long long>(out.nx) * out.ny * out.nz)
                 return fail(error, "CELL_DATA count does not match DIMENSIONS");
         } else if (token == "POINT_DATA") {
             return fail(error, "POINT_DATA frames cannot seed the solver");
@@ -564,7 +707,7 @@ bool loadRestart(const std::filesystem::path& file,
                 return fail(error, "Truncated frame before SCALARS " + name);
 
             const size_t count =
-                static_cast<size_t>(out.nx) * out.ny * components;
+                static_cast<size_t>(out.nx) * out.ny * out.nz * components;
             // solid went from int32 to one byte a cell; everything else in a
             // SCALARS block is still four bytes wide
             const size_t width =
@@ -593,7 +736,8 @@ bool loadRestart(const std::filesystem::path& file,
             if (!skipToPayload(fin))
                 return fail(error, "Truncated frame before VECTORS " + name);
 
-            const size_t count = static_cast<size_t>(out.nx) * out.ny * 3;
+            const size_t count =
+                static_cast<size_t>(out.nx) * out.ny * out.nz * 3;
             if (name == "velocity") {
                 if (!readFloats(fin, cellVelocity, count))
                     return fail(error, "Truncated velocity array");
@@ -654,6 +798,8 @@ bool loadRestart(const std::filesystem::path& file,
                         ok = readFloats(fin, out.stateRhoU, count);
                     else if (arrayName == "stateRhoV")
                         ok = readFloats(fin, out.stateRhoV, count);
+                    else if (arrayName == "stateRhoW")
+                        ok = readFloats(fin, out.stateRhoW, count);
                     else if (arrayName == "stateRhoE")
                         ok = readFloats(fin, out.stateRhoE, count);
                     else if (arrayName == "stateRhoY")
@@ -662,6 +808,8 @@ bool loadRestart(const std::filesystem::path& file,
                         ok = readFloats(fin, out.gridFaceX, count);
                     else if (arrayName == "gridFaceY")
                         ok = readFloats(fin, out.gridFaceY, count);
+                    else if (arrayName == "gridFaceZ")
+                        ok = readFloats(fin, out.gridFaceZ, count);
                     else
                         ok = skipBytes(
                             fin, static_cast<std::streamoff>(count * 4));
@@ -678,7 +826,7 @@ bool loadRestart(const std::filesystem::path& file,
         }
     }
 
-    const size_t cells = static_cast<size_t>(out.nx) * out.ny;
+    const size_t cells = static_cast<size_t>(out.nx) * out.ny * out.nz;
     if (cells == 0 || out.solid.size() != cells)
         return fail(error, "Frame carries no usable solid mask");
 
@@ -712,11 +860,7 @@ bool loadRestart(const std::filesystem::path& file,
                     if (entry.empty())
                         continue;
                     RestartData::BodyState state;
-                    const int read = std::sscanf(
-                        entry.c_str(), "%d:%lf,%lf,%lf,%f,%f,%f",
-                        &state.object, &state.x, &state.y, &state.theta,
-                        &state.vx, &state.vy, &state.omega);
-                    if (read == 7)
+                    if (parseBodyState(entry, state))
                         out.bodies.push_back(state);
                 }
             }
@@ -740,6 +884,7 @@ bool loadRestart(const std::filesystem::path& file,
         // domain consistent with the grid that produced the frame
         out.cfg.Lx = out.dx * out.nx;
         out.cfg.Ly = out.dy * out.ny;
+        out.cfg.Lz = out.dz * out.nz;
 
         // Frames of that vintage were always solution_<step>.vtk, so the
         // trailing number is the step count. The time behind it is gone.
@@ -751,6 +896,7 @@ bool loadRestart(const std::filesystem::path& file,
 
     out.cfg.nx = out.nx;
     out.cfg.ny = out.ny;
+    out.cfg.nz = out.nz;
     out.cfg.restart = true;
 
     // Frames written now leave the faces packed against the cell averages
@@ -760,13 +906,14 @@ bool loadRestart(const std::filesystem::path& file,
     // both branches, so one rule covers every vintage from here on.
     if (out.u.empty() && !facePack.empty() &&
         cellVelocity.size() == cells * 3) {
-        std::vector<float> uCell(cells), vCell(cells);
+        std::vector<float> uCell(cells), vCell(cells), wCell(cells);
         for (size_t id = 0; id < cells; ++id) {
             uCell[id] = cellVelocity[3 * id];
             vCell[id] = cellVelocity[3 * id + 1];
+            wCell[id] = cellVelocity[3 * id + 2];
         }
-        if (!unpackFaceVelocities(out.nx, out.ny, facePack, uCell, vCell,
-                                  out.u, out.v))
+        if (!unpackFaceVelocities(out.nx, out.ny, out.nz, facePack, uCell,
+                                  vCell, wCell, out.u, out.v, out.w))
             std::cout << "  note: the packed face velocities in this frame did "
                          "not check out, so the\n"
                          "        state is rebuilt from the cell averages and "
@@ -780,11 +927,17 @@ bool loadRestart(const std::filesystem::path& file,
             out.p[id] = cellPressure[id] * invRo;
     }
 
-    const size_t uCells = static_cast<size_t>(out.nx + 1) * out.ny;
-    const size_t vCells = static_cast<size_t>(out.nx) * (out.ny + 1);
+    const size_t uCells = static_cast<size_t>(out.nx + 1) * out.ny * out.nz;
+    const size_t vCells = static_cast<size_t>(out.nx) * (out.ny + 1) * out.nz;
+    const size_t wCells = static_cast<size_t>(out.nx) * out.ny * (out.nz + 1);
+
+    if (out.w.empty() && out.u.size() == uCells && out.v.size() == vCells)
+        out.w.assign(wCells, 0.0f);
+
     out.exactState =
         out.u.size() == uCells &&
         out.v.size() == vCells &&
+        out.w.size() == wCells &&
         out.p.size() == cells;
 
     if (!out.exactState) {
@@ -803,23 +956,45 @@ bool loadRestart(const std::filesystem::path& file,
         // neighbours, the inlet and outlet faces copy the cell they touch.
         out.u.assign(uCells, 0.0f);
         out.v.assign(vCells, 0.0f);
-        for (int j = 0; j < out.ny; ++j) {
-            const int rowC = j * out.nx;
-            const int rowU = j * (out.nx + 1);
-            out.u[rowU] = cellVelocity[3 * rowC];
-            for (int i = 1; i < out.nx; ++i)
-                out.u[rowU + i] = 0.5f * (cellVelocity[3 * (rowC + i - 1)] +
-                                          cellVelocity[3 * (rowC + i)]);
-            out.u[rowU + out.nx] = cellVelocity[3 * (rowC + out.nx - 1)];
-        }
-        for (int j = 1; j < out.ny; ++j) {
-            const int rowC = j * out.nx;
-            const int rowBot = (j - 1) * out.nx;
-            for (int i = 0; i < out.nx; ++i)
-                out.v[rowC + i] = 0.5f * (cellVelocity[3 * (rowBot + i) + 1] +
-                                          cellVelocity[3 * (rowC + i) + 1]);
-        }
+        out.w.assign(wCells, 0.0f);
+        for (int k = 0; k < out.nz; ++k)
+            for (int j = 0; j < out.ny; ++j) {
+                const size_t rowC =
+                    (static_cast<size_t>(k) * out.ny + j) * out.nx;
+                const size_t rowU =
+                    (static_cast<size_t>(k) * out.ny + j) * (out.nx + 1);
+                out.u[rowU] = cellVelocity[3 * rowC];
+                for (int i = 1; i < out.nx; ++i)
+                    out.u[rowU + i] =
+                        0.5f * (cellVelocity[3 * (rowC + i - 1)] +
+                                cellVelocity[3 * (rowC + i)]);
+                out.u[rowU + out.nx] = cellVelocity[3 * (rowC + out.nx - 1)];
+            }
+        for (int k = 0; k < out.nz; ++k)
+            for (int j = 1; j < out.ny; ++j) {
+                const size_t rowC =
+                    (static_cast<size_t>(k) * out.ny + j) * out.nx;
+                const size_t rowBot =
+                    (static_cast<size_t>(k) * out.ny + j - 1) * out.nx;
+                const size_t rowV =
+                    (static_cast<size_t>(k) * (out.ny + 1) + j) * out.nx;
+                for (int i = 0; i < out.nx; ++i)
+                    out.v[rowV + i] =
+                        0.5f * (cellVelocity[3 * (rowBot + i) + 1] +
+                                cellVelocity[3 * (rowC + i) + 1]);
+            }
         // Top and bottom rows stay zero, which is the wall condition anyway
+        for (int k = 1; k < out.nz; ++k)
+            for (int j = 0; j < out.ny; ++j) {
+                const size_t rowC =
+                    (static_cast<size_t>(k) * out.ny + j) * out.nx;
+                const size_t rowBack =
+                    (static_cast<size_t>(k - 1) * out.ny + j) * out.nx;
+                for (int i = 0; i < out.nx; ++i)
+                    out.w[rowC + i] =
+                        0.5f * (cellVelocity[3 * (rowBack + i) + 2] +
+                                cellVelocity[3 * (rowC + i) + 2]);
+            }
 
         // Pressure is only the multigrid warm start, so an approximate one is
         // fine. It is stored in Pa in the frame and kinematic in the solver.
@@ -838,8 +1013,11 @@ bool loadRestart(const std::filesystem::path& file,
     // configuration text claims
     const float expectedDx = out.cfg.Lx / out.nx;
     const float expectedDy = out.cfg.Ly / out.ny;
+    const float expectedDz = out.cfg.Lz / out.nz;
     if (std::fabs(expectedDx - out.dx) > 1e-4f * out.dx ||
-        std::fabs(expectedDy - out.dy) > 1e-4f * out.dy)
+        std::fabs(expectedDy - out.dy) > 1e-4f * out.dy ||
+        (pointNz > 1 &&
+         std::fabs(expectedDz - out.dz) > 1e-4f * out.dz))
         return fail(error,
                     "Domain in the stored configuration does not match the "
                     "SPACING of the frame");

@@ -13,11 +13,14 @@ struct MultigridBC {
     PressureSideBC right = PressureSideBC::Dirichlet;
     PressureSideBC bottom = PressureSideBC::Neumann;
     PressureSideBC top = PressureSideBC::Neumann;
+    PressureSideBC front = PressureSideBC::Neumann;
+    PressureSideBC back = PressureSideBC::Neumann;
 };
 
 class Multigrid {
 public:
-    Multigrid(int nx, int ny, float dx, float dy, int minCoarseSize = 8);
+    Multigrid(int nx, int ny, int nz, float dx, float dy, float dz,
+              int minCoarseSize = 8);
     ~Multigrid();
 
     // The levels own raw device pointers, so copying is forbidden
@@ -33,7 +36,8 @@ public:
     void setPressureBC(const MultigridBC& bc);
 
     void setCoefficients(const std::vector<float>& faceX,
-                         const std::vector<float>& faceY);
+                         const std::vector<float>& faceY,
+                         const std::vector<float>& faceZ = {});
 
     bool singularPressure() const { return pressureSingular; }
 
@@ -87,20 +91,22 @@ private:
     struct Level {
         int nx = 0;
         int ny = 0;
+        int nz = 0;
         int cellCount = 0;
         float dx = 0.0f;
         float dy = 0.0f;
+        float dz = 0.0f;
 
         // Coarsening ratio towards the next coarser level (1 = axis not coarsened)
         int refineX = 1;
         int refineY = 1;
+        int refineZ = 1;
 
         Field pressure;
         Field residual;
         std::vector<float> rhs;
 
-        // Five point stencil: West/East/South/North neighbours and the diagonal
-        std::vector<float> coefW, coefE, coefS, coefN;
+        std::vector<float> coefW, coefE, coefS, coefN, coefF, coefB;
         std::vector<float> diag;
         std::vector<float> invDiag;
 
@@ -110,6 +116,7 @@ private:
 
         std::vector<float> faceX;
         std::vector<float> faceY;
+        std::vector<float> faceZ;
 
         // Sum of the prolongation weights that land on fluid cells, used to
         // normalise both the prolongation and the restriction
@@ -123,6 +130,7 @@ private:
         };
         std::vector<Transfer> transferX;
         std::vector<Transfer> transferY;
+        std::vector<Transfer> transferZ;
 
         struct Gather {
             int count = 0;
@@ -131,6 +139,7 @@ private:
         };
         std::vector<Gather> gatherX;
         std::vector<Gather> gatherY;
+        std::vector<Gather> gatherZ;
 
         std::vector<float> savedPressure;
         std::vector<float> savedResidual;
@@ -138,9 +147,11 @@ private:
 
     int nx;
     int ny;
+    int nz;
 
     float dx;
     float dy;
+    float dz;
 
     int minCoarseSize;
     int levels = 0;
@@ -237,6 +248,8 @@ private:
             float* coefE = nullptr;
             float* coefS = nullptr;
             float* coefN = nullptr;
+            float* coefF = nullptr;
+            float* coefB = nullptr;
             float* diag = nullptr;
             float* invDiag = nullptr;
             uint8_t* solid = nullptr;

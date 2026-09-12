@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.28)
 
-project(CFD-Solver-2D
+project(Fluid-Solver
     VERSION 1.0.0
     LANGUAGES CXX
 )
@@ -32,7 +32,7 @@ set(CFD_APP_NAME "Fluid Solver" CACHE STRING
 # Which repository the update check asks about. Split in two because the API
 # host and the web host spell the same thing differently.
 set(CFD_REPO_OWNER "MihanN1" CACHE STRING "GitHub owner of the release repo")
-set(CFD_REPO_NAME "CFD-Solver-2D" CACHE STRING "GitHub name of the release repo")
+set(CFD_REPO_NAME "Fluid-Solver" CACHE STRING "GitHub name of the release repo")
 
 # What the release is called - "0.2", not "0.2.0". Archive names, the release
 # folder and the git tag all use the short form, and the update check has to
@@ -44,7 +44,7 @@ set(CFD_RELEASE_VERSION "${PROJECT_VERSION_MAJOR}.${PROJECT_VERSION_MINOR}"
 # getting it wrong is quiet rather than loud, so it lives here instead of in
 # whatever command line happened to produce a given binary:
 #   MSVC       static CRT (/MT). The OpenMP runtime has no static form, so an
-#              OpenMP build still needs vcomp140.dll beside it.
+#              OpenMP build still needs libomp140.<arch>.dll beside it.
 #   GCC/Clang  -static, plus libgomp.a rather than the libgomp.so that CMake's
 #              OpenMP::OpenMP_CXX target otherwise hands the linker.
 #   with CUDA  no full -static: libcudart_static needs dlopen and pthread, and
@@ -386,6 +386,18 @@ if(CFD_ENABLE_OPENMP)
         endif()
     endif()
 
+    # MSVC's classic /openmp is OpenMP 2.0 and refuses the collapse clause the
+    # volumetric loops are written with, so the Windows build needs the LLVM
+    # runtime instead. It is supplied the same way as the two above: the flag
+    # and an empty library list, so find_package only verifies that the
+    # compiler takes it. A toolchain too old for /openmp:llvm fails that check
+    # and the build says OpenMP was not found rather than dying in a kernel.
+    if(MSVC AND NOT OpenMP_CXX_FLAGS)
+        set(OpenMP_CXX_FLAGS "/openmp:llvm")
+        set(OpenMP_CXX_LIB_NAMES "")
+        message(STATUS "OpenMP: /openmp:llvm")
+    endif()
+
     find_package(OpenMP QUIET COMPONENTS CXX)
     if(OpenMP_CXX_FOUND)
         target_link_libraries(cfd_core PUBLIC OpenMP::OpenMP_CXX)
@@ -519,6 +531,7 @@ if(BUILD_TESTING)
         MovingBodyTests
         TurbulenceTests
         CompressibleTests
+        VolumeTests
     )
     foreach(test ${CFD_TESTS})
         add_executable(${test} "tests/${test}.cpp")

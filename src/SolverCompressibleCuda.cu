@@ -36,13 +36,14 @@ __global__ void primitiveKernel(Block in,
                                 float* rho,
                                 float* u,
                                 float* v,
+                                float* w,
                                 float* p,
                                 float* y,
                                 float* gamma) {
     const int id = blockIdx.x * blockDim.x + threadIdx.x;
-    if (id >= in.stride * in.rows)
+    if (id >= in.cells())
         return;
-    cfd::fillPrimitive(in, gas, id, rho, u, v, p, y, gamma);
+    cfd::fillPrimitive(in, gas, id, rho, u, v, w, p, y, gamma);
 }
 
 __global__ void fluxXKernel(Block in,
@@ -53,11 +54,12 @@ __global__ void fluxXKernel(Block in,
                             float* fx) {
     const int i = blockIdx.x * blockDim.x + threadIdx.x;
     const int j = blockIdx.y * blockDim.y + threadIdx.y;
+    const int k = blockIdx.z;
     if (i > in.nx || j >= in.ny)
         return;
-    cfd::faceFluxX(in, prim, gas, sides, limiter, i, j,
-                   fx + (static_cast<long long>(j) * (in.nx + 1) + i) *
-                            cfd::kComponents);
+    cfd::faceFluxX(in, prim, gas, sides, limiter, i, j, k,
+                   fx + ((static_cast<long long>(k) * in.ny + j) *
+                             (in.nx + 1) + i) * cfd::kComponents);
 }
 
 __global__ void fluxYKernel(Block in,
@@ -68,10 +70,27 @@ __global__ void fluxYKernel(Block in,
                             float* fy) {
     const int i = blockIdx.x * blockDim.x + threadIdx.x;
     const int j = blockIdx.y * blockDim.y + threadIdx.y;
+    const int k = blockIdx.z;
     if (i >= in.nx || j > in.ny)
         return;
-    cfd::faceFluxY(in, prim, gas, sides, limiter, i, j,
-                   fy + (static_cast<long long>(j) * in.nx + i) *
+    cfd::faceFluxY(in, prim, gas, sides, limiter, i, j, k,
+                   fy + ((static_cast<long long>(k) * (in.ny + 1) + j) *
+                             in.nx + i) * cfd::kComponents);
+}
+
+__global__ void fluxZKernel(Block in,
+                            cfd::PrimitiveField prim,
+                            GasModel gas,
+                            BlockBoundaries sides,
+                            int limiter,
+                            float* fz) {
+    const int i = blockIdx.x * blockDim.x + threadIdx.x;
+    const int j = blockIdx.y * blockDim.y + threadIdx.y;
+    const int k = blockIdx.z;
+    if (i >= in.nx || j >= in.ny)
+        return;
+    cfd::faceFluxZ(in, prim, gas, sides, limiter, i, j, k,
+                   fz + ((static_cast<long long>(k) * in.ny + j) * in.nx + i) *
                             cfd::kComponents);
 }
 
@@ -81,37 +100,44 @@ __global__ void combineKernel(Block in,
                               GasModel gas,
                               const float* fx,
                               const float* fy,
+                              const float* fz,
                               float dt,
                               float a,
                               float b,
                               float diffusivity) {
     const int i = blockIdx.x * blockDim.x + threadIdx.x;
     const int j = blockIdx.y * blockDim.y + threadIdx.y;
+    const int k = blockIdx.z;
     if (i >= in.nx || j >= in.ny)
         return;
-    cfd::combine(in, keep, out, gas, fx, fy, i, j, dt, a, b, diffusivity);
+    cfd::combine(in, keep, out, gas, fx, fy, fz, i, j, k, dt, a, b,
+                 diffusivity);
 }
 
 __global__ void solidKernel(Block block, GasModel gas, int layer) {
     const int i = blockIdx.x * blockDim.x + threadIdx.x;
     const int j = blockIdx.y * blockDim.y + threadIdx.y;
+    const int k = blockIdx.z;
     if (i >= block.nx || j >= block.ny)
         return;
-    cfd::solidCell(block, gas, i, j, layer);
+    cfd::solidCell(block, gas, i, j, k, layer);
 }
 
 __global__ void ghostRowKernel(Block block,
                                GasModel gas,
                                BlockBoundaries sides) {
     const int j = blockIdx.x * blockDim.x + threadIdx.x;
+    const int k = blockIdx.z;
     if (j >= block.ny)
         return;
     BlockBoundaries local = sides;
     local.inletY = (j + 0.5f) / static_cast<float>(block.ny);
-    for (int k = 1; k <= block.ghost; ++k) {
-        cfd::mirrorSide(block, gas, sides.left, -k, j, k - 1, j, true, local);
-        cfd::mirrorSide(block, gas, sides.right, block.nx - 1 + k, j,
-                        block.nx - k, j, true, local);
+    local.inletZ = (k + 0.5f) / static_cast<float>(block.nz);
+    for (int m = 1; m <= block.ghost; ++m) {
+        cfd::mirrorSide(block, gas, sides.left, -m, j, k, m - 1, j, k, true,
+                        local);
+        cfd::mirrorSide(block, gas, sides.right, block.nx - 1 + m, j, k,
+                        block.nx - m, j, k, true, local);
     }
 }
 
@@ -119,45 +145,84 @@ __global__ void ghostColumnKernel(Block block,
                                   GasModel gas,
                                   BlockBoundaries sides) {
     const int i = blockIdx.x * blockDim.x + threadIdx.x;
+    const int k = blockIdx.z;
     if (i >= block.nx)
         return;
     BlockBoundaries local = sides;
     local.inletY = (i + 0.5f) / static_cast<float>(block.nx);
-    for (int k = 1; k <= block.ghost; ++k) {
-        cfd::mirrorSide(block, gas, sides.bottom, i, -k, i, k - 1, false,
+    local.inletZ = (k + 0.5f) / static_cast<float>(block.nz);
+    for (int m = 1; m <= block.ghost; ++m) {
+        cfd::mirrorSide(block, gas, sides.bottom, i, -m, k, i, m - 1, k, false,
                         local);
-        cfd::mirrorSide(block, gas, sides.top, i, block.ny - 1 + k, i,
-                        block.ny - k, false, local);
+        cfd::mirrorSide(block, gas, sides.top, i, block.ny - 1 + m, k, i,
+                        block.ny - m, k, false, local);
     }
 }
 
-__global__ void ghostCornerKernel(Block block, GasModel gas) {
-    const int lane = blockIdx.x * blockDim.x + threadIdx.x;
-    const int perCorner = block.ghost * block.ghost;
-    if (lane >= 4 * perCorner)
+__global__ void ghostPlaneKernel(Block block,
+                                 GasModel gas,
+                                 BlockBoundaries sides) {
+    const int i = blockIdx.x * blockDim.x + threadIdx.x;
+    const int j = blockIdx.y * blockDim.y + threadIdx.y;
+    if (i >= block.nx || j >= block.ny)
         return;
-    const int corner = lane / perCorner;
-    const int k = lane % perCorner / block.ghost + 1;
-    const int m = lane % block.ghost + 1;
-    const int targetI = (corner & 1) ? block.nx - 1 + k : -k;
-    const int targetJ = (corner & 2) ? block.ny - 1 + m : -m;
-    const int sourceI = (corner & 1) ? block.nx - 1 : 0;
-    const int sourceJ = (corner & 2) ? block.ny - 1 : 0;
+    BlockBoundaries local = sides;
+    local.inletY = (i + 0.5f) / static_cast<float>(block.nx);
+    local.inletZ = (j + 0.5f) / static_cast<float>(block.ny);
+    for (int m = 1; m <= block.ghost; ++m) {
+        cfd::mirrorSpan(block, gas, sides.front, i, j, -m, i, j, m - 1,
+                        local);
+        cfd::mirrorSpan(block, gas, sides.back, i, j, block.nz - 1 + m, i, j,
+                        block.nz - m, local);
+    }
+}
+
+__global__ void ghostCornerKernel(Block block,
+                                  GasModel gas,
+                                  BlockBoundaries sides) {
+    const int lane = blockIdx.x * blockDim.x + threadIdx.x;
+    const int g = block.ghost;
+    const int gz = block.ghostZ();
+    const int spanI = 2 * g + block.nx;
+    const int spanJ = 2 * g + block.ny;
+    const int spanK = 2 * gz + block.nz;
+    if (lane >= spanI * spanJ * spanK)
+        return;
+    const int i = lane % spanI - g;
+    const int j = lane / spanI % spanJ - g;
+    const int k = lane / (spanI * spanJ) - gz;
+
+    const int sx = i < 0 ? -1 : (i >= block.nx ? 1 : 0);
+    const int sy = j < 0 ? -1 : (j >= block.ny ? 1 : 0);
+    const int sz = k < 0 ? -1 : (k >= block.nz ? 1 : 0);
+    if ((sx != 0) + (sy != 0) + (sz != 0) < 2)
+        return;
+    if (sx < 0 && sides.left.interior) return;
+    if (sx > 0 && sides.right.interior) return;
+    if (sy < 0 && sides.bottom.interior) return;
+    if (sy > 0 && sides.top.interior) return;
+    if (sz < 0 && sides.front.interior) return;
+    if (sz > 0 && sides.back.interior) return;
+
+    const int sourceI = sx < 0 ? 0 : (sx > 0 ? block.nx - 1 : i);
+    const int sourceJ = sy < 0 ? 0 : (sy > 0 ? block.ny - 1 : j);
+    const int sourceK = sz < 0 ? 0 : (sz > 0 ? block.nz - 1 : k);
     const cfd::Primitive q =
-        cfd::primitiveOf(block, gas, block.index(sourceI, sourceJ));
-    cfd::writeState(block, block.index(targetI, targetJ), q);
+        cfd::primitiveOf(block, gas, block.index(sourceI, sourceJ, sourceK));
+    cfd::writeState(block, block.index(i, j, k), q);
 }
 
 __global__ void rateKernel(Block block, GasModel gas, float* partials) {
     __shared__ float shared[kReduceBlock];
-    const int total = block.nx * block.ny;
+    const int total = block.nx * block.ny * block.nz;
     const int lane = threadIdx.x;
     float best = 0.0f;
     for (int id = blockIdx.x * blockDim.x + lane; id < total;
          id += blockDim.x * gridDim.x) {
         const int i = id % block.nx;
-        const int j = id / block.nx;
-        best = fmaxf(best, cfd::cellRate(block, gas, i, j));
+        const int j = id / block.nx % block.ny;
+        const int k = id / (block.nx * block.ny);
+        best = fmaxf(best, cfd::cellRate(block, gas, i, j, k));
     }
     shared[lane] = best;
     __syncthreads();
@@ -173,17 +238,19 @@ __global__ void rateKernel(Block block, GasModel gas, float* partials) {
 }
 
 struct CompressibleDevice {
-    int nx = 0, ny = 0, ghost = 0;
+    int nx = 0, ny = 0, nz = 1, ghost = 0;
     bool species = false;
     std::size_t cells = 0;
 
-    float* fields[3][5] = {};
+    float* fields[3][6] = {};
     uint8_t* solid = nullptr;
     float* solidU = nullptr;
     float* solidV = nullptr;
+    float* solidW = nullptr;
     float* fluxX = nullptr;
     float* fluxY = nullptr;
-    float* primitive[6] = {};
+    float* fluxZ = nullptr;
+    float* primitive[7] = {};
     float* partials = nullptr;
     std::vector<float> partialHost;
 };
@@ -197,42 +264,47 @@ bool compressibleCudaAvailable() {
 
 CompressibleDevice* compressibleCudaCreate(int nx,
                                            int ny,
+                                           int nz,
                                            int ghost,
                                            bool species) {
     CompressibleDevice* device = new CompressibleDevice();
     device->nx = nx;
     device->ny = ny;
+    device->nz = nz;
     device->ghost = ghost;
     device->species = species;
     device->cells = static_cast<std::size_t>(nx + 2 * ghost) *
-                    static_cast<std::size_t>(ny + 2 * ghost);
+                    static_cast<std::size_t>(ny + 2 * ghost) *
+                    static_cast<std::size_t>(nz > 1 ? nz + 2 * ghost : 1);
 
     const std::size_t bytes = device->cells * sizeof(float);
     for (int set = 0; set < 3; ++set)
-        for (int c = 0; c < 5; ++c) {
-            if (c == 4 && !species)
+        for (int c = 0; c < 6; ++c) {
+            if (c == 5 && !species)
                 continue;
             CFD_CUDA(cudaMalloc(&device->fields[set][c], bytes));
             CFD_CUDA(cudaMemset(device->fields[set][c], 0, bytes));
         }
 
-    CFD_CUDA(cudaMalloc(&device->solid,
-                        static_cast<std::size_t>(nx) * ny * sizeof(uint8_t)));
-    CFD_CUDA(cudaMalloc(&device->solidU,
-                        static_cast<std::size_t>(nx) * ny * sizeof(float)));
-    CFD_CUDA(cudaMalloc(&device->solidV,
-                        static_cast<std::size_t>(nx) * ny * sizeof(float)));
-    CFD_CUDA(cudaMemset(device->solidU, 0,
-                        static_cast<std::size_t>(nx) * ny * sizeof(float)));
-    CFD_CUDA(cudaMemset(device->solidV, 0,
-                        static_cast<std::size_t>(nx) * ny * sizeof(float)));
+    const std::size_t mask = static_cast<std::size_t>(nx) * ny * nz;
+    CFD_CUDA(cudaMalloc(&device->solid, mask * sizeof(uint8_t)));
+    CFD_CUDA(cudaMalloc(&device->solidU, mask * sizeof(float)));
+    CFD_CUDA(cudaMalloc(&device->solidV, mask * sizeof(float)));
+    CFD_CUDA(cudaMalloc(&device->solidW, mask * sizeof(float)));
+    CFD_CUDA(cudaMemset(device->solidU, 0, mask * sizeof(float)));
+    CFD_CUDA(cudaMemset(device->solidV, 0, mask * sizeof(float)));
+    CFD_CUDA(cudaMemset(device->solidW, 0, mask * sizeof(float)));
     CFD_CUDA(cudaMalloc(&device->fluxX,
-                        static_cast<std::size_t>(nx + 1) * ny * 5 *
-                            sizeof(float)));
+                        static_cast<std::size_t>(nx + 1) * ny * nz *
+                            cfd::kComponents * sizeof(float)));
     CFD_CUDA(cudaMalloc(&device->fluxY,
-                        static_cast<std::size_t>(nx) * (ny + 1) * 5 *
-                            sizeof(float)));
-    for (int c = 0; c < 6; ++c)
+                        static_cast<std::size_t>(nx) * (ny + 1) * nz *
+                            cfd::kComponents * sizeof(float)));
+    if (nz > 1)
+        CFD_CUDA(cudaMalloc(&device->fluxZ,
+                            static_cast<std::size_t>(nx) * ny * (nz + 1) *
+                                cfd::kComponents * sizeof(float)));
+    for (int c = 0; c < 7; ++c)
         CFD_CUDA(cudaMalloc(&device->primitive[c], bytes));
     CFD_CUDA(cudaMalloc(&device->partials,
                         kMaxReduceBlocks * sizeof(float)));
@@ -244,7 +316,7 @@ void compressibleCudaDestroy(CompressibleDevice* device) {
     if (!device)
         return;
     for (int set = 0; set < 3; ++set)
-        for (int c = 0; c < 5; ++c)
+        for (int c = 0; c < 6; ++c)
             if (device->fields[set][c])
                 cudaFree(device->fields[set][c]);
     if (device->solid)
@@ -253,11 +325,15 @@ void compressibleCudaDestroy(CompressibleDevice* device) {
         cudaFree(device->solidU);
     if (device->solidV)
         cudaFree(device->solidV);
+    if (device->solidW)
+        cudaFree(device->solidW);
     if (device->fluxX)
         cudaFree(device->fluxX);
     if (device->fluxY)
         cudaFree(device->fluxY);
-    for (int c = 0; c < 6; ++c)
+    if (device->fluxZ)
+        cudaFree(device->fluxZ);
+    for (int c = 0; c < 7; ++c)
         if (device->primitive[c])
             cudaFree(device->primitive[c]);
     if (device->partials)
@@ -268,9 +344,10 @@ void compressibleCudaDestroy(CompressibleDevice* device) {
 void compressibleCudaUploadSolid(CompressibleDevice* device,
                                  const uint8_t* mask,
                                  const float* velX,
-                                 const float* velY) {
+                                 const float* velY,
+                                 const float* velZ) {
     const std::size_t cells =
-        static_cast<std::size_t>(device->nx) * device->ny;
+        static_cast<std::size_t>(device->nx) * device->ny * device->nz;
     CFD_CUDA(cudaMemcpy(device->solid, mask, cells, cudaMemcpyHostToDevice));
     if (velX)
         CFD_CUDA(cudaMemcpy(device->solidU, velX, cells * sizeof(float),
@@ -278,14 +355,17 @@ void compressibleCudaUploadSolid(CompressibleDevice* device,
     if (velY)
         CFD_CUDA(cudaMemcpy(device->solidV, velY, cells * sizeof(float),
                             cudaMemcpyHostToDevice));
+    if (velZ)
+        CFD_CUDA(cudaMemcpy(device->solidW, velZ, cells * sizeof(float),
+                            cudaMemcpyHostToDevice));
 }
 
 void compressibleCudaUpload(CompressibleDevice* device,
                             int set,
                             const float* const* host) {
     const std::size_t bytes = device->cells * sizeof(float);
-    for (int c = 0; c < 5; ++c) {
-        if (c == 4 && !device->species)
+    for (int c = 0; c < 6; ++c) {
+        if (c == 5 && !device->species)
             continue;
         CFD_CUDA(cudaMemcpy(device->fields[set][c], host[c], bytes,
                             cudaMemcpyHostToDevice));
@@ -296,8 +376,8 @@ void compressibleCudaDownload(CompressibleDevice* device,
                               int set,
                               float* const* host) {
     const std::size_t bytes = device->cells * sizeof(float);
-    for (int c = 0; c < 5; ++c) {
-        if (c == 4 && !device->species)
+    for (int c = 0; c < 6; ++c) {
+        if (c == 5 && !device->species)
             continue;
         CFD_CUDA(cudaMemcpy(host[c], device->fields[set][c], bytes,
                             cudaMemcpyDeviceToHost));
@@ -311,11 +391,13 @@ Block deviceBlock(CompressibleDevice* device, int set, const Block& shape) {
     block.rho = device->fields[set][0];
     block.rhou = device->fields[set][1];
     block.rhov = device->fields[set][2];
-    block.rhoE = device->fields[set][3];
-    block.rhoY = device->species ? device->fields[set][4] : nullptr;
+    block.rhow = device->fields[set][3];
+    block.rhoE = device->fields[set][4];
+    block.rhoY = device->species ? device->fields[set][5] : nullptr;
     block.solid = device->solid;
     block.solidU = device->solidU;
     block.solidV = device->solidV;
+    block.solidW = device->solidW;
     return block;
 }
 
@@ -326,7 +408,7 @@ float compressibleCudaTimeStep(CompressibleDevice* device,
                                const GasModel& gas,
                                float cfl) {
     const Block block = deviceBlock(device, 0, shape);
-    const int total = block.nx * block.ny;
+    const int total = block.nx * block.ny * block.nz;
     int blocks = (total + kReduceBlock - 1) / kReduceBlock;
     if (blocks > kMaxReduceBlocks)
         blocks = kMaxReduceBlocks;
@@ -361,49 +443,67 @@ void compressibleCudaStage(CompressibleDevice* device,
 
     const dim3 threads(kBlockX, kBlockY);
     const dim3 fillGrid((in.nx + kBlockX - 1) / kBlockX,
-                        (in.ny + kBlockY - 1) / kBlockY);
+                        (in.ny + kBlockY - 1) / kBlockY, in.nz);
     if (in.solid)
         for (int layer = 0; layer < 2; ++layer) {
             solidKernel<<<fillGrid, threads>>>(in, gas, layer);
             CFD_CUDA_LAUNCH("solidKernel");
         }
 
-    ghostRowKernel<<<(in.ny + 127) / 128, 128>>>(in, gas, sides);
+    ghostRowKernel<<<dim3((in.ny + 127) / 128, 1, in.nz), 128>>>(in, gas,
+                                                                 sides);
     CFD_CUDA_LAUNCH("ghostRowKernel");
-    ghostColumnKernel<<<(in.nx + 127) / 128, 128>>>(in, gas, sides);
+    ghostColumnKernel<<<dim3((in.nx + 127) / 128, 1, in.nz), 128>>>(in, gas,
+                                                                    sides);
     CFD_CUDA_LAUNCH("ghostColumnKernel");
-    const int corners = 4 * in.ghost * in.ghost;
-    ghostCornerKernel<<<(corners + 63) / 64, 64>>>(in, gas);
+    if (in.spans()) {
+        ghostPlaneKernel<<<dim3((in.nx + kBlockX - 1) / kBlockX,
+                                (in.ny + kBlockY - 1) / kBlockY, 1),
+                           threads>>>(in, gas, sides);
+        CFD_CUDA_LAUNCH("ghostPlaneKernel");
+    }
+    const int corners = (in.nx + 2 * in.ghost) * (in.ny + 2 * in.ghost) *
+                        (in.nz + 2 * in.ghostZ());
+    ghostCornerKernel<<<(corners + 63) / 64, 64>>>(in, gas, sides);
     CFD_CUDA_LAUNCH("ghostCornerKernel");
 
     const dim3 faceX((in.nx + 1 + kBlockX) / kBlockX,
-                     (in.ny + kBlockY - 1) / kBlockY);
+                     (in.ny + kBlockY - 1) / kBlockY, in.nz);
     const dim3 faceY((in.nx + kBlockX - 1) / kBlockX,
-                     (in.ny + 1 + kBlockY) / kBlockY);
+                     (in.ny + 1 + kBlockY) / kBlockY, in.nz);
+    const dim3 faceZ((in.nx + kBlockX - 1) / kBlockX,
+                     (in.ny + kBlockY - 1) / kBlockY, in.nz + 1);
     const dim3 cellGrid((in.nx + kBlockX - 1) / kBlockX,
-                        (in.ny + kBlockY - 1) / kBlockY);
+                        (in.ny + kBlockY - 1) / kBlockY, in.nz);
 
-    const int total = in.stride * in.rows;
+    const int total = in.cells();
     primitiveKernel<<<(total + 255) / 256, 256>>>(
         in, gas, device->primitive[0], device->primitive[1],
         device->primitive[2], device->primitive[3], device->primitive[4],
-        device->primitive[5]);
+        device->primitive[5], device->primitive[6]);
     CFD_CUDA_LAUNCH("primitiveKernel");
 
     cfd::PrimitiveField prim;
     prim.rho = device->primitive[0];
     prim.u = device->primitive[1];
     prim.v = device->primitive[2];
-    prim.p = device->primitive[3];
-    prim.y = device->primitive[4];
-    prim.gamma = device->primitive[5];
+    prim.w = device->primitive[3];
+    prim.p = device->primitive[4];
+    prim.y = device->primitive[5];
+    prim.gamma = device->primitive[6];
 
     fluxXKernel<<<faceX, threads>>>(in, prim, gas, sides, limiter, device->fluxX);
     CFD_CUDA_LAUNCH("fluxXKernel");
     fluxYKernel<<<faceY, threads>>>(in, prim, gas, sides, limiter, device->fluxY);
     CFD_CUDA_LAUNCH("fluxYKernel");
+    if (in.spans()) {
+        fluxZKernel<<<faceZ, threads>>>(in, prim, gas, sides, limiter,
+                                        device->fluxZ);
+        CFD_CUDA_LAUNCH("fluxZKernel");
+    }
     combineKernel<<<cellGrid, threads>>>(in, keep, out, gas, device->fluxX,
-                                         device->fluxY, dt, a, b, diffusivity);
+                                         device->fluxY, device->fluxZ, dt, a,
+                                         b, diffusivity);
     CFD_CUDA_LAUNCH("combineKernel");
 }
 

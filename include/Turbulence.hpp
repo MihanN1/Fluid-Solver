@@ -15,17 +15,22 @@ public:
                     const std::vector<uint8_t>& solid,
                     int nx,
                     int ny,
+                    int nz,
                     float dx,
                     float dy,
+                    float dz,
                     float molecular);
 
     void setGhosts(const WallGhost& leftIn,
                    const WallGhost& rightIn,
                    const WallGhost& bottomIn,
-                   const WallGhost& topIn);
+                   const WallGhost& topIn,
+                   const WallGhost& frontIn,
+                   const WallGhost& backIn);
 
     void advance(const std::vector<float>& u,
                  const std::vector<float>& v,
+                 const std::vector<float>& w,
                  const std::vector<uint8_t>& solid,
                  float dt);
 
@@ -42,18 +47,18 @@ public:
     float peakViscosity() const;
     float sourceStepLimit() const;
 
-    void resize(int nxIn, int nyIn);
+    void resize(int nxIn, int nyIn, int nzIn);
     void setState(std::vector<float>&& kIn, std::vector<float>&& omegaIn);
     bool hasState() const { return !k.empty(); }
 
 private:
     TurbulenceKind kind = TurbulenceKind::None;
-    int nx = 0, ny = 0;
-    float dx = 0.0f, dy = 0.0f;
+    int nx = 0, ny = 0, nz = 1;
+    float dx = 0.0f, dy = 0.0f, dz = 0.0f;
     float molecular = 0.0f;
     float cs = 0.17f;
     float inletK = 0.0f, inletOmega = 0.0f;
-    WallGhost left, right, bottom, top;
+    WallGhost left, right, bottom, top, front, back;
 
     std::vector<float> nuT;
     std::vector<float> k, omega;
@@ -64,10 +69,12 @@ private:
     void buildWallDistance(const std::vector<uint8_t>& solid);
     void computeStrain(const std::vector<float>& u,
                        const std::vector<float>& v,
+                       const std::vector<float>& w,
                        const std::vector<uint8_t>& solid);
     void smagorinsky(const std::vector<uint8_t>& solid);
     void kOmega(const std::vector<float>& u,
                 const std::vector<float>& v,
+                const std::vector<float>& w,
                 const std::vector<uint8_t>& solid,
                 float dt);
 };

@@ -12,6 +12,37 @@ std::string lower(const std::string& text) {
     return out;
 }
 
+void bandCells(float from, float to, int cellsAlongSide, int& first, int& last) {
+    const float lo = std::min(from, to);
+    const float hi = std::max(from, to);
+    first = static_cast<int>(std::floor(lo * cellsAlongSide + 0.5f));
+    last = static_cast<int>(std::floor(hi * cellsAlongSide + 0.5f));
+    first = std::max(0, std::min(first, cellsAlongSide));
+    last = std::max(first, std::min(last, cellsAlongSide));
+
+    if (last == first && cellsAlongSide > 0) {
+        last = std::min(cellsAlongSide, first + 1);
+        if (last == first)
+            first = std::max(0, last - 1);
+    }
+}
+
+float bandShape(float from, float to, float t, bool parabolic) {
+    const float lo = std::min(from, to);
+    const float hi = std::max(from, to);
+    if (t < lo || t > hi)
+        return 0.0f;
+    if (!parabolic)
+        return 1.0f;
+
+    const float width = hi - lo;
+    if (!(width > 0.0f))
+        return 1.0f;
+
+    const float s = (t - lo) / width;
+    return 6.0f * s * (1.0f - s);
+}
+
 }
 
 bool parseBoundaryKind(const std::string& text,
@@ -36,7 +67,13 @@ bool parseInletProfile(const std::string& text,
     const std::string key = lower(text);
     if (key == "uniform")   { out = InletProfile::Uniform;   return true; }
     if (key == "parabolic") { out = InletProfile::Parabolic; return true; }
-    error = "'" + text + "' is not an inlet profile. Use uniform or parabolic.";
+    if (key == "parabolicspan" || key == "span" || key == "plane") {
+        out = InletProfile::ParabolicSpan;
+        return true;
+    }
+    error = "'" + text +
+            "' is not an inlet profile. Use uniform, parabolic or "
+            "parabolicSpan.";
     return false;
 }
 
@@ -52,7 +89,11 @@ const char* boundaryKindName(BoundaryKind kind) {
 }
 
 const char* inletProfileName(InletProfile profile) {
-    return profile == InletProfile::Parabolic ? "parabolic" : "uniform";
+    switch (profile) {
+    case InletProfile::Parabolic:     return "parabolic";
+    case InletProfile::ParabolicSpan: return "parabolicSpan";
+    default:                          return "uniform";
+    }
 }
 
 const char* boundarySideName(BoundarySide side) {
@@ -61,6 +102,8 @@ const char* boundarySideName(BoundarySide side) {
     case BoundarySide::Right:  return "right";
     case BoundarySide::Bottom: return "bottom";
     case BoundarySide::Top:    return "top";
+    case BoundarySide::Front:  return "front";
+    case BoundarySide::Back:   return "back";
     }
     return "left";
 }
@@ -78,37 +121,47 @@ void inletBandCells(const BoundarySpec& spec,
         last = cellsAlongSide;
         return;
     }
-    const float lo = std::min(spec.from, spec.to);
-    const float hi = std::max(spec.from, spec.to);
-    first = static_cast<int>(std::floor(lo * cellsAlongSide + 0.5f));
-    last = static_cast<int>(std::floor(hi * cellsAlongSide + 0.5f));
-    first = std::max(0, std::min(first, cellsAlongSide));
-    last = std::max(first, std::min(last, cellsAlongSide));
+    bandCells(spec.from, spec.to, cellsAlongSide, first, last);
+}
 
-    if (last == first && cellsAlongSide > 0) {
-        last = std::min(cellsAlongSide, first + 1);
-        if (last == first)
-            first = std::max(0, last - 1);
+void inletBandCellsSpan(const BoundarySpec& spec,
+                        int cellsAlongSide,
+                        int& first,
+                        int& last) {
+    if (spec.kind != BoundaryKind::Inlet) {
+        first = 0;
+        last = cellsAlongSide;
+        return;
     }
+    bandCells(spec.from2, spec.to2, cellsAlongSide, first, last);
 }
 
 float inletVelocityAt(const BoundarySpec& spec, float t) {
+    return inletVelocityAt(spec, t, 0.5f, false);
+}
+
+float inletVelocityAt(const BoundarySpec& spec,
+                      float t,
+                      float s,
+                      bool spanResolved) {
     if (spec.kind != BoundaryKind::Inlet)
         return 0.0f;
 
-    const float lo = std::min(spec.from, spec.to);
-    const float hi = std::max(spec.from, spec.to);
-    if (t < lo || t > hi)
+    const bool acrossParabola = spec.profile == InletProfile::Parabolic ||
+                                spec.profile == InletProfile::ParabolicSpan;
+    const bool spanParabola =
+        spanResolved && spec.profile == InletProfile::Parabolic;
+
+    const float across = bandShape(spec.from, spec.to, t, acrossParabola);
+    if (across == 0.0f)
         return 0.0f;
-    if (spec.profile == InletProfile::Uniform)
-        return spec.speed;
+    const float along = spanResolved
+                            ? bandShape(spec.from2, spec.to2, s, spanParabola)
+                            : 1.0f;
+    if (along == 0.0f)
+        return 0.0f;
 
-    const float width = hi - lo;
-    if (!(width > 0.0f))
-        return spec.speed;
-
-    const float s = (t - lo) / width;
-    return 6.0f * spec.speed * s * (1.0f - s);
+    return spec.speed * across * along;
 }
 
 bool parseCaseType(const std::string& text, CaseType& out, std::string& error) {
@@ -134,14 +187,14 @@ const char* caseTypeName(CaseType type) {
 
 BoundarySet closedBoundaries() {
     BoundarySet set;
-    for (int side = 0; side < 4; ++side)
+    for (int side = 0; side < kBoundarySides; ++side)
         set.side[side].kind = BoundaryKind::Wall;
     return set;
 }
 
 BoundarySet cavityBoundaries(float lidSpeed) {
     BoundarySet set;
-    for (int side = 0; side < 4; ++side)
+    for (int side = 0; side < kBoundarySides; ++side)
         set.side[side].kind = BoundaryKind::Wall;
     set[BoundarySide::Top].kind = BoundaryKind::MovingWall;
     set[BoundarySide::Top].speed = lidSpeed;
@@ -155,6 +208,8 @@ BoundarySet defaultChannelBoundaries() {
     set[BoundarySide::Right].kind = BoundaryKind::Outlet;
     set[BoundarySide::Bottom].kind = BoundaryKind::Slip;
     set[BoundarySide::Top].kind = BoundaryKind::Slip;
+    set[BoundarySide::Front].kind = BoundaryKind::Slip;
+    set[BoundarySide::Back].kind = BoundaryKind::Slip;
     return set;
 }
 
@@ -166,28 +221,37 @@ bool checkBoundaryMassBalance(const BoundarySet& sides,
                               double extraInflow) {
     const int nx = domain.nx;
     const int ny = domain.ny;
+    const int nz = std::max(1, domain.nz);
     if (nx < 1 || ny < 1 ||
-        solid.size() != static_cast<size_t>(nx) * static_cast<size_t>(ny))
+        solid.size() != static_cast<size_t>(nx) * static_cast<size_t>(ny) *
+                            static_cast<size_t>(nz))
         return true;
 
     const double dx = static_cast<double>(domain.Lx) / nx;
     const double dy = static_cast<double>(domain.Ly) / ny;
+    const double dz = static_cast<double>(domain.Lz) / nz;
 
     double net = 0.0;
     double gross = 0.0;
     double outletArea = 0.0;
-    double openInlet[4] = {0.0, 0.0, 0.0, 0.0};
+    double openInlet[kBoundarySides] = {0.0, 0.0, 0.0, 0.0, 0.0, 0.0};
     bool anyOutlet = false;
 
-    const auto walk = [&](BoundarySide which, int cells, double face,
-                          int first, int stride) {
+    // across is the first tangential axis of the face, span the second; base
+    // plus the two strides walks the face without any of the six needing its
+    // own loop.
+    const auto walk = [&](BoundarySide which, int acrossCells, int spanCells,
+                          double face, int base, int acrossStride,
+                          int spanStride) {
         const BoundarySpec& spec = sides[which];
         const int index = static_cast<int>(which);
+        const bool spanResolved = spanCells > 1;
         if (spec.kind == BoundaryKind::Outlet) {
             anyOutlet = true;
-            for (int k = 0; k < cells; ++k)
-                if (!solid[first + k * stride])
-                    outletArea += face;
+            for (int b = 0; b < spanCells; ++b)
+                for (int a = 0; a < acrossCells; ++a)
+                    if (!solid[base + a * acrossStride + b * spanStride])
+                        outletArea += face;
             return;
         }
         if (spec.kind != BoundaryKind::Inlet)
@@ -196,28 +260,36 @@ bool checkBoundaryMassBalance(const BoundarySet& sides,
         BoundarySpec resolved = spec;
         if (!resolved.speedSet)
             resolved.speed = defaultSpeed;
-        for (int k = 0; k < cells; ++k) {
-            if (solid[first + k * stride])
-                continue;
-            const double value = inletVelocityAt(
-                resolved, (k + 0.5f) / static_cast<float>(cells));
-            if (value == 0.0)
-                continue;
-            openInlet[index] += face;
-            net += value * face;
-            gross += std::fabs(value) * face;
+        for (int b = 0; b < spanCells; ++b) {
+            const float s = (b + 0.5f) / static_cast<float>(spanCells);
+            for (int a = 0; a < acrossCells; ++a) {
+                if (solid[base + a * acrossStride + b * spanStride])
+                    continue;
+                const double value = inletVelocityAt(
+                    resolved, (a + 0.5f) / static_cast<float>(acrossCells), s,
+                    spanResolved);
+                if (value == 0.0)
+                    continue;
+                openInlet[index] += face;
+                net += value * face;
+                gross += std::fabs(value) * face;
+            }
         }
     };
 
     net += extraInflow;
     gross += std::fabs(extraInflow);
 
-    walk(BoundarySide::Left, ny, dy, 0, nx);
-    walk(BoundarySide::Right, ny, dy, nx - 1, nx);
-    walk(BoundarySide::Bottom, nx, dx, 0, 1);
-    walk(BoundarySide::Top, nx, dx, (ny - 1) * nx, 1);
+    const int planeStride = nx * ny;
 
-    for (int index = 0; index < 4; ++index) {
+    walk(BoundarySide::Left, ny, nz, dy * dz, 0, nx, planeStride);
+    walk(BoundarySide::Right, ny, nz, dy * dz, nx - 1, nx, planeStride);
+    walk(BoundarySide::Bottom, nx, nz, dx * dz, 0, 1, planeStride);
+    walk(BoundarySide::Top, nx, nz, dx * dz, (ny - 1) * nx, 1, planeStride);
+    walk(BoundarySide::Front, nx, ny, dx * dy, 0, 1, nx);
+    walk(BoundarySide::Back, nx, ny, dx * dy, (nz - 1) * planeStride, 1, nx);
+
+    for (int index = 0; index < kBoundarySides; ++index) {
         const BoundarySpec& spec = sides.side[index];
         if (spec.kind != BoundaryKind::Inlet || openInlet[index] > 0.0)
             continue;
@@ -234,6 +306,11 @@ bool checkBoundaryMassBalance(const BoundarySet& sides,
             error += ": inletFrom and inletTo are the same number, so the band "
                      "has no width at all. They are fractions of the side, "
                      "0..1 being the whole of it.";
+        else if (!(std::max(spec.from2, spec.to2) >
+                   std::min(spec.from2, spec.to2)))
+            error += ": inletFrom2 and inletTo2 are the same number, so the "
+                     "band has no depth at all. They are the same kind of "
+                     "fractions along the second axis of that face.";
         else
             error += ": the band " + std::to_string(lo) + ".." +
                      std::to_string(hi) + " of that side misses the centre of "
@@ -248,7 +325,7 @@ bool checkBoundaryMassBalance(const BoundarySet& sides,
 
     error = (extraInflow != 0.0 ? std::string("the sources and inlets push ")
                                 : std::string("the inlets push ")) +
-            std::to_string(std::fabs(net)) + " m^2/s of fluid in and ";
+            std::to_string(std::fabs(net)) + " m^3/s of fluid in and ";
     error += anyOutlet ? "every outlet face is buried in solid, so none of it "
                          "has anywhere to go."
                        : "no side lets any of it out.";
@@ -263,7 +340,8 @@ bool checkBoundaryMassBalance(const BoundarySet& sides,
 
 std::string boundaryHelp() {
     return
-        "  Boundary kinds, one per side (bcLeft, bcRight, bcBottom, bcTop):\n"
+        "  Boundary kinds, one per side (bcLeft, bcRight, bcBottom, bcTop,\n"
+        "  bcFront, bcBack - front is z=0, back is z=Lz):\n"
         "        inlet       fluid enters at inletSpeed, or U0 when that is 0\n"
         "        outlet      fluid leaves; pressure is fixed here\n"
         "        wall        no-slip: the fluid sticks to it\n"
@@ -272,14 +350,22 @@ std::string boundaryHelp() {
         "        slip        free-slip: no flow through it, no friction along\n"
         "  A run needs at least one outlet, or the pressure has no level to\n"
         "  sit at. The default is inlet on the left, outlet on the right and\n"
-        "  slip above and below, which is the channel every earlier version\n"
-        "  solved.\n"
+        "  slip on the other four, which at nz=1 is the channel every earlier\n"
+        "  version solved.\n"
         "  inletFrom and inletTo cut the inlet down to a band of the side,\n"
         "  measured from its low end as fractions: inletFrom=0.25 inletTo=0.75\n"
         "  is the middle half, and the rest of that side becomes a wall.\n"
-        "  inletProfile=parabolic bends the band into a parabola carrying the\n"
-        "  same flow rate as the flat one.\n"
-        "  caseType=cavity sets all four of them at once: walls everywhere and\n"
+        "  inletFrom2 and inletTo2 do the same along the second axis of that\n"
+        "  face, so the two together cut a rectangular window out of it. Left\n"
+        "  and right span (y, z), bottom and top span (x, z), front and back\n"
+        "  span (x, y).\n"
+        "  inletProfile=parabolic bends the window into a parabola along both\n"
+        "  of its axes, which is duct flow; parabolicSpan bends it along the\n"
+        "  first axis only and leaves it flat along the second, which is a\n"
+        "  plane channel extruded in z. Both carry the same flow rate as the\n"
+        "  flat one. At nz=1 the second axis holds a single cell and the two\n"
+        "  are the same thing.\n"
+        "  caseType=cavity sets all six of them at once: walls everywhere and\n"
         "  the top one sliding at lidSpeed. There is no inlet and no outlet in\n"
         "  that case, so the pressure is only defined up to a constant and the\n"
         "  solve says so rather than drifting.\n";

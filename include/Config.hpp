@@ -81,6 +81,7 @@ const char* speciesModeName(SpeciesMode mode);
 struct Microphone {
     float x = 0.0f;
     float y = 0.0f;
+    float z = 0.0f;
 };
 
 bool parseMicrophones(const std::string& text,
@@ -104,10 +105,11 @@ const char* vofSchemeName(VofScheme scheme);
 const char* phaseInitName(PhaseInit init);
 
 struct FlowSource {
-    float x = 0.0f, y = 0.0f;
+    float x = 0.0f, y = 0.0f, z = 0.0f;
     float radius = 0.0f;
     float rate = 0.0f;
     float angle = 0.0f;
+    float elevation = 0.0f;
     float phase = 1.0f;
 
     int body = 0;
@@ -123,10 +125,12 @@ struct Profile {
     std::string file;
     float x = 0.0f;
     float y = 0.0f;
+    float z = 0.0f;
     bool placed = false;
     float size = 0.0f;
     float rotation = 0.0f;
     float angleX = 0.0f;
+    float angleY = 0.0f;
     float angleZ = 0.0f;
     bool angleSet = false;
     bool invert = false;
@@ -148,9 +152,12 @@ std::string profilesHelp();
 // other three, since a wall that carries no tangential stress cannot drag.
 struct WallMotion {
     int object = 0;
-    float rotation = 0.0f;   // degrees/s, counter-clockwise
+    float rotationX = 0.0f;  // degrees/s, right handed about x
+    float rotationY = 0.0f;  // degrees/s, right handed about y
+    float rotation = 0.0f;   // degrees/s, counter-clockwise about z
     float slideX = 0.0f;     // m/s
     float slideY = 0.0f;     // m/s
+    float slideZ = 0.0f;     // m/s
     bool slip = false;
 };
 
@@ -201,7 +208,10 @@ struct BodyKeyframe {
     float time = 0.0f;
     float vx = 0.0f;
     float vy = 0.0f;
-    float omega = 0.0f;   // degrees/s, counter-clockwise
+    float vz = 0.0f;
+    float omegaX = 0.0f;
+    float omegaY = 0.0f;
+    float omega = 0.0f;   // degrees/s, counter-clockwise about z
     bool free = false;
     InterpKind interp = InterpKind::Linear;
     EaseKind ease = EaseKind::Auto;
@@ -212,11 +222,17 @@ struct BodyMotion {
     bool free = false;
     float vx = 0.0f;
     float vy = 0.0f;
+    float vz = 0.0f;
+    float omegaX = 0.0f;
+    float omegaY = 0.0f;
     float omega = 0.0f;
     float mass = 0.0f;
+    float inertiaX = 0.0f;
+    float inertiaY = 0.0f;
     float inertia = 0.0f;
     float density = 0.0f;
-    bool pinX = false, pinY = false, pinRot = false;
+    bool pinX = false, pinY = false, pinZ = false;
+    bool pinRotX = false, pinRotY = false, pinRot = false;
     std::vector<BodyKeyframe> keys;
 };
 
@@ -242,8 +258,8 @@ struct Config {
     double addTime = 0.0;
 
     // Domain
-    float Lx = 1.0, Ly = 1.0;
-    int nx = 50, ny = 50;
+    float Lx = 1.0, Ly = 1.0, Lz = 1.0;
+    int nx = 50, ny = 50, nz = 1;
 
     // Flow
     float U0 = 1.0;
@@ -255,6 +271,7 @@ struct Config {
     bool gravityEnabled = false;
     float gravityAccel = 9.81f;   // m/s^2
     float gravityAngle = 0.0f;    // degrees, clockwise, 0 = down
+    float gravityTilt = 0.0f;     // degrees out of the xy plane, towards +z
     GravityMode gravityMode = GravityMode::Reduced;
 
     int phases = 1;
@@ -266,6 +283,7 @@ struct Config {
     float phaseLevel = 0.5f;
     float phaseX = 0.5f;
     float phaseY = 0.5f;
+    float phaseZ = 0.5f;
     std::string initialPhaseFile = "";
     VofScheme vofScheme = VofScheme::Hric;
 
@@ -316,6 +334,7 @@ struct Config {
 
     std::string profiles = "";
     float sliceAngleX = 0.0;   // degrees
+    float sliceAngleY = 0.0;   // degrees
     float sliceAngleZ = 0.0;   // degrees
     float sliceRotation = 0.0;   // degrees
     bool invertSection = false; // doesn't allow to invert the model by default
@@ -400,6 +419,10 @@ struct Config {
     static std::string suggestKey(const std::string& key);
 
     std::vector<Profile> resolvedProfiles() const;
+
+    void gravityVector(float& gx, float& gy, float& gz) const;
+
+    bool volumetric() const { return nz > 1; }
 
     bool emptyDomain() const;
 

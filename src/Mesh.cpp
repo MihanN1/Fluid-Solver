@@ -66,17 +66,95 @@ double squaredDistance(const Mesh::Vertex& first, const Mesh::Vertex& second) {
     const double deltaZ = first.z - second.z;
     return deltaX * deltaX + deltaY * deltaY + deltaZ * deltaZ;
 }
+
+void poseRotation(const Mesh::BodyPose& pose, double rotation[9]) {
+    const double xx = pose.qx * pose.qx;
+    const double yy = pose.qy * pose.qy;
+    const double zz = pose.qz * pose.qz;
+    const double xy = pose.qx * pose.qy;
+    const double xz = pose.qx * pose.qz;
+    const double yz = pose.qy * pose.qz;
+    const double wx = pose.qw * pose.qx;
+    const double wy = pose.qw * pose.qy;
+    const double wz = pose.qw * pose.qz;
+
+    rotation[0] = 1.0 - 2.0 * (yy + zz);
+    rotation[1] = 2.0 * (xy - wz);
+    rotation[2] = 2.0 * (xz + wy);
+    rotation[3] = 2.0 * (xy + wz);
+    rotation[4] = 1.0 - 2.0 * (xx + zz);
+    rotation[5] = 2.0 * (yz - wx);
+    rotation[6] = 2.0 * (xz - wy);
+    rotation[7] = 2.0 * (yz + wx);
+    rotation[8] = 1.0 - 2.0 * (xx + yy);
+}
+
+int openEdgeCount(const std::vector<Mesh::Triangle>& triangles, double snap) {
+    std::vector<std::array<long long, 3>> corners;
+    corners.reserve(triangles.size() * 3);
+    for (const Mesh::Triangle& triangle : triangles) {
+        for (const Mesh::Vertex& vertex :
+             {triangle.v0, triangle.v1, triangle.v2}) {
+            corners.push_back({std::llround(vertex.x / snap),
+                               std::llround(vertex.y / snap),
+                               std::llround(vertex.z / snap)});
+        }
+    }
+
+    std::vector<std::array<long long, 3>> distinct(corners);
+    std::sort(distinct.begin(), distinct.end());
+    distinct.erase(std::unique(distinct.begin(), distinct.end()),
+                   distinct.end());
+
+    std::vector<std::pair<int, int>> edges;
+    edges.reserve(corners.size());
+    for (std::size_t triangle = 0; triangle < triangles.size(); ++triangle) {
+        std::array<int, 3> corner{};
+        for (std::size_t which = 0; which < corner.size(); ++which) {
+            corner[which] = static_cast<int>(
+                std::lower_bound(distinct.begin(),
+                                 distinct.end(),
+                                 corners[triangle * 3 + which]) -
+                distinct.begin());
+        }
+        for (std::size_t which = 0; which < corner.size(); ++which) {
+            int first = corner[which];
+            int second = corner[(which + 1) % corner.size()];
+            if (first == second) {
+                continue;
+            }
+            if (first > second) {
+                std::swap(first, second);
+            }
+            edges.emplace_back(first, second);
+        }
+    }
+
+    std::sort(edges.begin(), edges.end());
+    int open = 0;
+    for (std::size_t index = 0; index < edges.size();) {
+        std::size_t run = index;
+        while (run < edges.size() && edges[run] == edges[index]) {
+            ++run;
+        }
+        if (run - index != 2) {
+            ++open;
+        }
+        index = run;
+    }
+    return open;
+}
 }
 Mesh::Mesh(const Config& cfg, const std::vector<uint8_t>* presetSolid)
-    : nx(cfg.nx), ny(cfg.ny), cfg(cfg)
+    : nx(cfg.nx), ny(cfg.ny), nz(cfg.nz), cfg(cfg)
 {
-    solid.resize(nx * ny, 0);
+    solid.resize(nx * ny * nz, 0);
     createGrid();
 
     if (presetSolid) {
         // Restart: the mask came out of the frame, so no model is loaded, no
         // section is cut and no fallback circle is generated
-        const int cells = nx * ny;
+        const int cells = nx * ny * nz;
         for (int id = 0; id < cells; ++id)
             solid[id] = (*presetSolid)[id] ? 1 : 0;
         labelObjects();
@@ -86,6 +164,7 @@ Mesh::Mesh(const Config& cfg, const std::vector<uint8_t>* presetSolid)
     const std::vector<Profile> profiles = cfg.resolvedProfiles();
     bool geometryLoaded = false;
     std::vector<std::vector<SectionPoint>> placed;
+    std::vector<Triangle> placedTriangles;
 
     for (const Profile& profile : profiles) {
         if (!loadGeometry(profile.file)) {
@@ -94,6 +173,18 @@ Mesh::Mesh(const Config& cfg, const std::vector<uint8_t>* presetSolid)
             continue;
         }
         geometryLoaded = true;
+        if (nz > 1) {
+            buildVolume(profile);
+            if (volumeTriangles.empty()) {
+                if (placementError.empty())
+                    std::cerr << "Warning: geometry '" << profile.file
+                              << "' produced no volume.\n";
+                continue;
+            }
+            for (Triangle& triangle : volumeTriangles)
+                placedTriangles.push_back(triangle);
+            continue;
+        }
         buildSection(profile);
         if (sectionContours.empty()) {
             std::cerr << "Warning: geometry '" << profile.file
@@ -105,20 +196,29 @@ Mesh::Mesh(const Config& cfg, const std::vector<uint8_t>* presetSolid)
     }
 
     sectionContours = std::move(placed);
+    volumeTriangles = std::move(placedTriangles);
     if (!placementError.empty())
         return;
 
-    rasterizeSection();
-    buildSolid();
+    if (nz > 1) {
+        voxelize();
+    } else {
+        rasterizeSection();
+        buildSolid();
+    }
 
-    if ((!geometryLoaded || !hasSection()) && !cfg.emptyDomain()) {
+    const bool built = nz > 1 ? !volumeTriangles.empty() : hasSection();
+    if ((!geometryLoaded || !built) && !cfg.emptyDomain()) {
         if (!profiles.empty())
             std::cerr << "Warning: no model produced a section, falling back "
                          "to the verification circle.\n";
         const double cx = cfg.Lx / 2.0;
         const double cy = cfg.Ly / 2.0;
-        const double radius = 0.1 * std::min(cfg.Lx, cfg.Ly);
-        initCircle(cx, cy, radius);
+        const double cz = cfg.Lz / 2.0;
+        const double radius =
+            0.1 * (nz > 1 ? std::min({cfg.Lx, cfg.Ly, cfg.Lz})
+                          : std::min(cfg.Lx, cfg.Ly));
+        initCircle(cx, cy, cz, radius);
     }
 
     labelObjects();
@@ -127,13 +227,20 @@ Mesh::Mesh(const Config& cfg, const std::vector<uint8_t>* presetSolid)
 void Mesh::createGrid() {
     dx = cfg.Lx / nx;
     dy = cfg.Ly / ny;
+    dz = cfg.Lz / nz;
 
-    x.resize((nx + 1) * (ny + 1));
-    y.resize((nx + 1) * (ny + 1));
-    for (int j = 0; j <= ny; ++j) {
-        for (int i = 0; i <= nx; ++i) {
-            x[j * (nx + 1) + i] = i * dx;
-            y[j * (nx + 1) + i] = j * dy;
+    const int nodes = (nx + 1) * (ny + 1) * (nz + 1);
+    x.resize(nodes);
+    y.resize(nodes);
+    z.resize(nodes);
+    for (int k = 0; k <= nz; ++k) {
+        for (int j = 0; j <= ny; ++j) {
+            for (int i = 0; i <= nx; ++i) {
+                const int node = (k * (ny + 1) + j) * (nx + 1) + i;
+                x[node] = i * dx;
+                y[node] = j * dy;
+                z[node] = k * dz;
+            }
         }
     }
 }
@@ -145,6 +252,7 @@ void Mesh::clearSolid() {
 bool Mesh::loadGeometry(const std::string& filename) {
     triangles.clear();
     sectionContours.clear();
+    volumeTriangles.clear();
 
     if (filename.empty() || lowercase(filename) == "none") {
         return false;
@@ -619,8 +727,177 @@ void Mesh::buildSection(const Profile& profile) {
     checkPlacement(profile);
 }
 
+void Mesh::buildVolume(const Profile& profile) {
+    volumeTriangles.clear();
+    if (triangles.empty()) {
+        return;
+    }
+
+    Vertex minimum{
+        std::numeric_limits<double>::max(),
+        std::numeric_limits<double>::max(),
+        std::numeric_limits<double>::max()
+    };
+    Vertex maximum{
+        std::numeric_limits<double>::lowest(),
+        std::numeric_limits<double>::lowest(),
+        std::numeric_limits<double>::lowest()
+    };
+
+    for (const Triangle& triangle : triangles) {
+        for (const Vertex& vertex : {triangle.v0, triangle.v1, triangle.v2}) {
+            minimum.x = std::min(minimum.x, vertex.x);
+            minimum.y = std::min(minimum.y, vertex.y);
+            minimum.z = std::min(minimum.z, vertex.z);
+            maximum.x = std::max(maximum.x, vertex.x);
+            maximum.y = std::max(maximum.y, vertex.y);
+            maximum.z = std::max(maximum.z, vertex.z);
+        }
+    }
+
+    const Vertex centre{
+        0.5 * (minimum.x + maximum.x),
+        0.5 * (minimum.y + maximum.y),
+        0.5 * (minimum.z + maximum.z)
+    };
+    const double characteristicLength = std::max({
+        maximum.x - minimum.x,
+        maximum.y - minimum.y,
+        maximum.z - minimum.z
+    });
+    if (characteristicLength <= 0.0) {
+        return;
+    }
+
+    const double tolerance = std::max(1e-12, characteristicLength * 1e-9);
+    const double weld = std::max(1e-12, characteristicLength * 1e-7);
+
+    const int openEdges = openEdgeCount(triangles, weld);
+    if (openEdges > 0) {
+        std::ostringstream message;
+        message << "profile '" << profile.file << "' is not a closed surface: "
+                << openEdges << " of its edges are shared by something other "
+                   "than two triangles."
+                << "\n    A run of nz > 1 fills a model by asking which side "
+                   "of its surface every cell centre is on, and a"
+                << "\n    surface with a hole in it has no inside. Mend the "
+                   "model, or set nz=1 to cut a section through it.";
+        placementError = message.str();
+        return;
+    }
+
+    const double angleX = profile.angleX * PI / 180.0;
+    const double angleY = profile.angleY * PI / 180.0;
+    const double angleZ = profile.angleZ * PI / 180.0;
+    const double cosineX = std::cos(angleX);
+    const double sineX = std::sin(angleX);
+    const double cosineY = std::cos(angleY);
+    const double sineY = std::sin(angleY);
+    const double cosineZ = std::cos(angleZ);
+    const double sineZ = std::sin(angleZ);
+
+    const Vertex modelAxisX{cosineZ * cosineY, sineZ * cosineY, -sineY};
+    const Vertex modelAxisY{
+        cosineZ * sineY * sineX - sineZ * cosineX,
+        sineZ * sineY * sineX + cosineZ * cosineX,
+        cosineY * sineX
+    };
+    const Vertex modelAxisZ{
+        cosineZ * sineY * cosineX + sineZ * sineX,
+        sineZ * sineY * cosineX - cosineZ * sineX,
+        cosineY * cosineX
+    };
+
+    const double rotation = profile.rotation * PI / 180.0;
+    const double cosineRotation = std::cos(rotation);
+    const double sineRotation = std::sin(rotation);
+
+    const auto dot = [](const Vertex& first, const Vertex& second) {
+        return first.x * second.x + first.y * second.y + first.z * second.z;
+    };
+    const auto place = [&](const Vertex& vertex) {
+        const Vertex relative{
+            vertex.x - centre.x,
+            vertex.y - centre.y,
+            vertex.z - centre.z
+        };
+        double along = dot(relative, modelAxisX);
+        const double across = dot(relative, modelAxisY);
+        const double depth = dot(relative, modelAxisZ);
+        if (profile.invert) {
+            along = -along;
+        }
+        return Vertex{
+            cosineRotation * along - sineRotation * across,
+            sineRotation * along + cosineRotation * across,
+            depth
+        };
+    };
+
+    volumeTriangles.reserve(triangles.size());
+    for (const Triangle& triangle : triangles) {
+        volumeTriangles.push_back({
+            place(triangle.v0),
+            place(triangle.v1),
+            place(triangle.v2)
+        });
+    }
+
+    double minimumX = std::numeric_limits<double>::max();
+    double minimumY = std::numeric_limits<double>::max();
+    double minimumZ = std::numeric_limits<double>::max();
+    double maximumX = std::numeric_limits<double>::lowest();
+    double maximumY = std::numeric_limits<double>::lowest();
+    double maximumZ = std::numeric_limits<double>::lowest();
+    for (const Triangle& triangle : volumeTriangles) {
+        for (const Vertex& vertex : {triangle.v0, triangle.v1, triangle.v2}) {
+            minimumX = std::min(minimumX, vertex.x);
+            minimumY = std::min(minimumY, vertex.y);
+            minimumZ = std::min(minimumZ, vertex.z);
+            maximumX = std::max(maximumX, vertex.x);
+            maximumY = std::max(maximumY, vertex.y);
+            maximumZ = std::max(maximumZ, vertex.z);
+        }
+    }
+
+    const double modelSpan = std::max({
+        maximumX - minimumX,
+        maximumY - minimumY,
+        maximumZ - minimumZ
+    });
+    if (modelSpan <= tolerance) {
+        volumeTriangles.clear();
+        return;
+    }
+
+    const double targetSpan =
+        (profile.size > 0.0f)
+            ? static_cast<double>(profile.size)
+            : OBSTACLE_DOMAIN_FRACTION * std::min({cfg.Lx, cfg.Ly, cfg.Lz});
+    const double scale = targetSpan / modelSpan;
+    const double modelCentreX = 0.5 * (minimumX + maximumX);
+    const double modelCentreY = 0.5 * (minimumY + maximumY);
+    const double modelCentreZ = 0.5 * (minimumZ + maximumZ);
+
+    const double placeX = profile.placed ? profile.x : cfg.Lx / 2.0;
+    const double placeY = profile.placed ? profile.y : cfg.Ly / 2.0;
+    const double placeZ = profile.placed ? profile.z : cfg.Lz / 2.0;
+
+    for (Triangle& triangle : volumeTriangles) {
+        for (Vertex* vertex : {&triangle.v0, &triangle.v1, &triangle.v2}) {
+            vertex->x = placeX + scale * (vertex->x - modelCentreX);
+            vertex->y = placeY + scale * (vertex->y - modelCentreY);
+            vertex->z = placeZ + scale * (vertex->z - modelCentreZ);
+        }
+    }
+
+    checkPlacement(profile);
+}
+
 void Mesh::checkPlacement(const Profile& profile) {
-    if (!placementError.empty() || sectionContours.empty())
+    if (!placementError.empty())
+        return;
+    if (nz > 1 ? volumeTriangles.empty() : sectionContours.empty())
         return;
 
     if (profile.attach)
@@ -628,19 +905,36 @@ void Mesh::checkPlacement(const Profile& profile) {
 
     double lowX = std::numeric_limits<double>::max();
     double lowY = std::numeric_limits<double>::max();
+    double lowZ = std::numeric_limits<double>::max();
     double highX = std::numeric_limits<double>::lowest();
     double highY = std::numeric_limits<double>::lowest();
-    for (const std::vector<SectionPoint>& contour : sectionContours) {
-        for (const SectionPoint& point : contour) {
-            lowX = std::min(lowX, point.x);
-            lowY = std::min(lowY, point.y);
-            highX = std::max(highX, point.x);
-            highY = std::max(highY, point.y);
+    double highZ = std::numeric_limits<double>::lowest();
+    if (nz > 1) {
+        for (const Triangle& triangle : volumeTriangles) {
+            for (const Vertex& vertex :
+                 {triangle.v0, triangle.v1, triangle.v2}) {
+                lowX = std::min(lowX, vertex.x);
+                lowY = std::min(lowY, vertex.y);
+                lowZ = std::min(lowZ, vertex.z);
+                highX = std::max(highX, vertex.x);
+                highY = std::max(highY, vertex.y);
+                highZ = std::max(highZ, vertex.z);
+            }
+        }
+    } else {
+        for (const std::vector<SectionPoint>& contour : sectionContours) {
+            for (const SectionPoint& point : contour) {
+                lowX = std::min(lowX, point.x);
+                lowY = std::min(lowY, point.y);
+                highX = std::max(highX, point.x);
+                highY = std::max(highY, point.y);
+            }
         }
     }
 
     const double marginX = dx;
     const double marginY = dy;
+    const double marginZ = dz;
     std::ostringstream out;
     const auto miss = [&out](const char* side, double by) {
         out << "\n    " << side << " by " << by << " m";
@@ -650,6 +944,10 @@ void Mesh::checkPlacement(const Profile& profile) {
     if (highX > cfg.Lx - marginX) miss("past the right edge", highX - (cfg.Lx - marginX));
     if (lowY < marginY)          miss("past the bottom edge", marginY - lowY);
     if (highY > cfg.Ly - marginY) miss("past the top edge", highY - (cfg.Ly - marginY));
+    if (nz > 1) {
+        if (lowZ < marginZ)      miss("past the front edge", marginZ - lowZ);
+        if (highZ > cfg.Lz - marginZ) miss("past the back edge", highZ - (cfg.Lz - marginZ));
+    }
 
     const std::string misses = out.str();
     if (misses.empty())
@@ -659,9 +957,17 @@ void Mesh::checkPlacement(const Profile& profile) {
     message << "profile '" << profile.file << "' does not fit the domain:"
             << misses
             << "\n    it spans x " << lowX << ".." << highX
-            << " and y " << lowY << ".." << highY
-            << " in a domain of " << cfg.Lx << " x " << cfg.Ly << " m."
-            << "\n    Move it with x= and y=, or shrink it with size=.";
+            << " and y " << lowY << ".." << highY;
+    if (nz > 1)
+        message << " and z " << lowZ << ".." << highZ;
+    message << " in a domain of " << cfg.Lx << " x " << cfg.Ly;
+    if (nz > 1)
+        message << " x " << cfg.Lz;
+    message << " m.";
+    if (nz > 1)
+        message << "\n    Move it with x=, y= and z=, or shrink it with size=.";
+    else
+        message << "\n    Move it with x= and y=, or shrink it with size=.";
     placementError = message.str();
 }
 
@@ -816,6 +1122,130 @@ void Mesh::rasterizeSection() {
     }
 }
 
+void Mesh::voxelize() {
+    clearSolid();
+    if (volumeTriangles.empty()) {
+        return;
+    }
+
+    double minY = std::numeric_limits<double>::max();
+    double minZ = std::numeric_limits<double>::max();
+    double maxY = std::numeric_limits<double>::lowest();
+    double maxZ = std::numeric_limits<double>::lowest();
+    for (const Triangle& triangle : volumeTriangles) {
+        for (const Vertex& vertex : {triangle.v0, triangle.v1, triangle.v2}) {
+            minY = std::min(minY, vertex.y);
+            minZ = std::min(minZ, vertex.z);
+            maxY = std::max(maxY, vertex.y);
+            maxZ = std::max(maxZ, vertex.z);
+        }
+    }
+
+    const double spanY = std::max(maxY - minY, 1e-12);
+    const double spanZ = std::max(maxZ - minZ, 1e-12);
+    const int wanted = std::max(1, static_cast<int>(std::sqrt(
+        static_cast<double>(volumeTriangles.size()))));
+    const int bucketsY = std::min(wanted, ny);
+    const int bucketsZ = std::min(wanted, nz);
+    const double scaleY = bucketsY / spanY;
+    const double scaleZ = bucketsZ / spanZ;
+
+    const auto bucketY = [&](double value) {
+        return std::clamp(static_cast<int>((value - minY) * scaleY),
+                          0, bucketsY - 1);
+    };
+    const auto bucketZ = [&](double value) {
+        return std::clamp(static_cast<int>((value - minZ) * scaleZ),
+                          0, bucketsZ - 1);
+    };
+
+    std::vector<int> bucketStart(
+        static_cast<std::size_t>(bucketsY) * bucketsZ + 1, 0);
+    for (const Triangle& triangle : volumeTriangles) {
+        const int firstY = bucketY(std::min({triangle.v0.y, triangle.v1.y, triangle.v2.y}));
+        const int lastY = bucketY(std::max({triangle.v0.y, triangle.v1.y, triangle.v2.y}));
+        const int firstZ = bucketZ(std::min({triangle.v0.z, triangle.v1.z, triangle.v2.z}));
+        const int lastZ = bucketZ(std::max({triangle.v0.z, triangle.v1.z, triangle.v2.z}));
+        for (int bz = firstZ; bz <= lastZ; ++bz)
+            for (int by = firstY; by <= lastY; ++by)
+                ++bucketStart[static_cast<std::size_t>(bz) * bucketsY + by + 1];
+    }
+    for (std::size_t bucket = 1; bucket < bucketStart.size(); ++bucket)
+        bucketStart[bucket] += bucketStart[bucket - 1];
+
+    std::vector<int> bucketed(static_cast<std::size_t>(bucketStart.back()));
+    std::vector<int> cursor(bucketStart.begin(), bucketStart.end() - 1);
+    for (std::size_t index = 0; index < volumeTriangles.size(); ++index) {
+        const Triangle& triangle = volumeTriangles[index];
+        const int firstY = bucketY(std::min({triangle.v0.y, triangle.v1.y, triangle.v2.y}));
+        const int lastY = bucketY(std::max({triangle.v0.y, triangle.v1.y, triangle.v2.y}));
+        const int firstZ = bucketZ(std::min({triangle.v0.z, triangle.v1.z, triangle.v2.z}));
+        const int lastZ = bucketZ(std::max({triangle.v0.z, triangle.v1.z, triangle.v2.z}));
+        for (int bz = firstZ; bz <= lastZ; ++bz)
+            for (int by = firstY; by <= lastY; ++by) {
+                const std::size_t bucket =
+                    static_cast<std::size_t>(bz) * bucketsY + by;
+                bucketed[static_cast<std::size_t>(cursor[bucket]++)] =
+                    static_cast<int>(index);
+            }
+    }
+
+    const double nudgeY = dy * 1e-7;
+    const double nudgeZ = dz * 3e-7;
+
+    #pragma omp parallel
+    {
+        std::vector<double> hits;
+        #pragma omp for schedule(static) collapse(2)
+        for (int k = 0; k < nz; ++k) {
+            for (int j = 0; j < ny; ++j) {
+                const double rayY = (j + 0.5) * dy + nudgeY;
+                const double rayZ = (k + 0.5) * dz + nudgeZ;
+                if (rayY < minY || rayY > maxY || rayZ < minZ || rayZ > maxZ)
+                    continue;
+
+                const std::size_t bucket =
+                    static_cast<std::size_t>(bucketZ(rayZ)) * bucketsY +
+                    bucketY(rayY);
+                hits.clear();
+                for (int slot = bucketStart[bucket];
+                     slot < bucketStart[bucket + 1];
+                     ++slot) {
+                    const Triangle& triangle =
+                        volumeTriangles[static_cast<std::size_t>(bucketed[slot])];
+                    const double y0 = triangle.v0.y - rayY;
+                    const double z0 = triangle.v0.z - rayZ;
+                    const double y1 = triangle.v1.y - rayY;
+                    const double z1 = triangle.v1.z - rayZ;
+                    const double y2 = triangle.v2.y - rayY;
+                    const double z2 = triangle.v2.z - rayZ;
+                    const double w0 = y1 * z2 - y2 * z1;
+                    const double w1 = y2 * z0 - y0 * z2;
+                    const double w2 = y0 * z1 - y1 * z0;
+                    if (!((w0 > 0.0 && w1 > 0.0 && w2 > 0.0) ||
+                          (w0 < 0.0 && w1 < 0.0 && w2 < 0.0)))
+                        continue;
+                    hits.push_back((w0 * triangle.v0.x + w1 * triangle.v1.x +
+                                    w2 * triangle.v2.x) / (w0 + w1 + w2));
+                }
+                if (hits.empty())
+                    continue;
+
+                std::sort(hits.begin(), hits.end());
+                std::size_t crossed = 0;
+                const int row = (k * ny + j) * nx;
+                for (int i = 0; i < nx; ++i) {
+                    const double cellX = (i + 0.5) * dx;
+                    while (crossed < hits.size() && hits[crossed] <= cellX)
+                        ++crossed;
+                    if (((hits.size() - crossed) & 1u) != 0)
+                        solid[row + i] = 1;
+                }
+            }
+        }
+    }
+}
+
 bool Mesh::pointInsideSection(double pointX, double pointY) const {
     // Toggle once per horizontal-ray crossing (even-odd polygon rule), counted
     // across every contour at once rather than one polygon at a time. Two
@@ -892,10 +1322,11 @@ void Mesh::buildSolid() {
 }
 
 void Mesh::labelObjects() {
-    objectId.assign(static_cast<std::size_t>(nx) * ny, 0);
+    objectId.assign(static_cast<std::size_t>(nx) * ny * nz, 0);
     objects.clear();
 
-    const int cells = nx * ny;
+    const int cells = nx * ny * nz;
+    const int plane = nx * ny;
     std::vector<int> pending;
 
     for (int seed = 0; seed < cells; ++seed) {
@@ -907,6 +1338,7 @@ void Mesh::labelObjects() {
         SolidObject body;
         double sumX = 0.0;
         double sumY = 0.0;
+        double sumZ = 0.0;
 
         objectId[seed] = label;
         pending.push_back(seed);
@@ -914,19 +1346,25 @@ void Mesh::labelObjects() {
             const int id = pending.back();
             pending.pop_back();
             const int i = id % nx;
-            const int j = id / nx;
+            const int j = id / nx % ny;
+            const int k = id / plane;
 
             ++body.cells;
             sumX += (i + 0.5) * dx;
             sumY += (j + 0.5) * dy;
+            sumZ += (k + 0.5) * dz;
 
+            for (int neighbourK = std::max(k - 1, 0);
+                 neighbourK <= std::min(k + 1, nz - 1);
+                 ++neighbourK) {
             for (int neighbourJ = std::max(j - 1, 0);
                  neighbourJ <= std::min(j + 1, ny - 1);
                  ++neighbourJ) {
                 for (int neighbourI = std::max(i - 1, 0);
                      neighbourI <= std::min(i + 1, nx - 1);
                      ++neighbourI) {
-                    const int neighbour = neighbourJ * nx + neighbourI;
+                    const int neighbour =
+                        (neighbourK * ny + neighbourJ) * nx + neighbourI;
                     if (solid[neighbour] == 0 || objectId[neighbour] != 0) {
                         continue;
                     }
@@ -934,10 +1372,12 @@ void Mesh::labelObjects() {
                     pending.push_back(neighbour);
                 }
             }
+            }
         }
 
         body.cx = sumX / body.cells;
         body.cy = sumY / body.cells;
+        body.cz = sumZ / body.cells;
         objects.push_back(body);
     }
 
@@ -948,24 +1388,64 @@ void Mesh::labelObjects() {
         }
         SolidObject& body = objects[objectId[id] - 1];
         const double offsetX = (id % nx + 0.5) * dx - body.cx;
-        const double offsetY = (id / nx + 0.5) * dy - body.cy;
-        body.radius =
-            std::max(body.radius, offsetX * offsetX + offsetY * offsetY);
+        const double offsetY = (id / nx % ny + 0.5) * dy - body.cy;
+        const double offsetZ = (id / plane + 0.5) * dz - body.cz;
+        body.radius = std::max(body.radius, offsetX * offsetX +
+                                                offsetY * offsetY +
+                                                offsetZ * offsetZ);
+        body.inertia[0] += offsetY * offsetY + offsetZ * offsetZ;
+        body.inertia[1] -= offsetX * offsetY;
+        body.inertia[2] -= offsetX * offsetZ;
+        body.inertia[3] -= offsetY * offsetX;
+        body.inertia[4] += offsetX * offsetX + offsetZ * offsetZ;
+        body.inertia[5] -= offsetY * offsetZ;
+        body.inertia[6] -= offsetZ * offsetX;
+        body.inertia[7] -= offsetZ * offsetY;
+        body.inertia[8] += offsetX * offsetX + offsetY * offsetY;
     }
     for (SolidObject& body : objects)
         body.radius = std::sqrt(body.radius);
 
+    const double sideX = dx;
+    const double sideY = dy;
+    const double sideZ = dz;
+    const double cellVolume = sideX * sideY * sideZ;
     for (SolidObject& body : objects) {
-        body.area = body.cells * static_cast<double>(dx) * dy;
+        body.volume = body.cells * static_cast<double>(dx) * dy * dz;
+        for (double& term : body.inertia)
+            term *= cellVolume;
+        body.inertia[0] += body.volume * (sideY * sideY + sideZ * sideZ) / 12.0;
+        body.inertia[4] += body.volume * (sideX * sideX + sideZ * sideZ) / 12.0;
+        body.inertia[8] += body.volume * (sideX * sideX + sideY * sideY) / 12.0;
         body.baseCx = body.cx;
         body.baseCy = body.cy;
+        body.baseCz = body.cz;
     }
 }
 
 bool Mesh::prepareMotion() {
     if (motionPrepared)
         return true;
-    if (objects.empty() || sectionContours.empty())
+    if (objects.empty())
+        return false;
+
+    if (nz > 1) {
+        if (volumeTriangles.empty())
+            return false;
+
+        baseObjectId = objectId;
+        baseCells.assign(objects.size(), std::vector<int>());
+        const int cells = nx * ny * nz;
+        for (int id = 0; id < cells; ++id)
+            if (objectId[id] > 0)
+                baseCells[objectId[id] - 1].push_back(id);
+
+        poses.assign(objects.size() + 1, BodyPose());
+        motionPrepared = true;
+        return true;
+    }
+
+    if (sectionContours.empty())
         return false;
 
     baseContours = sectionContours;
@@ -1005,17 +1485,26 @@ void Mesh::updateSolid() {
     if (!motionPrepared)
         return;
 
+    if (nz > 1) {
+        voxelizeOwned();
+        relabelStable();
+        return;
+    }
+
     sectionContours = baseContours;
     for (std::size_t which = 0; which < sectionContours.size(); ++which) {
         const int owner = contourObject[which];
         const BodyPose& current = poses[owner];
-        if (current.x == 0.0 && current.y == 0.0 && current.theta == 0.0)
+        if (current.x == 0.0 && current.y == 0.0 && current.qx == 0.0 &&
+            current.qy == 0.0 && current.qz == 0.0)
             continue;
 
         const double originX = objects[owner - 1].baseCx;
         const double originY = objects[owner - 1].baseCy;
-        const double cosT = std::cos(current.theta);
-        const double sinT = std::sin(current.theta);
+        double rotation[9];
+        poseRotation(current, rotation);
+        const double cosT = rotation[0];
+        const double sinT = rotation[3];
         for (SectionPoint& point : sectionContours[which]) {
             const double localX = point.x - originX;
             const double localY = point.y - originY;
@@ -1070,6 +1559,104 @@ void Mesh::rasterizeOwned() {
     solid = claimScratch;
 }
 
+void Mesh::voxelizeOwned() {
+    const int cells = nx * ny * nz;
+    cellOwner.assign(static_cast<std::size_t>(cells), 0);
+    contestedCells.clear();
+
+    const std::size_t bodies = objects.size();
+    if (bodies == 0) {
+        voxelize();
+        return;
+    }
+    claimScratch.assign(static_cast<std::size_t>(cells), 0);
+
+    const int plane = nx * ny;
+    for (std::size_t body = 1; body <= bodies; ++body) {
+        if (body > baseCells.size() || baseCells[body - 1].empty())
+            continue;
+
+        const SolidObject& shape = objects[body - 1];
+        const BodyPose& current = poses[body];
+        double rotation[9];
+        poseRotation(current, rotation);
+
+        const double originX = shape.baseCx + current.x;
+        const double originY = shape.baseCy + current.y;
+        const double originZ = shape.baseCz + current.z;
+
+        double lowX = std::numeric_limits<double>::max();
+        double lowY = std::numeric_limits<double>::max();
+        double lowZ = std::numeric_limits<double>::max();
+        double highX = std::numeric_limits<double>::lowest();
+        double highY = std::numeric_limits<double>::lowest();
+        double highZ = std::numeric_limits<double>::lowest();
+        for (int id : baseCells[body - 1]) {
+            const double offsetX = (id % nx + 0.5) * dx - shape.baseCx;
+            const double offsetY = (id / nx % ny + 0.5) * dy - shape.baseCy;
+            const double offsetZ = (id / plane + 0.5) * dz - shape.baseCz;
+            const double placedX = originX + rotation[0] * offsetX +
+                                   rotation[1] * offsetY + rotation[2] * offsetZ;
+            const double placedY = originY + rotation[3] * offsetX +
+                                   rotation[4] * offsetY + rotation[5] * offsetZ;
+            const double placedZ = originZ + rotation[6] * offsetX +
+                                   rotation[7] * offsetY + rotation[8] * offsetZ;
+            lowX = std::min(lowX, placedX);
+            lowY = std::min(lowY, placedY);
+            lowZ = std::min(lowZ, placedZ);
+            highX = std::max(highX, placedX);
+            highY = std::max(highY, placedY);
+            highZ = std::max(highZ, placedZ);
+        }
+
+        const int i0 = std::max(0, static_cast<int>(lowX / dx) - 1);
+        const int i1 = std::min(nx - 1, static_cast<int>(highX / dx) + 1);
+        const int j0 = std::max(0, static_cast<int>(lowY / dy) - 1);
+        const int j1 = std::min(ny - 1, static_cast<int>(highY / dy) + 1);
+        const int k0 = std::max(0, static_cast<int>(lowZ / dz) - 1);
+        const int k1 = std::min(nz - 1, static_cast<int>(highZ / dz) + 1);
+        if (i0 > i1 || j0 > j1 || k0 > k1)
+            continue;
+
+        for (int k = k0; k <= k1; ++k) {
+            for (int j = j0; j <= j1; ++j) {
+                for (int i = i0; i <= i1; ++i) {
+                    const double deltaX = (i + 0.5) * dx - originX;
+                    const double deltaY = (j + 0.5) * dy - originY;
+                    const double deltaZ = (k + 0.5) * dz - originZ;
+                    const double baseX = shape.baseCx + rotation[0] * deltaX +
+                                         rotation[3] * deltaY +
+                                         rotation[6] * deltaZ;
+                    const double baseY = shape.baseCy + rotation[1] * deltaX +
+                                         rotation[4] * deltaY +
+                                         rotation[7] * deltaZ;
+                    const double baseZ = shape.baseCz + rotation[2] * deltaX +
+                                         rotation[5] * deltaY +
+                                         rotation[8] * deltaZ;
+                    const int baseI = static_cast<int>(std::floor(baseX / dx));
+                    const int baseJ = static_cast<int>(std::floor(baseY / dy));
+                    const int baseK = static_cast<int>(std::floor(baseZ / dz));
+                    if (baseI < 0 || baseI >= nx || baseJ < 0 || baseJ >= ny ||
+                        baseK < 0 || baseK >= nz)
+                        continue;
+                    if (baseObjectId[(baseK * ny + baseJ) * nx + baseI] !=
+                        static_cast<int>(body))
+                        continue;
+
+                    const int id = (k * ny + j) * nx + i;
+                    if (cellOwner[id] == 0)
+                        cellOwner[id] = static_cast<int>(body);
+                    else if (cellOwner[id] != static_cast<int>(body))
+                        contestedCells.push_back(id);
+                    claimScratch[id] = 1;
+                }
+            }
+        }
+    }
+
+    solid = claimScratch;
+}
+
 void Mesh::relabelStable() {
     const std::vector<SolidObject> previous = objects;
     const std::vector<BodyPose> keptPoses = poses;
@@ -1089,9 +1676,11 @@ void Mesh::relabelStable() {
     for (std::size_t body = 0; body < wanted; ++body) {
         const double wantX = previous[body].baseCx + keptPoses[body + 1].x;
         const double wantY = previous[body].baseCy + keptPoses[body + 1].y;
+        const double wantZ = previous[body].baseCz + keptPoses[body + 1].z;
         for (std::size_t blob = 0; blob < objects.size(); ++blob)
-            candidates.push_back({std::hypot(objects[blob].cx - wantX,
-                                             objects[blob].cy - wantY),
+            candidates.push_back({std::hypot(std::hypot(objects[blob].cx - wantX,
+                                                        objects[blob].cy - wantY),
+                                             objects[blob].cz - wantZ),
                                   body, blob});
     }
     std::sort(candidates.begin(), candidates.end(),
@@ -1114,7 +1703,7 @@ void Mesh::relabelStable() {
     for (std::size_t body = 0; body < wanted; ++body) {
         ordered[body] = previous[body];
         ordered[body].cells = 0;
-        ordered[body].area = 0.0;
+        ordered[body].volume = 0.0;
     }
     for (std::size_t blob = 0; blob < objects.size(); ++blob) {
         if (bodyOf[blob] == 0) {
@@ -1126,13 +1715,14 @@ void Mesh::relabelStable() {
         SolidObject kept = objects[blob];
         kept.baseCx = previous[bodyOf[blob] - 1].baseCx;
         kept.baseCy = previous[bodyOf[blob] - 1].baseCy;
+        kept.baseCz = previous[bodyOf[blob] - 1].baseCz;
         ordered[bodyOf[blob] - 1] = kept;
     }
     for (std::size_t body = 0; body < wanted; ++body)
         if (!claimed[body])
             lastRenumbered.push_back({static_cast<int>(body) + 1, 0});
 
-    const int cells = nx * ny;
+    const int cells = nx * ny * nz;
     for (int id = 0; id < cells; ++id) {
         const int raw = objectId[id];
         objectId[id] = raw == 0 ? 0 : bodyOf[raw - 1];
@@ -1144,8 +1734,28 @@ void Mesh::relabelStable() {
         poses[body + 1] = keptPoses[body + 1];
 }
 
-void Mesh::initCircle(double cx, double cy, double R) {
+void Mesh::initCircle(double cx, double cy, double cz, double R) {
     clearSolid();
+    if (nz > 1) {
+        for (int k = 0; k < nz; ++k) {
+            for (int j = 0; j < ny; ++j) {
+                for (int i = 0; i < nx; ++i) {
+                    double xc = (i + 0.5) * dx;
+                    double yc = (j + 0.5) * dy;
+                    double zc = (k + 0.5) * dz;
+                    double dist = std::sqrt((xc - cx) * (xc - cx) +
+                                            (yc - cy) * (yc - cy) +
+                                            (zc - cz) * (zc - cz));
+                    if (dist <= R)
+                        solid[(k * ny + j) * nx + i] = 1;
+                    else
+                        solid[(k * ny + j) * nx + i] = 0;
+                }
+            }
+        }
+        return;
+    }
+
     for (int j = 0; j < ny; ++j) {
         for (int i = 0; i < nx; ++i) {
             double xc = (i + 0.5) * dx;
@@ -1161,8 +1771,15 @@ void Mesh::initCircle(double cx, double cy, double R) {
 
 void Mesh::printInfo() const {
     std::cout << "\n=== Mesh Information ===\n";
-    std::cout << "  nx = " << nx << ", ny = " << ny << "\n";
-    std::cout << "  dx = " << dx << ", dy = " << dy << "\n";
+    if (nz > 1) {
+        std::cout << "  nx = " << nx << ", ny = " << ny << ", nz = " << nz
+                  << "\n";
+        std::cout << "  dx = " << dx << ", dy = " << dy << ", dz = " << dz
+                  << "\n";
+    } else {
+        std::cout << "  nx = " << nx << ", ny = " << ny << "\n";
+        std::cout << "  dx = " << dx << ", dy = " << dy << "\n";
+    }
     int count = 0;
     for (int v : solid) if (v) ++count;
     std::cout << "  Number of solid cells = " << count << "\n";
@@ -1174,14 +1791,20 @@ void Mesh::printInfo() const {
          ++index) {
         const SolidObject& body = objects[index];
         std::cout << "    object " << index + 1 << ": " << body.cells
-                  << " cells, centre (" << body.cx << ", " << body.cy
-                  << ") m, rim " << body.radius << " m\n";
+                  << " cells, centre (" << body.cx << ", " << body.cy;
+        if (nz > 1)
+            std::cout << ", " << body.cz;
+        std::cout << ") m, rim " << body.radius << " m\n";
     }
     if (objects.size() > LISTED_OBJECTS)
         std::cout << "    ... and " << objects.size() - LISTED_OBJECTS
                   << " more\n";
     std::cout << "  Number of geometry triangles = " << triangles.size() << "\n";
-    std::cout << "  Number of section contours = " << sectionContours.size()
-              << " (" << sectionPointCount() << " points)\n";
+    if (nz > 1)
+        std::cout << "  Number of placed triangles = " << volumeTriangles.size()
+                  << "\n";
+    else
+        std::cout << "  Number of section contours = " << sectionContours.size()
+                  << " (" << sectionPointCount() << " points)\n";
     std::cout << "=========================\n";
 }
