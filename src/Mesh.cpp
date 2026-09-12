@@ -1128,6 +1128,9 @@ void Mesh::voxelize() {
         return;
     }
 
+    const int ny = this->ny;
+    const int nz = this->nz;
+
     double minY = std::numeric_limits<double>::max();
     double minZ = std::numeric_limits<double>::max();
     double maxY = std::numeric_limits<double>::lowest();

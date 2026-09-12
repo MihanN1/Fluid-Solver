@@ -189,6 +189,9 @@ void TurbulenceModel::computeStrain(const std::vector<float>& u,
                                     const std::vector<float>& v,
                                     const std::vector<float>& w,
                                     const std::vector<uint8_t>& solid) {
+    const int nx = this->nx;
+    const int ny = this->ny;
+    const int nz = this->nz;
     const bool volumetric = nz > 1;
     const int plane = nx * ny;
     const int strideU = (nx + 1) * ny;
@@ -366,6 +369,9 @@ void TurbulenceModel::computeStrain(const std::vector<float>& u,
 }
 
 void TurbulenceModel::smagorinsky(const std::vector<uint8_t>& solid) {
+    const int nx = this->nx;
+    const int ny = this->ny;
+    const int nz = this->nz;
     const float width =
         nz > 1 ? std::cbrt(dx * dy * dz) : std::sqrt(dx * dy);
 
@@ -400,6 +406,9 @@ void TurbulenceModel::kOmega(const std::vector<float>& u,
                              const std::vector<float>& w,
                              const std::vector<uint8_t>& solid,
                              float dt) {
+    const int nx = this->nx;
+    const int ny = this->ny;
+    const int nz = this->nz;
     const bool volumetric = nz > 1;
     const int plane = nx * ny;
     const float invDx = 1.0f / dx;

@@ -3188,9 +3188,10 @@ void Solver::predictorImpl() {
     const __m256 bodyGzVec = _mm256_set1_ps(bodyGz);
 #endif
 
+    const int jLast = ny - 1;
     #pragma omp parallel for collapse(2) schedule(static)
     for (int k = 0; k < nz; ++k) {
-    for (int j = 1; j < ny - 1; ++j) {
+    for (int j = 1; j < jLast; ++j) {
         const int rowU = (k * ny + j) * (nx + 1);
         const int rowV = (k * (ny + 1) + j) * nx;
         const int rowW = (k * ny + j) * nx;

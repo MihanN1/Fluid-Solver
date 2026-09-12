@@ -255,10 +255,12 @@ void Multigrid::buildTransferWeights(int fineLevel) {
 
     const Level& coarse = gridLevels[coarseLevel];
     const int coarsePlane = coarse.nx * coarse.ny;
+    const int fineNy = fine.ny;
+    const int fineNz = fine.nz;
     #pragma omp parallel for collapse(2) schedule(static) \
-        if (fine.nz * fine.ny >= PARALLEL_ROWS_MIN)
-    for (int k = 0; k < fine.nz; ++k) {
-        for (int j = 0; j < fine.ny; ++j) {
+        if (fineNz * fineNy >= PARALLEL_ROWS_MIN)
+    for (int k = 0; k < fineNz; ++k) {
+        for (int j = 0; j < fineNy; ++j) {
             const Level::Transfer sz = fine.transferZ[k];
             const Level::Transfer sy = fine.transferY[j];
             for (int i = 0; i < fine.nx; ++i) {
@@ -515,10 +517,13 @@ void Multigrid::coarsenFaceWeights() {
         const int ry = fine.refineY;
         const int rz = fine.refineZ;
 
+        const int coarseNy = coarse.ny;
+        const int coarseNz = coarse.nz;
+
         #pragma omp parallel for collapse(2) schedule(static) \
-            if (coarse.nz * coarse.ny >= PARALLEL_ROWS_MIN)
-        for (int k = 0; k < coarse.nz; ++k) {
-            for (int j = 0; j < coarse.ny; ++j) {
+            if (coarseNz * coarseNy >= PARALLEL_ROWS_MIN)
+        for (int k = 0; k < coarseNz; ++k) {
+            for (int j = 0; j < coarseNy; ++j) {
                 for (int i = 0; i <= coarse.nx; ++i) {
                     const int fi = std::min(i * rx, fine.nx);
                     float total = 0.0f;
@@ -541,9 +546,9 @@ void Multigrid::coarsenFaceWeights() {
         }
 
         #pragma omp parallel for collapse(2) schedule(static) \
-            if (coarse.nz * coarse.ny >= PARALLEL_ROWS_MIN)
-        for (int k = 0; k < coarse.nz; ++k) {
-            for (int j = 0; j <= coarse.ny; ++j) {
+            if (coarseNz * coarseNy >= PARALLEL_ROWS_MIN)
+        for (int k = 0; k < coarseNz; ++k) {
+            for (int j = 0; j <= coarseNy; ++j) {
                 const int fj = std::min(j * ry, fine.ny);
                 for (int i = 0; i < coarse.nx; ++i) {
                     float total = 0.0f;
@@ -566,9 +571,9 @@ void Multigrid::coarsenFaceWeights() {
         }
 
         #pragma omp parallel for collapse(2) schedule(static) \
-            if (coarse.nz * coarse.ny >= PARALLEL_ROWS_MIN)
-        for (int k = 0; k <= coarse.nz; ++k) {
-            for (int j = 0; j < coarse.ny; ++j) {
+            if (coarseNz * coarseNy >= PARALLEL_ROWS_MIN)
+        for (int k = 0; k <= coarseNz; ++k) {
+            for (int j = 0; j < coarseNy; ++j) {
                 const int fk = std::min(k * rz, fine.nz);
                 for (int i = 0; i < coarse.nx; ++i) {
                     float total = 0.0f;
@@ -1121,10 +1126,12 @@ void Multigrid::restrictField(int fineLevel, const float* fineSrc) {
     const Level::Gather* const gatherY = fine.gatherY.data();
     const Level::Gather* const gatherZ = fine.gatherZ.data();
 
+    const int coarseNy = coarse.ny;
+    const int coarseNz = coarse.nz;
     #pragma omp parallel for collapse(2) schedule(static) \
-        if (coarse.nz * coarse.ny >= PARALLEL_ROWS_MIN)
-    for (int k = 0; k < coarse.nz; ++k) {
-        for (int j = 0; j < coarse.ny; ++j) {
+        if (coarseNz * coarseNy >= PARALLEL_ROWS_MIN)
+    for (int k = 0; k < coarseNz; ++k) {
+        for (int j = 0; j < coarseNy; ++j) {
             for (int i = 0; i < coarse.nx; ++i) {
                 const int coarseId = (k * coarse.ny + j) * coarse.nx + i;
 
@@ -1187,10 +1194,12 @@ void Multigrid::prolongateCorrection(int coarseLevel) {
     const Level::Transfer* const transferZ = fine.transferZ.data();
     const int coarsePlane = coarse.nx * coarse.ny;
 
+    const int fineNy = fine.ny;
+    const int fineNz = fine.nz;
     #pragma omp parallel for collapse(2) schedule(static) \
-        if (fine.nz * fine.ny >= PARALLEL_ROWS_MIN)
-    for (int k = 0; k < fine.nz; ++k) {
-        for (int j = 0; j < fine.ny; ++j) {
+        if (fineNz * fineNy >= PARALLEL_ROWS_MIN)
+    for (int k = 0; k < fineNz; ++k) {
+        for (int j = 0; j < fineNy; ++j) {
             const Level::Transfer sz = transferZ[k];
             const Level::Transfer sy = transferY[j];
             for (int i = 0; i < fine.nx; ++i) {
@@ -1253,10 +1262,12 @@ void Multigrid::prolongateSolution(int coarseLevel) {
     const Level::Transfer* const transferZ = fine.transferZ.data();
     const int coarsePlane = coarse.nx * coarse.ny;
 
+    const int fineNy = fine.ny;
+    const int fineNz = fine.nz;
     #pragma omp parallel for collapse(2) schedule(static) \
-        if (fine.nz * fine.ny >= PARALLEL_ROWS_MIN)
-    for (int k = 0; k < fine.nz; ++k) {
-        for (int j = 0; j < fine.ny; ++j) {
+        if (fineNz * fineNy >= PARALLEL_ROWS_MIN)
+    for (int k = 0; k < fineNz; ++k) {
+        for (int j = 0; j < fineNy; ++j) {
             const Level::Transfer sz = transferZ[k];
             const Level::Transfer sy = transferY[j];
             for (int i = 0; i < fine.nx; ++i) {

@@ -59,6 +59,9 @@ void fillGhostCells(Block& block,
                     const GasModel& gas) {
     const int g = block.ghost;
     const int gz = block.ghostZ();
+    const int nx = block.nx;
+    const int ny = block.ny;
+    const int nz = block.nz;
     const float rowsTotal = static_cast<float>(
         sides.spanNy > 0 ? sides.spanNy : block.ny);
     const float columnsTotal = static_cast<float>(
@@ -70,9 +73,9 @@ void fillGhostCells(Block& block,
     const float planeFirst = static_cast<float>(sides.spanK0);
 
     #pragma omp parallel for collapse(2) schedule(static) \
-        if (block.nz * block.ny >= 64)
-    for (int k = 0; k < block.nz; ++k)
-    for (int j = 0; j < block.ny; ++j) {
+        if (nz * ny >= 64)
+    for (int k = 0; k < nz; ++k)
+    for (int j = 0; j < ny; ++j) {
         BlockBoundaries local = sides;
         local.inletY = (rowFirst + j + 0.5f) / rowsTotal;
         local.inletZ = (planeFirst + k + 0.5f) / planesTotal;
@@ -85,9 +88,9 @@ void fillGhostCells(Block& block,
     }
 
     #pragma omp parallel for collapse(2) schedule(static) \
-        if (block.nz * block.nx >= 64)
-    for (int k = 0; k < block.nz; ++k)
-    for (int i = 0; i < block.nx; ++i) {
+        if (nz * nx >= 64)
+    for (int k = 0; k < nz; ++k)
+    for (int i = 0; i < nx; ++i) {
         BlockBoundaries local = sides;
         local.inletY = (columnFirst + i + 0.5f) / columnsTotal;
         local.inletZ = (planeFirst + k + 0.5f) / planesTotal;
@@ -101,9 +104,9 @@ void fillGhostCells(Block& block,
 
     if (block.spans()) {
         #pragma omp parallel for collapse(2) schedule(static) \
-            if (block.ny * block.nx >= 64)
-        for (int j = 0; j < block.ny; ++j)
-        for (int i = 0; i < block.nx; ++i) {
+            if (ny * nx >= 64)
+        for (int j = 0; j < ny; ++j)
+        for (int i = 0; i < nx; ++i) {
             BlockBoundaries local = sides;
             local.inletY = (columnFirst + i + 0.5f) / columnsTotal;
             local.inletZ = (rowFirst + j + 0.5f) / rowsTotal;
@@ -164,12 +167,16 @@ void fillSolidCells(Block& block, const GasModel& gas) {
     if (!block.solid)
         return;
 
+    const int nx = block.nx;
+    const int ny = block.ny;
+    const int nz = block.nz;
+
     for (int layer = 0; layer < 2; ++layer) {
         #pragma omp parallel for collapse(2) schedule(static) \
-            if (block.nz * block.ny >= 64)
-        for (int k = 0; k < block.nz; ++k)
-        for (int j = 0; j < block.ny; ++j)
-            for (int i = 0; i < block.nx; ++i)
+            if (nz * ny >= 64)
+        for (int k = 0; k < nz; ++k)
+        for (int j = 0; j < ny; ++j)
+            for (int i = 0; i < nx; ++i)
                 solidCell(block, gas, i, j, k, layer);
     }
 }
@@ -177,14 +184,18 @@ void fillSolidCells(Block& block, const GasModel& gas) {
 float blockTimeStep(const Block& block, const GasModel& gas, float cfl) {
     float worst = 0.0f;
 
-    #pragma omp parallel if (block.nz * block.ny >= 64)
+    const int nx = block.nx;
+    const int ny = block.ny;
+    const int nz = block.nz;
+
+    #pragma omp parallel if (nz * ny >= 64)
     {
         float local = 0.0f;
 
         #pragma omp for collapse(2) schedule(static) nowait
-        for (int k = 0; k < block.nz; ++k)
-        for (int j = 0; j < block.ny; ++j)
-            for (int i = 0; i < block.nx; ++i)
+        for (int k = 0; k < nz; ++k)
+        for (int j = 0; j < ny; ++j)
+            for (int i = 0; i < nx; ++i)
                 local = std::max(local, cellRate(block, gas, i, j, k));
 
         #pragma omp critical
@@ -215,6 +226,7 @@ void advanceStage(Block& in,
     const int ny = in.ny;
     const int nz = in.nz;
     const int gz = in.ghostZ();
+    const int ghost = in.ghost;
     float* __restrict fx = work.fluxX.data();
     float* __restrict fy = work.fluxY.data();
     float* __restrict fz = work.fluxZ.data();
@@ -229,9 +241,13 @@ void advanceStage(Block& in,
     float* __restrict pY = work.primitive[5].data();
     float* __restrict pGamma = work.primitive[6].data();
 
+    const int kFirst = -gz;
+    const int kLast = nz + gz;
+    const int jFirst = -ghost;
+    const int jLast = ny + ghost;
     #pragma omp parallel for collapse(2) schedule(static) if (nz * ny >= 32)
-    for (int k = -gz; k < nz + gz; ++k)
-    for (int j = -in.ghost; j < ny + in.ghost; ++j) {
+    for (int k = kFirst; k < kLast; ++k)
+    for (int j = jFirst; j < jLast; ++j) {
         const int row = in.index(-in.ghost, j, k);
         const int width = nx + 2 * in.ghost;
         for (int m = 0; m < width; ++m)
@@ -682,6 +698,10 @@ void CompressibleRun::updateAcoustics(float stepDt) {
 
     const float alphaFast = std::min(1.0f, 16.0f * stepDt / window);
     const float rate = 1.0f / stepDt;
+
+    const int nx = this->nx;
+    const int ny = this->ny;
+    const int nz = this->nz;
 
     #pragma omp parallel for collapse(2) schedule(static) if (nz * ny >= 64)
     for (int k = 0; k < nz; ++k)

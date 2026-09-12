@@ -150,6 +150,9 @@ void PhaseField::initialise(const Config& cfg,
     setMixing(cfg.mixing, cfg.limiter, cfg.diffusivity);
     (void)solid;
 
+    const int nx = this->nx;
+    const int ny = this->ny;
+    const int nz = this->nz;
     const bool volumetric = nz > 1;
     const size_t plane = static_cast<size_t>(nx) * ny;
 
@@ -410,6 +413,9 @@ void PhaseField::advectImpl(const std::vector<float>& u,
                             float dx,
                             float dy,
                             float dz) {
+    const int nx = this->nx;
+    const int ny = this->ny;
+    const int nz = this->nz;
     const float* __restrict cPtr = c.data();
     const float* __restrict uPtr = u.data();
     const float* __restrict vPtr = v.data();
@@ -751,6 +757,9 @@ void PhaseField::buildNormals(const std::vector<uint8_t>& solid,
                               float dy,
                               float dz,
                               float contactAngleDegrees) {
+    const int nx = this->nx;
+    const int ny = this->ny;
+    const int nz = this->nz;
     const size_t cells = static_cast<size_t>(nx) * ny * nz;
     if (normalX.size() != cells) {
         normalX.assign(cells, 0.0f);
@@ -917,6 +926,9 @@ void PhaseField::computeCurvature(const std::vector<uint8_t>& solid,
                                   float contactAngleDegrees) {
     buildNormals(solid, dx, dy, dz, contactAngleDegrees);
 
+    const int nx = this->nx;
+    const int ny = this->ny;
+    const int nz = this->nz;
     const float* __restrict cPtr = c.data();
     const float* __restrict nxPtr = normalX.data();
     const float* __restrict nyPtr = normalY.data();
@@ -1119,6 +1131,9 @@ void PhaseField::computeCurvature(const std::vector<uint8_t>& solid,
 }
 
 void PhaseField::refreshProperties(const std::vector<uint8_t>& solid) {
+    const int nx = this->nx;
+    const int ny = this->ny;
+    const int nz = this->nz;
     const float* __restrict cPtr = c.data();
     float* __restrict rhoPtr = rho.data();
     float* __restrict muPtr = mu.data();
