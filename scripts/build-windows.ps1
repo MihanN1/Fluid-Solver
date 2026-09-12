@@ -53,19 +53,68 @@ if (-not $Version) {
 $dist = Join-Path $repo $OutDir
 New-Item -ItemType Directory -Force -Path $dist | Out-Null
 
-# vcomp140.dll is the one runtime MSVC cannot link statically, so the OpenMP
-# rows carry it beside them. Newer toolsets bump the VC1xx directory name.
-function Find-VcompDll {
+# The OpenMP runtime is the one MSVC cannot link statically, so the OpenMP rows
+# carry it beside them. /openmp:llvm wants libomp140.<arch>.dll; vcomp140.dll is
+# the classic runtime and only the fallback. Newer toolsets bump the VC1xx
+# directory name, and each keeps its own copy.
+function Get-RuntimeVersion($file) {
+    $parsed = [version]"0.0"
+    if ($file.FullName -match "\\MSVC\\(\d+(\.\d+)+)\\" -and
+        [version]::TryParse($Matches[1], [ref] $parsed)) {
+        return $parsed
+    }
+    $raw = $file.VersionInfo.FileVersion
+    if ($raw -and [version]::TryParse(($raw -split " ")[0], [ref] $parsed)) {
+        return $parsed
+    }
+    return [version]"0.0"
+}
+
+# A collapsed loop calls __kmpc_calc_original_ivs_*, which older copies of
+# libomp do not export. Packing one of those links and zips perfectly and then
+# dies on the user's machine with "entry point not found", so the copy that is
+# about to be packed is read and checked. Export names are plain ASCII in the
+# file, so looking for the string is enough.
+function Test-OpenMpCollapse([string] $path) {
+    if ([IO.Path]::GetFileName($path) -notlike "libomp*") { return $true }
+    try {
+        $text = [Text.Encoding]::GetEncoding(28591).GetString(
+            [IO.File]::ReadAllBytes($path))
+    } catch {
+        return $false
+    }
+    return $text.Contains("__kmpc_calc_original_ivs_rectang")
+}
+
+function Find-OpenMpRuntime {
     param([string] $Bits = "x64")
+    $names = switch ($Bits) {
+        "x64"   { @("libomp140.x86_64.dll", "vcomp140.dll") }
+        "arm64" { @("libomp140.aarch64.dll", "vcomp140.dll") }
+        default { @("libomp140.i386.dll", "vcomp140.dll") }
+    }
     $roots = @()
     if ($env:VCToolsRedistDir) { $roots += $env:VCToolsRedistDir }
-    $roots += Get-ChildItem "${env:ProgramFiles}\Microsoft Visual Studio" -Directory -ErrorAction SilentlyContinue |
-              ForEach-Object { Get-ChildItem "$($_.FullName)\*\VC\Redist\MSVC" -Directory -ErrorAction SilentlyContinue } |
-              ForEach-Object { $_.FullName }
-    foreach ($root in $roots) {
-        $hit = Get-ChildItem $root -Recurse -Filter "vcomp140.dll" -ErrorAction SilentlyContinue |
-               Where-Object { $_.FullName -match "\\$Bits\\" } | Select-Object -First 1
-        if ($hit) { return $hit.FullName }
+    $roots += "${env:ProgramFiles}\Microsoft Visual Studio"
+    $roots += "${env:ProgramFiles(x86)}\Microsoft Visual Studio"
+    foreach ($name in $names) {
+        $hits = @()
+        foreach ($root in $roots) {
+            if (-not (Test-Path $root)) { continue }
+            $hits += Get-ChildItem $root -Recurse -Filter $name -ErrorAction SilentlyContinue |
+                     Where-Object { $_.FullName -match "\\$Bits\\" }
+        }
+        if (-not $hits) { continue }
+        $ranked = $hits | Sort-Object -Property @{
+            Expression = { Get-RuntimeVersion $_ }
+        } -Descending
+        $good = $ranked | Where-Object { Test-OpenMpCollapse $_.FullName } |
+                Select-Object -First 1
+        if ($good) { return $good.FullName }
+        $best = $ranked | Select-Object -First 1
+        Write-Host ("    $($best.Name) exports no collapse entry point - " +
+                    "this build will not start") -ForegroundColor Yellow
+        return $best.FullName
     }
     return $null
 }
@@ -132,12 +181,12 @@ function Build-Row {
 
     if ($OpenMp) {
         $bits = switch ($Arch) { "x64" { "x64" } "ARM64" { "arm64" } default { "x86" } }
-        $vcomp = Find-VcompDll $bits
-        if ($vcomp) {
-            Copy-Item $vcomp $rowDir -Force
-            Write-Host "    + vcomp140.dll" -ForegroundColor DarkGray
+        $runtime = Find-OpenMpRuntime $bits
+        if ($runtime) {
+            Copy-Item $runtime $rowDir -Force
+            Write-Host "    + $([IO.Path]::GetFileName($runtime))" -ForegroundColor DarkGray
         } else {
-            Write-Host "    vcomp140.dll not found - this build will not start without it" -ForegroundColor Yellow
+            Write-Host "    no OpenMP runtime found - this build will not start without it" -ForegroundColor Yellow
         }
     }
 

@@ -114,10 +114,52 @@ function Resolve-CudaArchs {
     return "75;80;86;89;90"
 }
 
+# The redist version a copy of the runtime belongs to. The path says it -
+# ...\VC\Redist\MSVC\14.44.35112\x64\... - and that is the toolset it shipped
+# with, which is what has to be compared. FileVersion is the fallback for a
+# copy that sits somewhere else.
+function Get-RuntimeVersion($file) {
+    $parsed = [version]"0.0"
+    if ($file.FullName -match "\\MSVC\\(\d+(\.\d+)+)\\" -and
+        [version]::TryParse($Matches[1], [ref] $parsed)) {
+        return $parsed
+    }
+    $raw = $file.VersionInfo.FileVersion
+    if ($raw -and [version]::TryParse(($raw -split " ")[0], [ref] $parsed)) {
+        return $parsed
+    }
+    return [version]"0.0"
+}
+
+# A collapsed loop compiles into a call to __kmpc_calc_original_ivs_*, which
+# libomp only started exporting a few toolsets ago. Packing an older copy links
+# and zips perfectly and then dies on the user's machine with "entry point not
+# found", so the copy that is about to be packed gets read and checked. Export
+# names sit in the file as plain ASCII, which is why looking for the string is
+# enough and no PE parser is needed.
+function Test-OpenMpCollapse([string] $path) {
+    # vcomp140.dll carries no __kmpc_ names at all and is only ever the
+    # fallback for a toolchain without /openmp:llvm, so it is not asked.
+    if ([IO.Path]::GetFileName($path) -notlike "libomp*") { return $true }
+    try {
+        $text = [Text.Encoding]::GetEncoding(28591).GetString(
+            [IO.File]::ReadAllBytes($path))
+    } catch {
+        return $false
+    }
+    return $text.Contains("__kmpc_calc_original_ivs_rectang")
+}
+
 function Find-OpenMpRuntime($Bits) {
     # /openmp:llvm links libomp140.<arch>.dll, which sits beside vcomp140.dll in
     # the same redist tree. vcomp140.dll is still looked for after it, so a
     # toolchain that fell back to the classic runtime still packs.
+    #
+    # Every installed toolset keeps its own copy and they are not
+    # interchangeable. Taking whichever one the recursive search reached first
+    # is what shipped a 2019-era libomp beside a binary built by the 2022
+    # toolset, so the newest is taken instead and it has to answer for the
+    # collapse entry point before it goes into an archive.
     $names = switch ($Bits) {
         "x64"   { @("libomp140.x86_64.dll", "vcomp140.dll") }
         "arm64" { @("libomp140.aarch64.dll", "vcomp140.dll") }
@@ -128,12 +170,26 @@ function Find-OpenMpRuntime($Bits) {
     $roots += "${env:ProgramFiles}\Microsoft Visual Studio"
     $roots += "${env:ProgramFiles(x86)}\Microsoft Visual Studio"
     foreach ($name in $names) {
+        $hits = @()
         foreach ($root in $roots) {
             if (-not (Test-Path $root)) { continue }
-            $hit = Get-ChildItem $root -Recurse -Filter $name -ErrorAction SilentlyContinue |
-                   Where-Object { $_.FullName -match "\\$Bits\\" } | Select-Object -First 1
-            if ($hit) { return $hit.FullName }
+            $hits += Get-ChildItem $root -Recurse -Filter $name -ErrorAction SilentlyContinue |
+                     Where-Object { $_.FullName -match "\\$Bits\\" }
         }
+        if (-not $hits) { continue }
+        $ranked = $hits | Sort-Object -Property @{
+            Expression = { Get-RuntimeVersion $_ }
+        } -Descending
+        $good = $ranked | Where-Object { Test-OpenMpCollapse $_.FullName } |
+                Select-Object -First 1
+        if ($good) { return $good.FullName }
+        $best = $ranked | Select-Object -First 1
+        Write-Host ("    $($best.Name) exports no collapse entry point - " +
+                    "the OpenMP rows will not start") -ForegroundColor Yellow
+        $problems.Add("the packed $($best.Name) is older than the compiler " +
+                      "that built the OpenMP rows - install a current MSVC " +
+                      "toolset and rebuild them")
+        return $best.FullName
     }
     return $null
 }
