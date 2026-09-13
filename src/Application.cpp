@@ -7684,7 +7684,16 @@ private:
         }
     }
 
+    // A run of nz > 1 voxelises the whole model; nothing is ever cut out of
+    // it. The plane and the cut line are then a picture of something that
+    // does not happen, which is worse than no picture at all.
+    bool setupIsVolume() const {
+        return solverInfo_.supportsVolume &&
+            std::lround(sliders_[CellsZ].value) > 1;
+    }
+
     void drawGeometryPreview() {
+        const bool volume = setupIsVolume();
         std::vector<PreviewTriangle> projected;
         const auto& source = geometry_.triangles();
         const MaskParameters parameters = sectionParameters();
@@ -7827,18 +7836,25 @@ private:
                 multiply(frame.axisY, -frame.extent))
         }};
 
-        sf::ConvexShape plane(4);
-        for (std::size_t corner = 0; corner < planeCorners.size(); ++corner) {
-            plane.setPoint(
-                corner,
-                projectPoint(planeCorners[corner], setupViewport_).position);
+        if (!volume) {
+            sf::ConvexShape plane(4);
+            for (std::size_t corner = 0; corner < planeCorners.size();
+                 ++corner) {
+                plane.setPoint(
+                    corner,
+                    projectPoint(planeCorners[corner],
+                                 setupViewport_).position);
+            }
+            plane.setFillColor(SECTION_PLANE);
+            plane.setOutlineColor(SECTION_PLANE_OUTLINE);
+            plane.setOutlineThickness(2.0f);
+            window_->draw(plane);
         }
-        plane.setFillColor(SECTION_PLANE);
-        plane.setOutlineColor(SECTION_PLANE_OUTLINE);
-        plane.setOutlineThickness(2.0f);
-        window_->draw(plane);
 
         for (const SectionSegment& segment : sectionSegments_) {
+            if (volume) {
+                break;
+            }
             const sf::Vector2f first = projectPoint(
                 rotateForPreview(segment.first),
                 setupViewport_).position;
@@ -7873,18 +7889,21 @@ private:
         window_->draw(legendBackground);
         window_->draw(makeText(
             font_,
-            "GREEN = section plane",
+            volume ? "VOLUME RUN - the whole model is used"
+                   : "GREEN = section plane",
             14,
             legendPosition + sf::Vector2f{12.0f, 8.0f},
-            SECTION_PLANE_OUTLINE));
+            volume ? ACCENT : SECTION_PLANE_OUTLINE));
         window_->draw(makeText(
             font_,
-            sectionSegments_.empty()
-                ? "ORANGE = no mesh intersection"
-                : "ORANGE = mesh-plane intersection",
+            volume
+                ? "the slice angles turn it; nothing is cut away"
+                : (sectionSegments_.empty()
+                       ? "ORANGE = no mesh intersection"
+                       : "ORANGE = mesh-plane intersection"),
             14,
             legendPosition + sf::Vector2f{12.0f, 31.0f},
-            CUT_COLOR));
+            volume ? MUTED : CUT_COLOR));
     }
 
     void drawSliceControls() {

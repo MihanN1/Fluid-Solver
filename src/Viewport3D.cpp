@@ -91,8 +91,33 @@ bool glTracing() {
     return on;
 }
 
+// Beside the executable rather than in the working directory, because where a
+// program is started from is not where it was double-clicked, and a trace file
+// nobody can find is the same as no trace file.
+const std::filesystem::path& tracePath() {
+    static const std::filesystem::path path = [] {
+#ifdef _WIN32
+        wchar_t executable[MAX_PATH] = {};
+        if (GetModuleFileNameW(nullptr, executable, MAX_PATH) != 0) {
+            std::filesystem::path beside(executable);
+            beside.replace_filename(L"gl-trace.txt");
+            return beside;
+        }
+#endif
+        return std::filesystem::path("gl-trace.txt");
+    }();
+    return path;
+}
+
 void traceStep(const char* what, std::size_t vertices) {
-    std::ofstream out("gl-trace.txt", std::ios::app);
+    static const bool started = [] {
+        std::ofstream first(tracePath(), std::ios::trunc);
+        first << "OpenGL trace. The last line is the call that did not "
+                 "survive.\n";
+        return true;
+    }();
+    (void)started;
+    std::ofstream out(tracePath(), std::ios::app);
     if (!out.is_open()) {
         return;
     }
@@ -2275,6 +2300,19 @@ void Viewport3D::draw(sf::RenderWindow& window, const sf::FloatRect& area) {
     unbindBuffers();
     glEnableClientState(GL_VERTEX_ARRAY);
     glEnableClientState(GL_COLOR_ARRAY);
+    // And every other array OFF, which matters more than turning ours on.
+    // SFML's own reset enables GL_TEXTURE_COORD_ARRAY and points it at the
+    // vertex data of whatever it drew last - memory that is long gone by the
+    // time this runs. An array left enabled is still fetched: the driver reads
+    // one texture coordinate per vertex from that dead address, which is a
+    // fault inside its vertex fetch with nothing of ours on the stack, at
+    // whatever later moment it chooses to execute the draw. Where the stale
+    // pointer happens to still be mapped - a software GL, another machine -
+    // the same code runs for years without a murmur.
+    glDisableClientState(GL_TEXTURE_COORD_ARRAY);
+    glDisableClientState(GL_NORMAL_ARRAY);
+    glDisableClientState(GL_INDEX_ARRAY);
+    glDisableClientState(GL_EDGE_FLAG_ARRAY);
 
     const BufferFunctions& gl = bufferFunctions();
     if (gl.ready() && positionBuffer_ == 0) {
