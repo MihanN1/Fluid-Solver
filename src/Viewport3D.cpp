@@ -6,6 +6,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstddef>
 #include <cstdlib>
 #include <limits>
 #include <unordered_map>
@@ -30,19 +31,47 @@ namespace {
 // module, so the crash names neither this program nor even a driver function,
 // and on a machine whose GL does not use buffers here it never happens at all.
 // Unbinding costs two calls a frame and takes the whole class of it away.
-using BindBufferFunction = void(APIENTRY*)(GLenum, GLuint);
+// There is a second reason to be rid of client arrays, and it is the one that
+// actually killed the process: this driver runs its own worker thread and is
+// free to read those arrays after the call that named them has returned. The
+// vectors behind them are rebuilt between frames, so by then the memory is
+// somewhere else. Copying each batch into a buffer object hands the driver
+// memory it owns, and the question of when it reads it stops mattering.
+constexpr GLenum ARRAY_BUFFER = 0x8892;
+constexpr GLenum ELEMENT_ARRAY_BUFFER = 0x8893;
+constexpr GLenum STREAM_DRAW = 0x88E0;
+
+struct BufferFunctions {
+    void(APIENTRY* gen)(GLsizei, GLuint*) = nullptr;
+    void(APIENTRY* bind)(GLenum, GLuint) = nullptr;
+    void(APIENTRY* data)(GLenum, std::ptrdiff_t, const void*, GLenum) = nullptr;
+
+    bool ready() const {
+        return gen != nullptr && bind != nullptr && data != nullptr;
+    }
+};
+
+const BufferFunctions& bufferFunctions() {
+    static const BufferFunctions loaded = [] {
+        BufferFunctions out;
+        out.gen = reinterpret_cast<decltype(out.gen)>(
+            sf::Context::getFunction("glGenBuffers"));
+        out.bind = reinterpret_cast<decltype(out.bind)>(
+            sf::Context::getFunction("glBindBuffer"));
+        out.data = reinterpret_cast<decltype(out.data)>(
+            sf::Context::getFunction("glBufferData"));
+        return out;
+    }();
+    return loaded;
+}
 
 void unbindBuffers() {
-    static const BindBufferFunction bindBuffer =
-        reinterpret_cast<BindBufferFunction>(
-            sf::Context::getFunction("glBindBuffer"));
-    if (bindBuffer == nullptr) {
+    const BufferFunctions& gl = bufferFunctions();
+    if (gl.bind == nullptr) {
         return;
     }
-    constexpr GLenum ARRAY_BUFFER = 0x8892;
-    constexpr GLenum ELEMENT_ARRAY_BUFFER = 0x8893;
-    bindBuffer(ARRAY_BUFFER, 0);
-    bindBuffer(ELEMENT_ARRAY_BUFFER, 0);
+    gl.bind(ARRAY_BUFFER, 0);
+    gl.bind(ELEMENT_ARRAY_BUFFER, 0);
 }
 
 const sf::Color VIEW_BACKGROUND{4, 6, 5};
@@ -2212,13 +2241,40 @@ void Viewport3D::draw(sf::RenderWindow& window, const sf::FloatRect& area) {
     glEnableClientState(GL_VERTEX_ARRAY);
     glEnableClientState(GL_COLOR_ARRAY);
 
-    const auto submit = [&frustum](const Batch& batch, GLenum mode) {
+    const BufferFunctions& gl = bufferFunctions();
+    if (gl.ready() && positionBuffer_ == 0) {
+        GLuint made[2] = {0, 0};
+        gl.gen(2, made);
+        positionBuffer_ = made[0];
+        colourBuffer_ = made[1];
+    }
+    const bool throughBuffers = gl.ready() && positionBuffer_ != 0;
+
+    const auto submit = [&](const Batch& batch, GLenum mode) {
         if (batch.empty() ||
             !boxIsVisible(frustum, batch.lowest, batch.highest)) {
             return;
         }
-        glVertexPointer(3, GL_FLOAT, 0, batch.positions.data());
-        glColorPointer(4, GL_UNSIGNED_BYTE, 0, batch.colours.data());
+        if (throughBuffers) {
+            // The binding in force when glVertexPointer runs is the one that
+            // call remembers, so each array is bound, filled and named in turn
+            // and the offset is zero rather than an address.
+            gl.bind(ARRAY_BUFFER, positionBuffer_);
+            gl.data(ARRAY_BUFFER,
+                    static_cast<std::ptrdiff_t>(batch.positions.size() *
+                                                sizeof(float)),
+                    batch.positions.data(), STREAM_DRAW);
+            glVertexPointer(3, GL_FLOAT, 0, nullptr);
+
+            gl.bind(ARRAY_BUFFER, colourBuffer_);
+            gl.data(ARRAY_BUFFER,
+                    static_cast<std::ptrdiff_t>(batch.colours.size()),
+                    batch.colours.data(), STREAM_DRAW);
+            glColorPointer(4, GL_UNSIGNED_BYTE, 0, nullptr);
+        } else {
+            glVertexPointer(3, GL_FLOAT, 0, batch.positions.data());
+            glColorPointer(4, GL_UNSIGNED_BYTE, 0, batch.colours.data());
+        }
         glDrawArrays(
             mode, 0, static_cast<GLsizei>(batch.vertexCount()));
     };
@@ -2271,6 +2327,7 @@ void Viewport3D::draw(sf::RenderWindow& window, const sf::FloatRect& area) {
 
     glDisableClientState(GL_COLOR_ARRAY);
     glDisableClientState(GL_VERTEX_ARRAY);
+    unbindBuffers();
     glDisable(GL_SCISSOR_TEST);
     glDisable(GL_DEPTH_TEST);
 

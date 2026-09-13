@@ -242,6 +242,8 @@ private:
     Batch tracers_;
     Batch markers_;
     std::vector<Streamline> paths_;
+    unsigned int positionBuffer_ = 0;
+    unsigned int colourBuffer_ = 0;
 };
 
 } // namespace maskui
