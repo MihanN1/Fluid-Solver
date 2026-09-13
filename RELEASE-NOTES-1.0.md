@@ -195,6 +195,14 @@ it refuses with a message about an open surface, the STL is not watertight;
 run it through a repair tool, because a surface with a hole in it has no
 inside and the voxeliser will not guess one.
 
+**In the UI you do not type that line.** Pick the body in the BODIES group — or
+click it in the 3D view — and `Position X/Y/Z`, `Size`, `Tilt X/Y/Z` and `Turn
+in plane` are the same settings as rows. To nudge it rather than place it: set
+`Move along` to the axis, type the distance into `Move by`, and it moves that
+far the moment you press Enter, with the box going back to zero for the next
+one. `Turn about` and `Turn by` do the same in degrees. Or do it from the
+viewport without the panel at all — click the body, `G`, `x`, `0.25`, Enter.
+
 ### 2. A lid-driven cavity in a cube
 
 The 3D benchmark, and the quickest way to convince yourself the port is real:
@@ -503,12 +511,22 @@ one cell deep with `w` zero.
 **In the UI.** A volume opens in the 3D viewport, a flat frame in the old 2D
 one, and `V` switches between them at any time.
 
-* **3D viewport.** Left drag orbits, middle drag pans, wheel zooms. `F` frames
-  everything. Numpad 1 / 3 / 7 are front / right / top, Ctrl with them gives
-  the other three, Numpad 5 flips orthographic. The bar along the top toggles
-  the box, the cell grid, the solid surface and its wireframe, the three slice
-  planes, the isosurface, vortices, streamlines and tracers, and cycles what
-  everything is coloured by (speed → pressure → u → v → w → vorticity → Q).
+* **3D viewport.** Left drag turns the view, middle drag slides it, wheel
+  zooms. `Rotate` and `Move` in the bar, or `R` and `G`, decide which of the
+  first two the left button does — one of them is the only way to slide the
+  view on a trackpad with no middle button — and holding `Shift` slides it
+  either way. `F` frames everything. Numpad 1 / 3 / 7 lock to front / right /
+  top, Ctrl with them gives back / left / bottom, and the `Front` … `Bottom`
+  buttons do the same. Numpad 5, or `Ortho`, flips to isometric: parallel
+  projection, which is the one to read a shock angle off. Numpad 4 / 6 / 8 / 2
+  turn in 15 degree steps and Numpad 9 flips to the opposite side. The bar also
+  toggles the box, the cell grid, the solid surface and its wireframe, the
+  three slice planes, the isosurface, vortices, streamlines and tracers, and
+  cycles what everything is coloured by (speed → pressure → u → v → w →
+  vorticity → Q).
+* **A volume opens on its isosurface with the slice planes off**, a flat frame
+  opens on its one plane. Turn `Slice X/Y/Z` on when you want a cut; it stays
+  on until you load a result of the other kind.
 * **Vortices** are the Q criterion drawn as an isosurface with the vortex core
   lines through it. Turn it on, drag the Q slider until the structures separate
   from the noise. This is the answer to "where are the vortices" that a colour
@@ -2229,6 +2247,33 @@ currently is. This is the thing the panel could never do: the object numbers
 come out of the solver's flood fill rather than out of the order you listed the
 models in, so pointing was the only reliable way to mean a particular body.
 
+**Models are placed and turned by typing, not by editing a line of grammar.**
+Where a model sits used to live only inside the `profiles` text — `wing.stl@x=
+0.6,y=0.5,size=0.3` — which is fine to read and miserable to nudge. The BODIES
+group now carries `Position X/Y/Z`, `Size`, `Tilt X/Y/Z` and `Turn in plane`
+for whichever body is selected, and they are that line written out as rows:
+typing in one edits the entry, and editing the line by hand moves the rows.
+
+Under them is the way a 3D package does it. `Move along` picks an axis,
+`Move by` takes a distance, and the moment you type one the model moves that
+far and the box goes back to zero — so the same number typed twice moves it
+twice as far, and there is no Apply to forget. `Turn about` and `Turn by` are
+the same for degrees, with `plane` as the fourth axis for the rotation inside
+the cut plane, which is the one that means anything at `nz = 1`. Angles wrap
+into ±180 rather than climbing to 400.
+
+The same thing works from inside the 3D viewport without touching the panel at
+all: click the body, press `G`, press `x`, type `0.25`, press Enter. Three
+ways to say the same thing — drag a slider by eye, type the absolute number
+into the row, or type the offset — which is the arrangement every 3D package
+settles on because each of the three is the convenient one some of the time.
+
+Everything in the line these rows do not manage — `invert=1`, a spelling of
+`angleX` rather than `ax` — is carried across untouched, and the order the
+settings were written in is the order they keep. A body with no entry in
+`profiles` yet gets one written from the imported model the first time it is
+moved.
+
 **The 2D view is kept whole and is now a slice through the volume.** Not
 reimplemented, not ported, not "mostly the same" — the colour maps, the
 vectors, the tracers, the probe readout, the legend, the zoom and the pan are
@@ -2317,11 +2362,45 @@ nothing is written in between. That is strictly better and it is also the only
 thing that can be right: a section adapter is a flat outline, and handing one to
 a voxeliser would describe a body with no thickness.
 
+**A volume opens on its isosurface, not on a slice plane.** A plane through a
+volume is one cut out of hundreds and there is no reason for it to be the first
+thing you see; on a flat frame the same plane is the entire result and there is
+nothing else to show. So the two open differently — planes off and the
+isosurface on for a volume, `Slice Z` on and the isosurface off for a single
+plane — and the choice is made once per kind of result rather than per frame,
+so switching a plane back on by hand sticks until a result of the other kind is
+loaded.
+
+**Navigating it is Blender's, because that is the one everybody already
+knows.** Left drag turns the view, middle drag slides it, the wheel zooms.
+`Rotate` and `Move` decide which of the first two the left button does, so a
+laptop trackpad with no middle button can still slide the view, and holding
+`Shift` slides it whatever the buttons say. Numpad 1/3/7 lock to front, right
+and top, `Ctrl` with them gives back, left and bottom, and the six named
+buttons do the same for a mouse. Numpad 5 is isometric — parallel projection,
+no perspective, which is the one to be in when you are reading a shock angle
+off the screen. Numpad 4/6/8/2 turn the view in 15 degree steps, numpad 9 flips
+to the opposite side, `F` frames the whole volume.
+
+**`G` and `R` transform the selected body from inside the viewport**, the same
+three keystrokes as everywhere else: `G`, then `x`, then `0.25`, then Enter,
+and that body is a quarter of a metre further along x. `R` is the same in
+degrees, and `c` is a fourth axis for the rotation inside the cut plane —
+which is what `R` starts on when the result is a single plane, because a plane
+has no out-of-plane axis to tip into. It is modal on purpose: while it runs
+every key belongs to it, so typing `5` means five rather than "numpad 5 flips
+the projection", the prompt sits in the status line until it ends, and Escape
+cancels. What it changes is the **setup**, not the picture: the frame on screen
+was computed with the body where it was, so the body does not jump — the
+`Position` and `Tilt` rows move, and the next run is the one that differs.
+
 **Keyboard, because the window used to answer to the mouse and nothing else:**
-`V` to swap views, `F` to frame, numpad 1/3/7 for front/right/top and 5 for
-ortho, arrows and `Home`/`End`/`Space` through the frame series, and in the
-setup view `Ctrl+Z`/`Ctrl+Y` (one undo stack over the whole setup state, not one
-per widget), `Ctrl+C`/`Ctrl+X`/`Ctrl+V` on rows or on the whole configuration,
+`V` to swap views, `F` to frame, numpad 1/3/7 for front/right/top with `Ctrl`
+for the other three, 5 for isometric, 4/6/8/2 to turn in steps, 9 to flip, `G`
+and `R` to move and turn the selected body by a typed amount, arrows and
+`Home`/`End`/`Space` through the frame series, and in the setup view
+`Ctrl+Z`/`Ctrl+Y` (one undo stack over the whole setup state, not one per
+widget), `Ctrl+C`/`Ctrl+X`/`Ctrl+V` on rows or on the whole configuration,
 `Ctrl+F` to filter the panel, and `Ctrl+S`/`Ctrl+O` for `.cfdui` files.
 
 ---
@@ -2330,6 +2409,39 @@ per widget), `Ctrl+C`/`Ctrl+X`/`Ctrl+V` on rows or on the whole configuration,
 
 Bugs that were live in 0.2 and are not now. Several of these were shipping
 silently, which is the only kind worth a section.
+
+**A 3D viewport drawn with no depth buffer.** The window was created without
+`sf::ContextSettings`, and SFML asks for zero depth bits unless it is told
+otherwise. `Viewport3D` checks `depthBits > 0` and falls back to
+`glDisable(GL_DEPTH_TEST)` when there are none, so every triangle was painted
+in the order it happened to be submitted and nothing was ever behind anything.
+A slice plane sat in front of the body or behind it depending on nothing but
+that order, and swung through it as the camera turned — which reads as the
+plane spinning on its own. The window asks for 24 bits now. The fallback stays
+where it is: a machine that really cannot give a depth buffer still gets a
+picture rather than a black rectangle.
+
+**Every Windows OpenMP row refused to compile.** `collapse(2)` wants its loop
+bounds provably invariant, and MSVC will not take a class member for one — `nz`
+and `ny` reached the loop headers through `this` in `Phase`, `Multigrid`,
+`Turbulence`, `Mesh` and `SolverCompressible`. Seven of the fourteen Windows
+rows died on it, some with `C7720` and some with an internal compiler error at
+the same line, which is the same cause wearing a different hat. All 56
+`collapse` sites hoist their bounds into a local `const int` now, which is what
+`Solver.cpp` was already doing in seventeen of its eighteen. GCC and Clang
+never minded, so nothing about the numbers changed: same fourteen suites, same
+results.
+
+**Every Windows OpenMP row that did compile shipped a runtime it could not
+use.** The release script searched the Visual Studio tree for
+`libomp140.<arch>.dll` and packed whichever copy it reached first. Each
+installed toolset keeps its own, a 2019 one turns up before a 2022 one, and a
+collapsed loop calls `__kmpc_calc_original_ivs_rectang`, which the older copies
+do not export. It linked, it zipped, and it died on the user's machine with
+"entry point not found" before printing a character. The newest copy wins now,
+and it is read and checked for that entry point before it goes into an archive:
+if no copy on the machine has it, the build says so in yellow and lists it as a
+problem instead of publishing a binary that cannot start.
 
 **A Linux CUDA build that segfaulted before printing a character.** Not new at
 0.2 — it reproduced on every CUDA Linux binary in the tree, on `--hardware`,

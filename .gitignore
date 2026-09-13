@@ -28,3 +28,6 @@ build-*/
 _to_delete/
 dist-ui/
 release/
+# Configurations saved out of the UI, and the one that ships as an
+# example: local setups, not part of the source.
+*.cfdui
