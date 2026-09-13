@@ -61,6 +61,41 @@ struct BodyRowValues {
     int pins = 0;
 };
 
+std::vector<std::string> splitProfileEntries(const std::string& line);
+
+std::string joinProfileEntries(const std::vector<std::string>& entries);
+
+std::string profileFileOf(const std::string& entry);
+
+double profileSetting(const std::string& entry,
+                      const std::string& name,
+                      double fallback = 0.0,
+                      bool* found = nullptr);
+
+void setProfileSetting(std::string& entry,
+                       const std::string& name,
+                       double value);
+
+struct BodyPlacement {
+    bool present = false;
+    std::string file;
+    double x = 0.0;
+    double y = 0.0;
+    double z = 0.0;
+    bool placed = false;
+    double size = 0.0;
+    bool sized = false;
+    double rot = 0.0;
+    double angleX = 0.0;
+    double angleY = 0.0;
+    double angleZ = 0.0;
+};
+
+BodyPlacement readPlacement(const std::string& profiles, int object);
+
+void writePlacement(std::string& profiles, int object,
+                    const BodyPlacement& values);
+
 BodyRowValues readBodyRows(const std::string& wallMotion,
                            const std::string& bodyMotion,
                            int object);

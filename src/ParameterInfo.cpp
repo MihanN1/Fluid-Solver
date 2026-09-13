@@ -24,7 +24,11 @@ const char* parameterKey(std::size_t index) {
         "bcFrontSpeed", "bcBackSpeed",
         "inletFrom", "inletTo", "inletFrom2", "inletTo2", "inletProfile",
         "wallMotion",
-        "uiBody", "uiBodyBehaviour", "uiBodyRot", "uiBodyRotX", "uiBodyRotY",
+        "uiBody",
+        "uiBodyX", "uiBodyY", "uiBodyZ", "uiBodySize",
+        "uiBodyTiltX", "uiBodyTiltY", "uiBodyTiltZ", "uiBodyTurnPlane",
+        "uiBodyMoveAxis", "uiBodyMoveBy", "uiBodyTurnAxis", "uiBodyTurnBy",
+        "uiBodyBehaviour", "uiBodyRot", "uiBodyRotX", "uiBodyRotY",
         "uiBodySlideX", "uiBodySlideY", "uiBodySlideZ",
         "uiBodyVx", "uiBodyVy", "uiBodyVz",
         "uiBodySpin", "uiBodySpinX", "uiBodySpinY",
@@ -211,6 +215,30 @@ const char* parameterHint(std::size_t index) {
         return "Which body the rows below are about. Bodies are numbered by the mask, left to right and bottom to top.";
     case BodyBehaviour:
         return "What this body does: sit still, drag the fluid past its surface, let it slip, travel on a set path, or move freely.";
+    case BodyPlaceX:
+        return "Where the centre of this model sits along x, in metres. Empty means the middle of the domain.";
+    case BodyPlaceY:
+        return "Where the centre of this model sits along y, in metres. Empty means the middle of the domain.";
+    case BodyPlaceZ:
+        return "Where the centre of this model sits along z, in metres. Read once nz is above 1.";
+    case BodyPlaceSize:
+        return "The longest side of this model after it is scaled, in metres. 0 means a fifth of the smallest side of the domain.";
+    case BodyTiltX:
+        return "Turn this model about the x axis before it is voxelised, in degrees.";
+    case BodyTiltY:
+        return "Turn this model about the y axis before it is voxelised, in degrees.";
+    case BodyTiltZ:
+        return "Turn this model about the z axis before it is voxelised, in degrees.";
+    case BodyTurnPlane:
+        return "Turn this model inside the plane it is cut on, in degrees. This is the one that means something at nz = 1.";
+    case BodyMoveAxis:
+        return "Which axis Move by runs along.";
+    case BodyMoveBy:
+        return "Type how far to move the selected model along that axis, in metres. It is added to the position and this box goes back to zero.";
+    case BodyTurnAxis:
+        return "Which axis Turn by turns about. plane is the rotation inside the cut plane.";
+    case BodyTurnBy:
+        return "Type how far to turn the selected model about that axis, in degrees. It is added to the angle and this box goes back to zero.";
     case BodyRotation:
         return "How fast the surface spins in place, in degrees per second. The body itself stays put.";
     case BodyRotationX:
@@ -450,6 +478,20 @@ std::string parameterHelp(std::size_t index) {
         return "Which body the rows under it are about. The numbers are the ones the solver prints for the mask, counted the same way - flood filled in scan order. The two text rows at the bottom are what is actually sent; these rows write into them.";
     case BodyBehaviour:
         return "static leaves the body alone. drag holds the fluid and pulls it along without the body going anywhere - that is wallMotion. slip lets the fluid past and exerts no drag. travel moves the body itself along a path you give. free lets go of it and the flow decides where it goes.";
+    case BodyPlaceX:
+    case BodyPlaceY:
+    case BodyPlaceZ:
+    case BodyPlaceSize:
+    case BodyTiltX:
+    case BodyTiltY:
+    case BodyTiltZ:
+    case BodyTurnPlane:
+        return "Where the selected model sits in the domain and how it is turned before it is voxelised, which is the profiles line written out as rows. Left at their defaults a model lands in the middle of the domain at a fifth of its smallest side. A body touching the domain edge is a wall rather than an obstacle and is refused with the number it missed by, so the useful range stops short of the walls.";
+    case BodyMoveAxis:
+    case BodyMoveBy:
+    case BodyTurnAxis:
+    case BodyTurnBy:
+        return "Move and turn the selected model by typing how far, the way a 3D package does it: pick the axis, type the amount, and it is added to where the model already is. The box goes back to zero afterwards, so typing the same number again moves it the same distance again. The rows above show where it ended up, and can be typed into directly when the absolute position is what you know.";
     case BodyRotation:
     case BodyRotationX:
     case BodyRotationY:

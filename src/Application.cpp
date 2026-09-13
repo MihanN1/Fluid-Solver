@@ -854,6 +854,8 @@ enum class ResultQuantity {
 enum ViewControl : std::size_t {
     ControlFrameAll,
     ControlOrtho,
+    ControlRotateTool,
+    ControlMoveTool,
     ControlBox,
     ControlGrid,
     ControlSolid,
@@ -1901,6 +1903,20 @@ public:
               Slider{"Wall motion", "", 0.0, 1.0, 0.0, false, false, false, 0.0,
                      ControlKind::Text},
               Slider{"Body", "", 1.0, 32.0, 1.0, true, false},
+              Slider{"Position X", "m", -1000.0, 1000.0, 0.0, false, false},
+              Slider{"Position Y", "m", -1000.0, 1000.0, 0.0, false, false},
+              Slider{"Position Z", "m", -1000.0, 1000.0, 0.0, false, false},
+              Slider{"Size", "m", 0.0, 1000.0, 0.0, false, false},
+              Slider{"Tilt X", "deg", -180.0, 180.0, 0.0, false, false},
+              Slider{"Tilt Y", "deg", -180.0, 180.0, 0.0, false, false},
+              Slider{"Tilt Z", "deg", -180.0, 180.0, 0.0, false, false},
+              Slider{"Turn in plane", "deg", -180.0, 180.0, 0.0, false, false},
+              Slider{"Move along", "", 0.0, 2.0, 0.0, true, false, false, 0.0,
+                     ControlKind::Choice, {"x", "y", "z"}},
+              Slider{"Move by", "m", -1000.0, 1000.0, 0.0, false, false},
+              Slider{"Turn about", "", 0.0, 3.0, 0.0, true, false, false, 0.0,
+                     ControlKind::Choice, {"x", "y", "z", "plane"}},
+              Slider{"Turn by", "deg", -360.0, 360.0, 0.0, false, false},
               Slider{"Behaviour", "", 0.0, 4.0, 0.0, true, false, false, 0.0,
                      ControlKind::Choice,
                      {"static", "drag", "slip", "travel", "free"}},
@@ -2008,11 +2024,20 @@ public:
             return 2;
         }
 
+        // The 3D viewport needs a depth buffer, and SFML asks for none unless
+        // it is told to. Without one Viewport3D has to draw with the depth
+        // test off, which paints every triangle in the order it was submitted:
+        // a slice plane then sits in front of or behind the body depending on
+        // nothing but that order, and swings through it as the camera turns.
+        sf::ContextSettings contextSettings;
+        contextSettings.depthBits = 24;
+
         sf::RenderWindow window(
             sf::VideoMode({1600u, 900u}),
             std::string("CFD Mask UI ") + CFD_MASK_UI_VERSION,
             sf::Style::Default,
-            sf::State::Windowed);
+            sf::State::Windowed,
+            contextSettings);
         window.setMinimumSize(sf::Vector2u{1000u, 800u});
         window.setFramerateLimit(60);
         window_ = &window;
@@ -2415,6 +2440,8 @@ private:
             newRow();
             enable(ControlFrameAll, 88.0f);
             enable(ControlOrtho, 82.0f);
+            enable(ControlRotateTool, 80.0f);
+            enable(ControlMoveTool, 72.0f);
             enable(ControlBox, 62.0f);
             enable(ControlGrid, 62.0f);
             enable(ControlSolid, 70.0f);
@@ -2535,6 +2562,8 @@ private:
         toggle(ControlFrameAll, "Frame all", false);
         toggle(ControlOrtho, "Ortho",
                viewport3D_.camera().orthographic);
+        toggle(ControlRotateTool, "Rotate", !moveTool_);
+        toggle(ControlMoveTool, "Move", moveTool_);
         toggle(ControlBox, "Box", view3DSettings_.showBox);
         toggle(ControlGrid, "Grid", view3DSettings_.showGrid);
         toggle(ControlSolid, "Solid", view3DSettings_.showSolid);
@@ -3024,6 +3053,12 @@ private:
             if (view3D_) {
                 orbiting3D_ = true;
                 orbitMoved_ = false;
+                // Decided here rather than on every mouse move, so letting go
+                // of Shift halfway through a drag does not change what the
+                // drag is doing.
+                dragSlides_ = moveTool_ ||
+                    sf::Keyboard::isKeyPressed(sf::Keyboard::Key::LShift) ||
+                    sf::Keyboard::isKeyPressed(sf::Keyboard::Key::RShift);
                 return;
             }
             panningResults_ = true;
@@ -3039,6 +3074,16 @@ private:
             return true;
         }
         if (view3D_) {
+            // A running transform owns the keyboard until Enter or Escape, so
+            // that typing 5 into it means five and not "numpad 5 flips the
+            // projection".
+            if (transformMode_ != 0)
+                return handleTransformKey(key);
+            // orbit() counts pixels of mouse travel, so a keyboard step has to
+            // be spelled in those: 0.01 radians a pixel puts 15 degrees at
+            // 26.18 of them and half a turn at 314.16.
+            constexpr float kOrbitStep = 26.18f;
+            constexpr float kHalfTurn = 314.16f;
             switch (key.code) {
             case sf::Keyboard::Key::F:
                 viewport3D_.frameAll();
@@ -3046,16 +3091,44 @@ private:
                 return true;
             case sf::Keyboard::Key::Numpad1:
                 viewport3D_.setView(2, key.control);
+                status_ = key.control ? "Back view." : "Front view.";
                 return true;
             case sf::Keyboard::Key::Numpad3:
                 viewport3D_.setView(0, key.control);
+                status_ = key.control ? "Left view." : "Right view.";
                 return true;
             case sf::Keyboard::Key::Numpad7:
                 viewport3D_.setView(1, key.control);
+                status_ = key.control ? "Bottom view." : "Top view.";
                 return true;
             case sf::Keyboard::Key::Numpad5:
                 viewport3D_.camera().orthographic =
                     !viewport3D_.camera().orthographic;
+                status_ = viewport3D_.camera().orthographic
+                    ? "Isometric: parallel projection, no perspective."
+                    : "Perspective projection.";
+                return true;
+            case sf::Keyboard::Key::Numpad4:
+                viewport3D_.orbit(-kOrbitStep, 0.0f);
+                return true;
+            case sf::Keyboard::Key::Numpad6:
+                viewport3D_.orbit(kOrbitStep, 0.0f);
+                return true;
+            case sf::Keyboard::Key::Numpad8:
+                viewport3D_.orbit(0.0f, -kOrbitStep);
+                return true;
+            case sf::Keyboard::Key::Numpad2:
+                viewport3D_.orbit(0.0f, kOrbitStep);
+                return true;
+            case sf::Keyboard::Key::Numpad9:
+                viewport3D_.orbit(-kHalfTurn, 0.0f);
+                status_ = "Turned to the opposite side.";
+                return true;
+            case sf::Keyboard::Key::G:
+                beginTransform(1);
+                return true;
+            case sf::Keyboard::Key::R:
+                beginTransform(2);
                 return true;
             default:
                 break;
@@ -3136,7 +3209,11 @@ private:
             if (delta.x != 0.0f || delta.y != 0.0f) {
                 orbitMoved_ = true;
             }
-            viewport3D_.orbit(delta.x, delta.y);
+            if (dragSlides_) {
+                viewport3D_.pan(delta.x, delta.y);
+            } else {
+                viewport3D_.orbit(delta.x, delta.y);
+            }
             return;
         }
         if (panning3D_) {
@@ -6144,9 +6221,208 @@ private:
             storeBodyRows();
         else if (index == BodyMotionLine || index == WallMotionLine)
             loadBodyRows();
+        else if (index == BodyMoveBy || index == BodyTurnBy)
+            applyBodyNudge(index);
+        else if (index >= BodyPlaceX && index <= BodyTurnPlane)
+            storePlacementRows();
+        else if (index == Profiles)
+            loadPlacementRows();
+    }
+
+    // Where the model sits comes out of the profiles line rather than out of a
+    // parameter of its own, so the rows are read from it and written back to
+    // it, the same way the motion rows sit on top of bodyMotion.
+    void loadPlacementRows() {
+        const BodyPlacement place =
+            readPlacement(sliders_[Profiles].text, selectedBody());
+        sliders_[BodyPlaceX].value = place.x;
+        sliders_[BodyPlaceY].value = place.y;
+        sliders_[BodyPlaceZ].value = place.z;
+        sliders_[BodyPlaceSize].value = place.size;
+        sliders_[BodyTiltX].value = place.angleX;
+        sliders_[BodyTiltY].value = place.angleY;
+        sliders_[BodyTiltZ].value = place.angleZ;
+        sliders_[BodyTurnPlane].value = place.rot;
+    }
+
+    void storePlacementRows() {
+        const int object = selectedBody();
+        BodyPlacement place = readPlacement(sliders_[Profiles].text, object);
+        if (!place.present) {
+            // Nothing in profiles for this body yet. There is one model it can
+            // be - the imported one - and only when this is the first body;
+            // any other number has nothing to name.
+            if (object != 1 || geometry_.sourcePath().empty())
+                return;
+            place.file = geometry_.sourcePath().string();
+        }
+        place.x = sliders_[BodyPlaceX].value;
+        place.y = sliders_[BodyPlaceY].value;
+        place.z = sliders_[BodyPlaceZ].value;
+        place.placed = true;
+        place.size = sliders_[BodyPlaceSize].value;
+        place.sized = place.size > 0.0;
+        place.angleX = sliders_[BodyTiltX].value;
+        place.angleY = sliders_[BodyTiltY].value;
+        place.angleZ = sliders_[BodyTiltZ].value;
+        place.rot = sliders_[BodyTurnPlane].value;
+        writePlacement(sliders_[Profiles].text, object, place);
+    }
+
+    static const char* axisName(int axis) {
+        return axis == 0 ? "x"
+             : (axis == 1 ? "y" : (axis == 2 ? "z" : "the cut plane"));
+    }
+
+    // Typed rather than dragged: the amount is added to where the model
+    // already is, so the same number typed twice moves it twice as far. Both
+    // the panel rows and the viewport's own G and R end up here.
+    void nudgeBody(bool turn, int axis, double amount) {
+        if (amount == 0.0)
+            return;
+        const std::size_t row = turn
+            ? (axis == 0 ? BodyTiltX
+              : (axis == 1 ? BodyTiltY
+              : (axis == 2 ? BodyTiltZ : BodyTurnPlane)))
+            : (axis == 0 ? BodyPlaceX : (axis == 1 ? BodyPlaceY : BodyPlaceZ));
+
+        double placed = sliders_[row].value + amount;
+        if (turn) {
+            while (placed > 180.0)
+                placed -= 360.0;
+            while (placed < -180.0)
+                placed += 360.0;
+        }
+        sliders_[row].value = placed;
+        sliders_[row].text.clear();
+        storePlacementRows();
+
+        status_ = std::string(turn ? "Turned body " : "Moved body ") +
+            std::to_string(selectedBody()) + " by " +
+            editableNumber(amount, false) + (turn ? " deg about " : " m along ") +
+            axisName(axis) + ", now at " +
+            editableNumber(placed, false) + (turn ? " deg." : " m.");
+    }
+
+    void applyBodyNudge(std::size_t index) {
+        const double amount = sliders_[index].value;
+        if (amount == 0.0)
+            return;
+        sliders_[index].value = 0.0;
+        sliders_[index].text.clear();
+        const bool turn = index == BodyTurnBy;
+        const int axis = static_cast<int>(std::lround(
+            sliders_[turn ? BodyTurnAxis : BodyMoveAxis].value));
+        nudgeBody(turn, axis, amount);
+    }
+
+    // The viewport's own transform, the way a 3D package does it: G or R, then
+    // an axis letter, then the number, then Enter. It is modal on purpose -
+    // while it is running every key belongs to it, which is why the prompt
+    // sits in the status line until Enter or Escape ends it.
+    bool bodyIsPlaceable() const {
+        const int object = selectedBody();
+        if (readPlacement(sliders_[Profiles].text, object).present)
+            return true;
+        return object == 1 && !geometry_.sourcePath().empty();
+    }
+
+    void showTransformPrompt() {
+        status_ = std::string(transformMode_ == 2 ? "Turn " : "Move ") +
+            "body " + std::to_string(selectedBody()) + " along " +
+            axisName(transformAxis_) + ": " + transformText_ + "_   " +
+            (transformMode_ == 2 ? "deg" : "m") +
+            "   (x/y/z axis, Enter applies, Esc cancels)";
+    }
+
+    void beginTransform(int mode) {
+        if (!bodyIsPlaceable()) {
+            status_ = "Body " + std::to_string(selectedBody()) +
+                " has no model in the profiles line to move. Click a body "
+                "first, or import a model.";
+            return;
+        }
+        transformMode_ = mode;
+        // Turning a single plane can only mean the rotation inside it; there
+        // is no out-of-plane axis to tip into.
+        transformAxis_ = (mode == 2 && activeFrame_ && activeFrame_->nz <= 1u)
+            ? 3 : 0;
+        transformText_.clear();
+        showTransformPrompt();
+    }
+
+    bool handleTransformKey(const sf::Event::KeyPressed& key) {
+        using Key = sf::Keyboard::Key;
+        switch (key.code) {
+        case Key::Escape:
+            transformMode_ = 0;
+            transformText_.clear();
+            status_ = "Cancelled.";
+            return true;
+        case Key::Enter: {
+            double amount = 0.0;
+            std::string error;
+            const bool ok = !transformText_.empty() &&
+                parseNumericInput(transformText_, NumericInputRules{},
+                                  amount, error);
+            const bool turn = transformMode_ == 2;
+            const int axis = transformAxis_;
+            transformMode_ = 0;
+            transformText_.clear();
+            if (!ok) {
+                status_ = "Nothing typed, so nothing moved.";
+                return true;
+            }
+            nudgeBody(turn, axis, amount);
+            return true;
+        }
+        case Key::Backspace:
+            if (!transformText_.empty())
+                transformText_.pop_back();
+            showTransformPrompt();
+            return true;
+        case Key::X:
+            transformAxis_ = 0;
+            showTransformPrompt();
+            return true;
+        case Key::Y:
+            transformAxis_ = 1;
+            showTransformPrompt();
+            return true;
+        case Key::Z:
+            transformAxis_ = 2;
+            showTransformPrompt();
+            return true;
+        case Key::C:
+            if (transformMode_ == 2)
+                transformAxis_ = 3;
+            showTransformPrompt();
+            return true;
+        case Key::Hyphen:
+        case Key::Subtract:
+            transformText_ += '-';
+            showTransformPrompt();
+            return true;
+        case Key::Period:
+            transformText_ += '.';
+            showTransformPrompt();
+            return true;
+        default:
+            break;
+        }
+        const int code = static_cast<int>(key.code);
+        const int zero = static_cast<int>(Key::Num0);
+        const int padZero = static_cast<int>(Key::Numpad0);
+        if (code >= zero && code <= zero + 9)
+            transformText_ += static_cast<char>('0' + (code - zero));
+        else if (code >= padZero && code <= padZero + 9)
+            transformText_ += static_cast<char>('0' + (code - padZero));
+        showTransformPrompt();
+        return true;
     }
 
     void loadBodyRows() {
+        loadPlacementRows();
         const int object = selectedBody();
         const BodyRowValues values = readBodyRows(
             sliders_[WallMotionLine].text,
@@ -7781,7 +8057,32 @@ private:
         return sliceCache_.planeCount();
     }
 
+    // A slice plane is the whole of a nz=1 result and only a cut through a
+    // volume, so the two cases do not want the same view. A volume opens on
+    // its isosurface with every plane off; a single plane opens on the plane,
+    // because with that off there is nothing left to look at. Applied once per
+    // kind of result, so switching a plane back on afterwards sticks until a
+    // result of the other kind is loaded.
+    void applyViewDefaults() {
+        if (!activeFrame_) {
+            return;
+        }
+        const int kind = activeFrame_->nz > 1u ? 1 : 0;
+        if (viewDefaultsFor_ == kind) {
+            return;
+        }
+        viewDefaultsFor_ = kind;
+        view3DSettings_.sliceX = false;
+        view3DSettings_.sliceY = false;
+        view3DSettings_.sliceZ = kind == 0;
+        view3DSettings_.showIsosurface = kind == 1;
+        if (kind == 1) {
+            view3DSettings_.isoField = view3DSettings_.colourBy;
+        }
+    }
+
     void syncViewportSettings() {
+        applyViewDefaults();
         view3DSettings_.sliceIndexX =
             std::min(view3DSettings_.sliceIndexX,
                      activeFrame_ && activeFrame_->nx
@@ -8002,6 +8303,18 @@ private:
         case ControlOrtho:
             viewport3D_.camera().orthographic =
                 !viewport3D_.camera().orthographic;
+            status_ = viewport3D_.camera().orthographic
+                ? "Isometric: parallel projection, no perspective."
+                : "Perspective projection.";
+            return true;
+        case ControlRotateTool:
+            moveTool_ = false;
+            status_ = "Left drag turns the view around the data.";
+            return true;
+        case ControlMoveTool:
+            moveTool_ = true;
+            status_ = "Left drag slides the view. Holding Shift does the same "
+                      "either way.";
             return true;
         case ControlBox:
             view3DSettings_.showBox = !view3DSettings_.showBox;
@@ -9113,6 +9426,12 @@ private:
     std::optional<std::size_t> draggingViewTrack_;
     Viewport3D viewport3D_;
     Viewport3DSettings view3DSettings_;
+    int viewDefaultsFor_ = -1;
+    bool moveTool_ = false;
+    bool dragSlides_ = false;
+    int transformMode_ = 0;
+    int transformAxis_ = 0;
+    std::string transformText_;
     bool view3D_ = false;
     SliceCache sliceCache_;
     SliceAxis sliceAxis_ = SliceAxis::Z;

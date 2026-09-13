@@ -157,6 +157,65 @@ int main() {
                         "it, so pinRot and pinRotX are being confused");
     }
 
+    {
+        const std::string line =
+            "wing.stl@x=0.6,y=0.5,size=0.3;ball.obj@x=1.6,y=0.5,z=0.4";
+        const std::vector<std::string> entries = splitProfileEntries(line);
+        if (entries.size() != 2)
+            return fail("a profiles line with two models split into " +
+                        std::to_string(entries.size()));
+        if (profileFileOf(entries[1]) != "ball.obj")
+            return fail("the second model's file came back as '" +
+                        profileFileOf(entries[1]) + "'");
+        const BodyPlacement second = readPlacement(line, 2);
+        if (!second.present || !near(second.x, 1.6) || !near(second.z, 0.4))
+            return fail("body 2 read back at the wrong place");
+        const BodyPlacement first = readPlacement(line, 1);
+        if (!first.sized || !near(first.size, 0.3))
+            return fail("body 1 lost its size");
+        if (first.placed && !near(first.z, 0.0))
+            return fail("a model with no z= came back somewhere other than 0");
+        if (readPlacement(line, 3).present)
+            return fail("a body with no entry in profiles reported one");
+    }
+
+    {
+        // Moving one model has to leave everything else in the line exactly as
+        // it was, including a setting these rows do not know about.
+        std::string line =
+            "wing.stl@x=0.6,y=0.5,size=0.3,invert=1;ball.obj@x=1.6,y=0.5";
+        BodyPlacement place = readPlacement(line, 1);
+        place.x += 0.25;
+        place.placed = true;
+        writePlacement(line, 1, place);
+        if (!contains(line, "x=0.85"))
+            return fail("the move did not land: " + line);
+        if (!contains(line, "invert=1"))
+            return fail("a setting the rows do not manage was dropped: " +
+                        line);
+        if (!contains(line, "ball.obj@x=1.6,y=0.5"))
+            return fail("moving one model disturbed another: " + line);
+        if (!near(readPlacement(line, 1).size, 0.3))
+            return fail("the size was lost on the way through: " + line);
+    }
+
+    {
+        std::string line = "wing.stl";
+        BodyPlacement place = readPlacement(line, 1);
+        if (!place.present)
+            return fail("a bare file name is still a model");
+        place.angleY = 15.0;
+        writePlacement(line, 1, place);
+        if (line != "wing.stl@ay=15")
+            return fail("turning a model with no settings yet gave: " + line);
+        place = readPlacement(line, 1);
+        place.angleY = 0.0;
+        writePlacement(line, 1, place);
+        if (!contains(line, "ay=0"))
+            return fail("turning a model back to zero dropped the setting "
+                        "instead of writing it: " + line);
+    }
+
     std::cout << "BodyRowsTests OK\n";
     return 0;
 }
