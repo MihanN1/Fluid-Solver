@@ -4444,6 +4444,28 @@ private:
                     !fileError)
                     loadGeometry(file);
             }
+            // A configuration written by hand names its models in profiles=,
+            // which is a solver argument and nothing this panel draws. Without
+            // this the setup opened on an empty scene and said nothing about
+            // why, while the solver went on to fly a body the screen had never
+            // shown. The first model in the line is the one the preview takes;
+            // model= still wins when the file carries it.
+            if (model.empty() && document.present[Profiles]) {
+                for (const std::string& entry :
+                     splitProfileEntries(sliders_[Profiles].text)) {
+                    const std::string named = profileFileOf(entry);
+                    if (named.empty())
+                        continue;
+                    const std::filesystem::path file =
+                        std::filesystem::u8path(named);
+                    std::error_code fileError;
+                    if (std::filesystem::is_regular_file(file, fileError) &&
+                        !fileError) {
+                        loadGeometry(file);
+                        break;
+                    }
+                }
+            }
         }
         invalidSlider_.reset();
         loadBodyRows();
@@ -8081,8 +8103,66 @@ private:
         }
     }
 
+    // "x=4.2,y=0.35,z=0.9;x=..." - the same row the solver is handed. A point
+    // with no z sits at 0, which is where every microphone was before there
+    // was a third dimension to put one in.
+    std::vector<std::array<float, 3>> microphonePoints() const {
+        std::vector<std::array<float, 3>> out;
+        const std::string& line = sliders_[MicrophoneLine].text;
+        std::size_t start = 0;
+        while (start <= line.size()) {
+            const std::size_t mark = line.find(';', start);
+            const std::string token = line.substr(
+                start, mark == std::string::npos ? std::string::npos
+                                                 : mark - start);
+            std::array<float, 3> point{0.0f, 0.0f, 0.0f};
+            bool named = false;
+            std::size_t at = 0;
+            while (at <= token.size()) {
+                const std::size_t comma = token.find(',', at);
+                const std::string pair = token.substr(
+                    at, comma == std::string::npos ? std::string::npos
+                                                   : comma - at);
+                const std::size_t equals = pair.find('=');
+                if (equals != std::string::npos) {
+                    std::string name = pair.substr(0, equals);
+                    while (!name.empty() &&
+                           std::isspace(
+                               static_cast<unsigned char>(name.front())))
+                        name.erase(name.begin());
+                    while (!name.empty() &&
+                           std::isspace(
+                               static_cast<unsigned char>(name.back())))
+                        name.pop_back();
+                    const double value = std::atof(
+                        pair.substr(equals + 1).c_str());
+                    if (name == "x" || name == "X") {
+                        point[0] = static_cast<float>(value);
+                        named = true;
+                    } else if (name == "y" || name == "Y") {
+                        point[1] = static_cast<float>(value);
+                        named = true;
+                    } else if (name == "z" || name == "Z") {
+                        point[2] = static_cast<float>(value);
+                        named = true;
+                    }
+                }
+                if (comma == std::string::npos)
+                    break;
+                at = comma + 1;
+            }
+            if (named)
+                out.push_back(point);
+            if (mark == std::string::npos)
+                break;
+            start = mark + 1;
+        }
+        return out;
+    }
+
     void syncViewportSettings() {
         applyViewDefaults();
+        view3DSettings_.microphones = microphonePoints();
         view3DSettings_.sliceIndexX =
             std::min(view3DSettings_.sliceIndexX,
                      activeFrame_ && activeFrame_->nx

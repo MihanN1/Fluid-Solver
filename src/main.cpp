@@ -8,13 +8,102 @@
 #endif
 
 #include <cstdint>
+#include <cwchar>
 #include <filesystem>
+#include <fstream>
 #include <iostream>
 #include <string>
 #include <utility>
 #include <vector>
 
 namespace {
+
+#ifdef _WIN32
+// A window that vanishes says nothing about why, and a crash inside a graphics
+// driver looks exactly like a crash inside this program from the outside. This
+// writes what Windows knows at the moment of death - what went wrong, where,
+// and which module that address belongs to - beside the executable, so the
+// next report is one file rather than one sentence.
+std::wstring moduleOfAddress(void* address, std::uintptr_t& offset) {
+    offset = 0;
+    HMODULE module = nullptr;
+    if (!GetModuleHandleExW(
+            GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS |
+                GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+            reinterpret_cast<LPCWSTR>(address), &module) ||
+        module == nullptr) {
+        return L"(no module)";
+    }
+    offset = reinterpret_cast<std::uintptr_t>(address) -
+             reinterpret_cast<std::uintptr_t>(module);
+    wchar_t name[MAX_PATH] = {};
+    if (GetModuleFileNameW(module, name, MAX_PATH) == 0)
+        return L"(unnamed module)";
+    const wchar_t* leaf = std::wcsrchr(name, L'\\');
+    return leaf != nullptr ? leaf + 1 : name;
+}
+
+const wchar_t* exceptionName(DWORD code) {
+    switch (code) {
+    case EXCEPTION_ACCESS_VIOLATION:      return L"access violation";
+    case EXCEPTION_STACK_OVERFLOW:        return L"stack overflow";
+    case EXCEPTION_ILLEGAL_INSTRUCTION:   return L"illegal instruction";
+    case EXCEPTION_INT_DIVIDE_BY_ZERO:    return L"integer divide by zero";
+    case EXCEPTION_FLT_DIVIDE_BY_ZERO:    return L"float divide by zero";
+    case EXCEPTION_PRIV_INSTRUCTION:      return L"privileged instruction";
+    case EXCEPTION_IN_PAGE_ERROR:         return L"in-page error";
+    case EXCEPTION_DATATYPE_MISALIGNMENT: return L"misaligned data";
+    default:                              return L"unhandled exception";
+    }
+}
+
+LONG WINAPI writeCrashReport(EXCEPTION_POINTERS* pointers) {
+    if (pointers == nullptr || pointers->ExceptionRecord == nullptr)
+        return EXCEPTION_CONTINUE_SEARCH;
+
+    wchar_t executable[MAX_PATH] = {};
+    GetModuleFileNameW(nullptr, executable, MAX_PATH);
+    std::filesystem::path report(executable);
+    report.replace_filename(L"Fluid Solver UI crash.txt");
+
+    std::wofstream out(report, std::ios::app);
+    if (!out.is_open())
+        return EXCEPTION_CONTINUE_SEARCH;
+
+    const EXCEPTION_RECORD& record = *pointers->ExceptionRecord;
+    std::uintptr_t offset = 0;
+    const std::wstring module = moduleOfAddress(record.ExceptionAddress,
+                                                offset);
+
+    SYSTEMTIME now{};
+    GetLocalTime(&now);
+    out << L"---- " << now.wYear << L'-' << now.wMonth << L'-' << now.wDay
+        << L' ' << now.wHour << L':' << now.wMinute << L':' << now.wSecond
+        << L" ----\n";
+    out << L"  " << exceptionName(record.ExceptionCode) << L" (0x" << std::hex
+        << record.ExceptionCode << std::dec << L")\n";
+    out << L"  at " << module << L" + 0x" << std::hex << offset << std::dec
+        << L"\n";
+    if (record.ExceptionCode == EXCEPTION_ACCESS_VIOLATION &&
+        record.NumberParameters >= 2) {
+        out << L"  " << (record.ExceptionInformation[0] != 0 ? L"writing"
+                                                             : L"reading")
+            << L" 0x" << std::hex << record.ExceptionInformation[1]
+            << std::dec << L"\n";
+    }
+    out << L"  module bases, so any address above can be placed:\n";
+    const wchar_t* leaf = std::wcsrchr(executable, L'\\');
+    out << L"    " << (leaf != nullptr ? leaf + 1 : executable)
+        << L" base 0x" << std::hex
+        << reinterpret_cast<std::uintptr_t>(GetModuleHandleW(nullptr))
+        << std::dec << L"\n";
+    out << L"    " << module << L" base 0x" << std::hex
+        << (reinterpret_cast<std::uintptr_t>(record.ExceptionAddress) - offset)
+        << std::dec << L"\n";
+    out.close();
+    return EXCEPTION_EXECUTE_HANDLER;
+}
+#endif
 
 std::vector<std::filesystem::path> systemArguments(
     int argc,
@@ -101,6 +190,9 @@ std::filesystem::path executablePath(
 } // namespace
 
 int main(int argc, char* argv[]) {
+#ifdef _WIN32
+    SetUnhandledExceptionFilter(writeCrashReport);
+#endif
     const std::vector<std::filesystem::path> arguments =
         systemArguments(argc, argv);
     if (arguments.size() > 2) {

@@ -65,6 +65,8 @@ struct Viewport3DSettings {
     std::string colourScalar;
     bool trimmedRange = true;
     bool wireframeSolid = false;
+    bool showMicrophones = true;
+    std::vector<std::array<float, 3>> microphones;
 };
 
 struct ScalarVolume {
@@ -215,6 +217,7 @@ private:
     void rebuildVortices();
     void rebuildStreamlines();
     void rebuildTracers();
+    void rebuildMarkers();
     Bounds bounds() const;
     DataRange colourRange(const ScalarVolume& volume) const;
     void appendSurface(
@@ -237,6 +240,7 @@ private:
     Batch vortexLines_;
     Batch streamlines_;
     Batch tracers_;
+    Batch markers_;
     std::vector<Streamline> paths_;
 };
 

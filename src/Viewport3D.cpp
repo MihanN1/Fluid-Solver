@@ -1401,6 +1401,10 @@ void Viewport3D::setSettings(const Viewport3DSettings& settings) {
         previous.sliceIndexZ != settings_.sliceIndexZ) {
         rebuildSlices();
     }
+    if (previous.showMicrophones != settings_.showMicrophones ||
+        previous.microphones != settings_.microphones) {
+        rebuildMarkers();
+    }
     if (colourChanged ||
         previous.showIsosurface != settings_.showIsosurface ||
         previous.isoField != settings_.isoField ||
@@ -1556,6 +1560,38 @@ void Viewport3D::rebuildAll() {
     rebuildVortices();
     rebuildStreamlines();
     rebuildTracers();
+    rebuildMarkers();
+}
+
+// A microphone is a coordinate in a text row and nothing on screen, which
+// makes "is it in the wake or beside it" a question answered by arithmetic
+// rather than by looking. Each one is drawn as a three-axis cross sized
+// against the box, so it reads at any zoom without being mistaken for data.
+void Viewport3D::rebuildMarkers() {
+    markers_.clear();
+    if (!frame_ || !settings_.showMicrophones ||
+        settings_.microphones.empty()) {
+        return;
+    }
+    const Bounds box = bounds();
+    const float dx = box.highX - box.lowX;
+    const float dy = box.highY - box.lowY;
+    const float dz = box.highZ - box.lowZ;
+    const float arm = 0.02f * std::max(std::max(dx, dy), dz);
+    if (!(arm > 0.0f)) {
+        return;
+    }
+    const sf::Color colour(255, 210, 60);
+    markers_.reserve(settings_.microphones.size() * 6u);
+    for (const std::array<float, 3>& point : settings_.microphones) {
+        for (int axis = 0; axis < 3; ++axis) {
+            for (int end = 0; end < 2; ++end) {
+                float corner[3] = {point[0], point[1], point[2]};
+                corner[axis] += end != 0 ? arm : -arm;
+                markers_.add(corner[0], corner[1], corner[2], colour);
+            }
+        }
+    }
 }
 
 void Viewport3D::rebuildBox() {
@@ -2190,6 +2226,8 @@ void Viewport3D::draw(sf::RenderWindow& window, const sf::FloatRect& area) {
             }
         }
     }
+    glLineWidth(2.5f);
+    submit(markers_, GL_LINES);
     glLineWidth(1.5f);
     submit(box_, GL_LINES);
     submit(streamlines_, GL_LINES);
