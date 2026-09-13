@@ -2,6 +2,7 @@
 
 #include <SFML/Graphics/RenderWindow.hpp>
 #include <SFML/OpenGL.hpp>
+#include <SFML/Window/Context.hpp>
 
 #include <algorithm>
 #include <cmath>
@@ -10,8 +11,39 @@
 #include <unordered_map>
 #include <utility>
 
+#ifndef APIENTRY
+#define APIENTRY
+#endif
+
 namespace maskui {
 namespace {
+
+// glVertexPointer's last argument means one of two things, and which one it is
+// depends on state set somewhere else entirely: with no buffer bound it is a
+// pointer into this program's memory, and with one bound it is an OFFSET into
+// that buffer. SFML draws through vertex buffer objects, so whether a buffer
+// is still bound when raw GL runs after it is not this code's to assume.
+//
+// Read as an offset, the address of a std::vector lands some two terabytes
+// into a buffer a few kilobytes long. The driver answers that by faulting
+// inside the vertex fetch code it generates at run time - which belongs to no
+// module, so the crash names neither this program nor even a driver function,
+// and on a machine whose GL does not use buffers here it never happens at all.
+// Unbinding costs two calls a frame and takes the whole class of it away.
+using BindBufferFunction = void(APIENTRY*)(GLenum, GLuint);
+
+void unbindBuffers() {
+    static const BindBufferFunction bindBuffer =
+        reinterpret_cast<BindBufferFunction>(
+            sf::Context::getFunction("glBindBuffer"));
+    if (bindBuffer == nullptr) {
+        return;
+    }
+    constexpr GLenum ARRAY_BUFFER = 0x8892;
+    constexpr GLenum ELEMENT_ARRAY_BUFFER = 0x8893;
+    bindBuffer(ARRAY_BUFFER, 0);
+    bindBuffer(ELEMENT_ARRAY_BUFFER, 0);
+}
 
 const sf::Color VIEW_BACKGROUND{4, 6, 5};
 const sf::Color INVALID_COLOR{255, 0, 180};
@@ -2176,6 +2208,7 @@ void Viewport3D::draw(sf::RenderWindow& window, const sf::FloatRect& area) {
     glMatrixMode(GL_MODELVIEW);
     glLoadMatrixf(view.data());
 
+    unbindBuffers();
     glEnableClientState(GL_VERTEX_ARRAY);
     glEnableClientState(GL_COLOR_ARRAY);
 
