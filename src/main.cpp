@@ -16,6 +16,17 @@
 #include <string>
 #include <utility>
 #include <vector>
+
+#ifdef _WIN32
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#include <windows.h>
+#include <shellapi.h>
+#endif
 #include <chrono>
 
 static void printUsage(const char* exe) {
@@ -136,7 +147,67 @@ static void warnAboutScheme(const Config& cfg) {
                  "convection=upwind.\n\n";
 }
 
+#ifdef _WIN32
+namespace {
+
+// A narrow main() is handed its arguments already squeezed through the ANSI
+// code page, and what that page cannot spell is lost before the program has
+// run a line. A path under "C:\Users\...\Файлы" on a machine whose console is
+// 866 came back as the bytes of one name read as another, so the run created
+// that folder and wrote every frame into it, while the caller looked in the
+// folder it had asked for and found nothing.
+//
+// The wide command line is what Windows actually holds, so it is read straight
+// and handed on as UTF-8. usePathsAsUtf8 then tells the path conversion to
+// stop guessing, because there is no longer anything to guess about.
+class Utf8Arguments {
+public:
+    Utf8Arguments(int argc, char** argv) {
+        int count = 0;
+        LPWSTR* wide = CommandLineToArgvW(GetCommandLineW(), &count);
+        if (wide != nullptr && count > 0) {
+            for (int index = 0; index < count; ++index) {
+                const int bytes = WideCharToMultiByte(
+                    CP_UTF8, 0, wide[index], -1, nullptr, 0, nullptr, nullptr);
+                std::string text;
+                if (bytes > 0) {
+                    text.assign(static_cast<size_t>(bytes), '\0');
+                    WideCharToMultiByte(CP_UTF8, 0, wide[index], -1, &text[0],
+                                        bytes, nullptr, nullptr);
+                    text.pop_back();
+                }
+                storage_.push_back(std::move(text));
+            }
+            usePathsAsUtf8();
+        } else {
+            for (int index = 0; index < argc; ++index)
+                storage_.emplace_back(argv[index]);
+        }
+        if (wide != nullptr)
+            LocalFree(wide);
+        pointers_.reserve(storage_.size() + 1);
+        for (std::string& text : storage_)
+            pointers_.push_back(&text[0]);
+        pointers_.push_back(nullptr);
+    }
+
+    int count() const { return static_cast<int>(storage_.size()); }
+    char** values() { return pointers_.data(); }
+
+private:
+    std::vector<std::string> storage_;
+    std::vector<char*> pointers_;
+};
+
+} // namespace
+#endif
+
 int main(int argc, char** argv) {
+#ifdef _WIN32
+    Utf8Arguments arguments(argc, argv);
+    argc = arguments.count();
+    argv = arguments.values();
+#endif
     (void)kBuildMarkersKeepAlive;
     std::cout << "=== Fluid Solver " << CFD_RELEASE_VERSION << " ("
               << CFD_BUILD_FEATURES << ") ===\n\n";

@@ -4,6 +4,7 @@
 #include "AmrDriver.hpp"
 #include "AmrHierarchy.hpp"
 
+#include "AppPaths.hpp"
 #include "Progress.hpp"
 #include "Runtime.hpp"
 
@@ -314,7 +315,10 @@ CompressibleRun::CompressibleRun(const Config& configuration, Mesh& meshIn)
     dx = cfg.Lx / nx;
     dy = cfg.Ly / ny;
     dz = cfg.Lz / nz;
-    outputPath = narrowToPath(cfg.outputDir);
+    // Through resolveOutputDir for the same reason the projection solver goes
+    // through it: an install directory a standard user cannot write to says so
+    // and names where the frames went instead, rather than failing per frame.
+    outputPath = resolveOutputDir(narrowToPath(cfg.outputDir));
 
     gas.gamma1 = cfg.gamma;
     gas.R1 = cfg.R;

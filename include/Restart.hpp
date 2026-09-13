@@ -55,6 +55,11 @@ struct RestartData {
 // assumes 1251 for both. Anything with Cyrillic in it therefore quietly stops
 // existing. These two are the only sane way in and out.
 // Elsewhere they are a plain path <-> string conversion.
+// Say that every narrow path from here on is UTF-8 and is not to be guessed
+// at. main() calls this on Windows once it has read the real wide command
+// line, which is the only place the true spelling of a path exists.
+void usePathsAsUtf8();
+
 std::filesystem::path narrowToPath(const std::string& text);
 std::string pathToConsole(const std::filesystem::path& path);
 

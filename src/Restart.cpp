@@ -256,6 +256,14 @@ std::string lowerExtension(const std::filesystem::path& path) {
 }
 }
 
+namespace {
+bool pathsAreUtf8 = false;
+}
+
+void usePathsAsUtf8() {
+    pathsAreUtf8 = true;
+}
+
 std::filesystem::path narrowToPath(const std::string& text) {
 #ifdef _WIN32
     // Drag and drop, tab completion and copy-paste all like to leave a
@@ -266,6 +274,23 @@ std::filesystem::path narrowToPath(const std::string& text) {
            (trimmed.back() == '\\' || trimmed.back() == '/') &&
            trimmed[trimmed.size() - 2] != ':') {
         trimmed.pop_back();
+    }
+
+    // When the spelling is known there is nothing to guess at, and guessing is
+    // how a run ends up writing its frames into a folder named for the bytes
+    // of the one that was asked for rather than into that one. Only the
+    // command line can say this; a path read out of a file still goes through
+    // the loop below.
+    if (pathsAreUtf8) {
+        const int n = MultiByteToWideChar(CP_UTF8, 0, trimmed.c_str(),
+                                          static_cast<int>(trimmed.size()),
+                                          nullptr, 0);
+        if (n > 0) {
+            std::wstring wide(static_cast<size_t>(n), L'\0');
+            MultiByteToWideChar(CP_UTF8, 0, trimmed.c_str(),
+                                static_cast<int>(trimmed.size()), &wide[0], n);
+            return std::filesystem::path(wide);
+        }
     }
 
     std::filesystem::path fallback;

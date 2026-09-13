@@ -2443,6 +2443,28 @@ and it is read and checked for that entry point before it goes into an archive:
 if no copy on the machine has it, the build says so in yellow and lists it as a
 problem instead of publishing a binary that cannot start.
 
+**Frames written into a folder named after the bytes of the one that was
+asked for.** A narrow `main()` on Windows is handed its arguments already
+squeezed through the ANSI code page, and the path conversion then tried the
+console page, the ANSI page and UTF-8 in turn and took the first spelling that
+existed on disk. Given an output directory under `C:\Users\...\Файлы` it
+picked the wrong one, `create_directories` obligingly made it, and a run wrote
+every frame and every `.wav` into `C:\Users\...\╘рщы√\...` while the UI looked
+in the folder it had asked for, found nothing, and reported that the solver
+had produced no frames. The solver meanwhile said it had saved them, and it
+had — somewhere else.
+
+The wide command line is what Windows actually holds, so it is read directly
+with `GetCommandLineW` and handed on as UTF-8, and the conversion is told to
+stop guessing. Nothing is inferred from a code page any more. The guessing
+loop stays for paths that come out of a file rather than off the command line,
+where there is no wide original to consult.
+
+While in there, the compressible solver resolves its output directory through
+`resolveOutputDir` like the projection solver always did, so an install folder
+a standard user cannot write to says so and names where the frames went
+instead of failing once per frame.
+
 **A Linux CUDA build that segfaulted before printing a character.** Not new at
 0.2 — it reproduced on every CUDA Linux binary in the tree, on `--hardware`,
 before any output. `-static-libstdc++` does not name an archive; it turns the
