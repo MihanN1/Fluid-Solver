@@ -2410,6 +2410,14 @@ widget), `Ctrl+C`/`Ctrl+X`/`Ctrl+V` on rows or on the whole configuration,
 Bugs that were live in 0.2 and are not now. Several of these were shipping
 silently, which is the only kind worth a section.
 
+**The setup preview showed a cut that a volume run never makes.** It draws the
+model, a green quad for the section plane and an orange line where the two
+meet, which is the whole story at `nz = 1`. Above that the solver voxelises
+the model whole and cuts nothing, so the plane and the line were a picture of
+something that does not happen - and the first question they raise is where
+the body went. They are drawn only for a plane run now; a volume gets the
+model, the slice angles still turning it, and a legend that says so.
+
 **A run with a moving body could not be opened at all.** The frame series is
 checked for consistency before it is shown — same grid, same spacing, same
 data association — and the check also required the solid mask to be identical
@@ -2437,15 +2445,28 @@ address in the heap and a stack that was `nvoglv64.dll` from top to bottom. On
 a machine whose GL does not use a buffer at that point it never happened at
 all, which is why it looked like a graphics-driver bug rather than ours.
 
-There is a second reason not to hand a driver a pointer into this program's
-memory, and it is the one that kept the crash alive after the binding was
-dealt with: a driver with a worker thread of its own is free to read those
-arrays after the call that named them has returned. The batches are rebuilt
-between frames, so by then that memory holds something else. Every batch is
-copied into a buffer object the driver owns now, and when it chooses to read
-stopped being a question this program has to answer. The client-array path
-remains for a GL too old to have buffer objects, where there is no worker
-thread to race with either.
+Every batch is copied into a buffer object the driver owns now rather than
+named by a pointer into this program's memory, which closes that door for
+good, and the client-array path remains only for a GL too old to have buffer
+objects.
+
+But the pointer this program passed was never the one that killed it. SFML's
+own state reset enables `GL_TEXTURE_COORD_ARRAY` and points it at the vertex
+data of whatever it drew last, and an array left enabled is still fetched:
+every `glDrawArrays` after that read one texture coordinate per vertex from an
+address that had belonged to a temporary several frames ago. The viewport
+enables the two arrays it fills and had never thought to disable the four it
+does not. Where the dead pointer still happens to be mapped - a software GL,
+another machine, a different frame - nothing happens at all, which is why this
+survived every test that was not run on the hardware it fails on.
+
+It was found by making the failure describe itself: `FLUID_UI_GL_TRACE=1` puts
+a `glFinish` after every drawing step and writes the step's name down first, so
+the driver stops being allowed to defer the crash to a buffer swap where
+nothing of ours is on the stack, and the last line of `gl-trace.txt` is the
+call that did not survive. Two lines in, it was the first real draw of the
+frame - not any particular layer, which is what said the fault was in the state
+around the draw rather than in anything being drawn.
 
 **A 3D viewport drawn with no depth buffer.** The window was created without
 `sf::ContextSettings`, and SFML asks for zero depth bits unless it is told
