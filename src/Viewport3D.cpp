@@ -8,6 +8,9 @@
 #include <cmath>
 #include <cstddef>
 #include <cstdlib>
+#include <fstream>
+#include <ios>
+#include <cstdlib>
 #include <limits>
 #include <unordered_map>
 #include <utility>
@@ -72,6 +75,38 @@ void unbindBuffers() {
     }
     gl.bind(ARRAY_BUFFER, 0);
     gl.bind(ELEMENT_ARRAY_BUFFER, 0);
+}
+
+// A driver is free to queue what it is told and execute it later, which is why
+// a bad call shows up as a crash inside a buffer swap with nothing of ours on
+// the stack. Setting FLUID_UI_GL_TRACE=1 makes every step wait for the driver
+// to finish it and writes the name down first, so the last line of the file is
+// the call that did not survive. It costs a stall per batch, which is why it
+// is off unless asked for.
+bool glTracing() {
+    static const bool on = [] {
+        const char* value = std::getenv("FLUID_UI_GL_TRACE");
+        return value != nullptr && value[0] != '\0' && value[0] != '0';
+    }();
+    return on;
+}
+
+void traceStep(const char* what, std::size_t vertices) {
+    std::ofstream out("gl-trace.txt", std::ios::app);
+    if (!out.is_open()) {
+        return;
+    }
+    out << what;
+    if (vertices != 0) {
+        out << ", " << vertices << " vertices";
+    }
+    glFinish();
+    const GLenum error = glGetError();
+    if (error != GL_NO_ERROR) {
+        out << "  -> GL error 0x" << std::hex << error << std::dec;
+    }
+    out << "\n";
+    out.flush();
 }
 
 const sf::Color VIEW_BACKGROUND{4, 6, 5};
@@ -2250,9 +2285,19 @@ void Viewport3D::draw(sf::RenderWindow& window, const sf::FloatRect& area) {
     }
     const bool throughBuffers = gl.ready() && positionBuffer_ != 0;
 
-    const auto submit = [&](const Batch& batch, GLenum mode) {
+    const bool tracing = glTracing();
+    if (tracing) {
+        traceStep(throughBuffers ? "--- frame, drawing through buffer objects"
+                                 : "--- frame, drawing from client memory",
+                  0u);
+    }
+
+    const auto submit = [&](const Batch& batch, GLenum mode, const char* what) {
         if (batch.empty() ||
             !boxIsVisible(frustum, batch.lowest, batch.highest)) {
+            if (tracing) {
+                traceStep(what, 0u);
+            }
             return;
         }
         if (throughBuffers) {
@@ -2277,18 +2322,21 @@ void Viewport3D::draw(sf::RenderWindow& window, const sf::FloatRect& area) {
         }
         glDrawArrays(
             mode, 0, static_cast<GLsizei>(batch.vertexCount()));
+        if (tracing) {
+            traceStep(what, batch.vertexCount());
+        }
     };
 
     if (settings_.wireframeSolid) {
         glPolygonMode(GL_FRONT_AND_BACK, GL_LINE);
     }
-    submit(solid_, GL_TRIANGLES);
+    submit(solid_, GL_TRIANGLES, "solid");
     if (settings_.wireframeSolid) {
         glPolygonMode(GL_FRONT_AND_BACK, GL_FILL);
     }
-    submit(slices_, GL_TRIANGLES);
-    submit(isosurface_, GL_TRIANGLES);
-    submit(vortexSurface_, GL_TRIANGLES);
+    submit(slices_, GL_TRIANGLES, "slices");
+    submit(isosurface_, GL_TRIANGLES, "isosurface");
+    submit(vortexSurface_, GL_TRIANGLES, "vortexSurface");
 
     glShadeModel(GL_SMOOTH);
     glLineWidth(1.0f);
@@ -2311,18 +2359,18 @@ void Viewport3D::draw(sf::RenderWindow& window, const sf::FloatRect& area) {
             const Vector3 centre{
                 centreAxis[0], centreAxis[1], centreAxis[2]};
             if (dot(normal, basis.eye - centre) < 0.0f) {
-                submit(grid_[static_cast<std::size_t>(face)], GL_LINES);
+                submit(grid_[static_cast<std::size_t>(face)], GL_LINES, "grid");
             }
         }
     }
     glLineWidth(2.5f);
-    submit(markers_, GL_LINES);
+    submit(markers_, GL_LINES, "markers");
     glLineWidth(1.5f);
-    submit(box_, GL_LINES);
-    submit(streamlines_, GL_LINES);
+    submit(box_, GL_LINES, "box");
+    submit(streamlines_, GL_LINES, "streamlines");
     glLineWidth(3.0f);
-    submit(vortexLines_, GL_LINES);
-    submit(tracers_, GL_LINES);
+    submit(vortexLines_, GL_LINES, "vortexLines");
+    submit(tracers_, GL_LINES, "tracers");
     glLineWidth(1.0f);
 
     glDisableClientState(GL_COLOR_ARRAY);
