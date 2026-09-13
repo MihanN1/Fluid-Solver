@@ -2410,6 +2410,17 @@ widget), `Ctrl+C`/`Ctrl+X`/`Ctrl+V` on rows or on the whole configuration,
 Bugs that were live in 0.2 and are not now. Several of these were shipping
 silently, which is the only kind worth a section.
 
+**A run with a moving body could not be opened at all.** The frame series is
+checked for consistency before it is shown — same grid, same spacing, same
+data association — and the check also required the solid mask to be identical
+in every frame. It was written when bodies never moved. `bodyMotion` rewrites
+that mask on every step by design, so the first series with a body travelling
+through it was refused whole, with "VTK frame series changes association,
+grid, or solid mask" naming the one thing about it that was supposed to
+change. The mask is data now, not layout; only its size still has to match the
+grid. A test flies a body across three frames and fails if any of them is
+refused.
+
 **A 3D viewport drawn with no depth buffer.** The window was created without
 `sf::ContextSettings`, and SFML asks for zero depth bits unless it is told
 otherwise. `Viewport3D` checks `depthBits > 0` and falls back to
