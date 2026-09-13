@@ -2421,6 +2421,23 @@ change. The mask is data now, not layout; only its size still has to match the
 grid. A test flies a body across three frames and fails if any of them is
 refused.
 
+**The 3D viewport killed the process on some machines and not others.** It
+draws through client-side vertex arrays, where the last argument of
+`glVertexPointer` is a pointer into this program's memory - unless a vertex
+buffer object happens to be bound, in which case the same argument silently
+becomes an OFFSET into that buffer. SFML draws through buffer objects, so
+whether one was still bound when the raw GL ran after it was never this code's
+to assume.
+
+Read as an offset, the address of a `std::vector` is about two terabytes into
+a buffer a few kilobytes long. The driver answered that by faulting inside the
+vertex-fetch code it generates at run time, which belongs to no module: the
+crash report named neither this program nor even a driver function, just an
+address in the heap and a stack that was `nvoglv64.dll` from top to bottom. On
+a machine whose GL does not use a buffer at that point it never happened at
+all, which is why it looked like a graphics-driver bug rather than ours. The
+viewport unbinds both buffer targets before it sets a single pointer now.
+
 **A 3D viewport drawn with no depth buffer.** The window was created without
 `sf::ContextSettings`, and SFML asks for zero depth bits unless it is told
 otherwise. `Viewport3D` checks `depthBits > 0` and falls back to
