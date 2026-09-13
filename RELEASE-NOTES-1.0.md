@@ -2435,8 +2435,17 @@ vertex-fetch code it generates at run time, which belongs to no module: the
 crash report named neither this program nor even a driver function, just an
 address in the heap and a stack that was `nvoglv64.dll` from top to bottom. On
 a machine whose GL does not use a buffer at that point it never happened at
-all, which is why it looked like a graphics-driver bug rather than ours. The
-viewport unbinds both buffer targets before it sets a single pointer now.
+all, which is why it looked like a graphics-driver bug rather than ours.
+
+There is a second reason not to hand a driver a pointer into this program's
+memory, and it is the one that kept the crash alive after the binding was
+dealt with: a driver with a worker thread of its own is free to read those
+arrays after the call that named them has returned. The batches are rebuilt
+between frames, so by then that memory holds something else. Every batch is
+copied into a buffer object the driver owns now, and when it chooses to read
+stopped being a question this program has to answer. The client-array path
+remains for a GL too old to have buffer objects, where there is no worker
+thread to race with either.
 
 **A 3D viewport drawn with no depth buffer.** The window was created without
 `sf::ContextSettings`, and SFML asks for zero depth bits unless it is told
