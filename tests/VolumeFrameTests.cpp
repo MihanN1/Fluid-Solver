@@ -47,7 +47,8 @@ void writeVolumeFrame(
     std::size_t nx,
     std::size_t ny,
     std::size_t nz,
-    bool legacyFlatHeader) {
+    bool legacyFlatHeader,
+    std::size_t solidI = 2) {
     std::ofstream output(path, std::ios::binary | std::ios::trunc);
     output << "# vtk DataFile Version 3.0\n"
            << "CFD-Solver-2D output, step 12\n"
@@ -69,7 +70,8 @@ void writeVolumeFrame(
     for (std::size_t k = 0; k < nz; ++k)
         for (std::size_t j = 0; j < ny; ++j)
             for (std::size_t i = 0; i < nx; ++i)
-                writeWord(output, (i == 2 && j == 1 && k == 1) ? 1u : 0u);
+                writeWord(output, (i == solidI && j == 1 && k == 1) ? 1u
+                                                                     : 0u);
 
     output << "\nVECTORS velocity float\n";
     for (std::size_t k = 0; k < nz; ++k)
@@ -891,6 +893,58 @@ void testViewportBuilds() {
 
 } // namespace
 
+// A body that travels rewrites the solid mask on every step, so a series of
+// frames from such a run is a series whose masks all differ. Requiring them
+// equal refused the whole run with "the series changes the solid mask", which
+// is the one thing about it that was supposed to change.
+void testMovingBodySeries(const std::filesystem::path& root) {
+    const std::filesystem::path folder = root / "moving";
+    std::error_code ec;
+    std::filesystem::create_directories(folder, ec);
+    for (std::size_t step = 0; step < 3; ++step) {
+        writeVolumeFrame(
+            folder / ("solution_" + std::to_string(step * 10) + ".vtk"),
+            8, 6, 4, false, 1 + step);
+    }
+
+    const std::vector<std::filesystem::path> paths =
+        maskui::VtkFrameParser::discoverFrames(folder);
+    check(paths.size() == 3, "a three frame series was not discovered");
+
+    bool accepted = true;
+    std::string why;
+    try {
+        const maskui::VtkSeriesCatalog catalog =
+            maskui::VtkFrameParser::indexSeries(paths, false);
+        check(catalog.frames.size() == 3,
+              "frames of a moving body were dropped from the series");
+        check(catalog.rejected.empty(),
+              "a frame of a moving body was rejected while indexing");
+        maskui::VtkFrameParser::validateCompatibility(
+            maskui::VtkFrameParser::parse(catalog.frames.front().sourcePath),
+            catalog.activeFrame);
+    } catch (const std::exception& exception) {
+        accepted = false;
+        why = exception.what();
+    }
+    check(accepted, "a moving body made the series incompatible: " + why);
+
+    // The grid itself still has to hold still.
+    const std::filesystem::path other = folder / "solution_40.vtk";
+    writeVolumeFrame(other, 8, 6, 5, false);
+    bool refused = false;
+    try {
+        maskui::VtkFrameParser::validateCompatibility(
+            maskui::VtkFrameParser::parse(
+                folder / "solution_0.vtk"),
+            maskui::VtkFrameParser::parse(other));
+    } catch (const std::exception&) {
+        refused = true;
+    }
+    check(refused, "a series that changes its grid was accepted");
+    std::filesystem::remove(other, ec);
+}
+
 int main() {
     const auto unique = std::chrono::high_resolution_clock::now()
                             .time_since_epoch()
@@ -910,6 +964,7 @@ int main() {
     testStreamlines();
     testPicking();
     testViewportBuilds();
+    testMovingBodySeries(root);
 
     std::error_code cleanupError;
     std::filesystem::remove_all(root, cleanupError);

@@ -1705,7 +1705,7 @@ bool sameSeriesLayout(
         frame.spacingX == reference.spacingX &&
         frame.spacingY == reference.spacingY &&
         frame.spacingZ == reference.spacingZ &&
-        frame.solid == reference.solid;
+        frame.solid.size() == reference.solid.size();
 }
 
 void includeRange(DataRange& combined, const DataRange& range) {

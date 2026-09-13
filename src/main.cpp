@@ -100,6 +100,41 @@ LONG WINAPI writeCrashReport(EXCEPTION_POINTERS* pointers) {
     out << L"    " << module << L" base 0x" << std::hex
         << (reinterpret_cast<std::uintptr_t>(record.ExceptionAddress) - offset)
         << std::dec << L"\n";
+
+    // Not a call stack - a sweep of the stack memory for values that land
+    // inside a loaded module, which is what return addresses look like. It
+    // reads over the top of local variables that happen to resemble one, so
+    // the order is a hint rather than a sequence. It needs no dbghelp and it
+    // survives the case this was written for, where the instruction pointer
+    // belongs to no module at all and there is nothing else to go on.
+    if (pointers->ContextRecord != nullptr) {
+#if defined(_M_X64) || defined(__x86_64__)
+        const std::uintptr_t stackPointer = pointers->ContextRecord->Rsp;
+#elif defined(_M_IX86) || defined(__i386__)
+        const std::uintptr_t stackPointer = pointers->ContextRecord->Esp;
+#elif defined(_M_ARM64) || defined(__aarch64__)
+        const std::uintptr_t stackPointer = pointers->ContextRecord->Sp;
+#else
+        const std::uintptr_t stackPointer = 0;
+#endif
+        if (stackPointer != 0) {
+            out << L"  addresses on the stack that belong to a module:\n";
+            int found = 0;
+            for (int slot = 0; slot < 512 && found < 24; ++slot) {
+                void** cell = reinterpret_cast<void**>(
+                    stackPointer + slot * sizeof(void*));
+                if (IsBadReadPtr(cell, sizeof(void*)))
+                    break;
+                std::uintptr_t which = 0;
+                const std::wstring name = moduleOfAddress(*cell, which);
+                if (name == L"(no module)" || name == L"(unnamed module)")
+                    continue;
+                out << L"    " << name << L" + 0x" << std::hex << which
+                    << std::dec << L"\n";
+                ++found;
+            }
+        }
+    }
     out.close();
     return EXCEPTION_EXECUTE_HANDLER;
 }
