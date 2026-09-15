@@ -509,7 +509,8 @@ one cell deep with `w` zero.
 ### 13. Looking at the result
 
 **In the UI.** A volume opens in the 3D viewport, a flat frame in the old 2D
-one, and `V` switches between them at any time.
+one, and `V` switches between them at any time. The input parameter panel is
+not drawn on this page — it belongs to Setup, and the picture takes the width.
 
 * **3D viewport.** Left drag turns the view, middle drag slides it, wheel
   zooms. `Rotate` and `Move` in the bar, or `R` and `G`, decide which of the
@@ -521,12 +522,21 @@ one, and `V` switches between them at any time.
   projection, which is the one to read a shock angle off. Numpad 4 / 6 / 8 / 2
   turn in 15 degree steps and Numpad 9 flips to the opposite side. The bar also
   toggles the box, the cell grid, the solid surface and its wireframe, the
-  three slice planes, the isosurface, vortices, streamlines and tracers, and
-  cycles what everything is coloured by (speed → pressure → u → v → w →
-  vorticity → Q).
-* **A volume opens on its isosurface with the slice planes off**, a flat frame
+  three slice planes, the cloud, the isosurface, vortices, streamlines and
+  tracers, and cycles what everything is coloured by (speed → pressure → u → v
+  → w → vorticity → Q → every scalar the frame carries, `density` included).
+  Resting the cursor on any of those buttons says in a sentence what the layer
+  is.
+* **A volume opens on the Cloud with the slice planes off**, a flat frame
   opens on its one plane. Turn `Slice X/Y/Z` on when you want a cut; it stays
   on until you load a result of the other kind.
+* **Cloud** paints every cell that differs from the still air as a translucent
+  coloured block and draws nothing where the field is flat, which is most of a
+  box with one body in it. It is the closest thing here to a schlieren
+  photograph: the shock cone, the wake and the vortices stand in clear air with
+  no level to choose and no plane to position. `C` toggles it, `[` and `]` or
+  the slider beside the button set how solid. Colour it by `density` for a
+  shock.
 * **Vortices** are the Q criterion drawn as an isosurface with the vortex core
   lines through it. Turn it on, drag the Q slider until the structures separate
   from the noise. This is the answer to "where are the vortices" that a colour
@@ -2229,10 +2239,11 @@ gives OpenGL 1.1 with vertex arrays and `pushGLStates()`/`popGLStates()` is how
 raw GL and SFML drawing share a window, so the new dependency list is empty.
 What it draws, each on its own button: the domain **Box**, the cell **Grid**,
 the body's **Solid** surface or **Wire**frame, **Slice X/Y/Z** planes moved
-through the volume on their own track, **Iso**surfaces by marching cubes,
-**Vortices** as a Q-criterion surface with their **core lines**, 3D **Streams**
-with animated **Tracers**, a **Colour** field (pressure, speed, u, v, w,
-vorticity, Q, or any scalar the frame carries), **Ortho**graphic or
+through the volume on their own track, the translucent **Cloud**,
+**Iso**surfaces by marching cubes, **Vortices** as a Q-criterion surface with
+their **core lines**, 3D **Streams** with animated **Tracers**, a **Colour**
+field (pressure, speed, u, v, w, vorticity, Q, and every named scalar the frame
+carries — `density` among them, when the run wrote it), **Ortho**graphic or
 perspective, **Frame all**, and the six axis views.
 
 Everything is built into vertex arrays **once per frame change**, not per
@@ -2362,14 +2373,87 @@ nothing is written in between. That is strictly better and it is also the only
 thing that can be right: a section adapter is a flat outline, and handing one to
 a voxeliser would describe a body with no thickness.
 
-**A volume opens on its isosurface, not on a slice plane.** A plane through a
+**A volume opens on the cloud, not on a slice plane.** A plane through a
 volume is one cut out of hundreds and there is no reason for it to be the first
 thing you see; on a flat frame the same plane is the entire result and there is
-nothing else to show. So the two open differently — planes off and the
-isosurface on for a volume, `Slice Z` on and the isosurface off for a single
-plane — and the choice is made once per kind of result rather than per frame,
-so switching a plane back on by hand sticks until a result of the other kind is
-loaded.
+nothing else to show. So the two open differently — planes off and the cloud on
+for a volume, `Slice Z` on and everything else off for a single plane — and the
+choice is made once per kind of result rather than per frame, so switching a
+plane back on by hand sticks until a result of the other kind is loaded.
+
+**The Cloud: the whole volume at once, painted see-through.** The layers above
+it each answer one question and hide the rest of the field to do it. A slice is
+one plane out of hundreds. An isosurface is one *number* out of the field — a
+skin drawn exactly where the value equals the level, so a shock arrives as a
+crumpled sheet with holes wherever the level falls between two cells, and the
+way to find out whether it is right is to drag a slider until it looks like
+something. Neither is a picture of the flow.
+
+`Cloud` draws the flow. Every cell becomes a little coloured block you can see
+through, and how solid it is comes from how far that cell's value sits from the
+value that fills the rest of the box. What is left is the shock cone, the wake
+and the vortices standing in clear air, which is what a schlieren photograph of
+the same flow looks like and is why that is the comparison to make.
+
+Three things make it cheap enough to turn on. The **background is found, not
+assumed**: the field is histogrammed and the fullest bin is taken as the still
+air, because in a box with one body in it the undisturbed reading is by a wide
+margin the most common one — so the same layer works for pressure in a shock
+run and for a passive scalar in a plume without a number being set. Cells at
+that value are not drawn at all, which for a supersonic flyby is about
+ninety-six per cent of them. And what survives is kept as **cells rather than
+triangles**: translucent things have to be drawn far to near or the near ones
+blend into a background that has not been laid down yet, and which way that is
+changes every time the camera crosses onto another axis; re-sampling the field
+at that moment would cost a second, re-sorting cells that are already chosen
+costs a millisecond. The sort is by counting, not comparison, because the key
+is already a cell index. The camera stays smooth while it turns.
+
+Two details that are only visible when they are missing. Seen from a corner a
+line of sight crosses more of each cell than it does head on, so the same cloud
+ought to look denser from there; it is corrected for, and without the
+correction the picture visibly fades every time you rotate away from an axis
+and brightens as you come back. And the budget is spent from the top: when more
+cells deserve drawing than the two hundred thousand the layer allows, it is the
+faintest that go, not the last ones the loop happened to reach.
+
+The slider beside the button sets how solid, from a tenth to eight on a log
+scale — `[` and `]` do the same from the keyboard, `C` toggles the layer. Cells
+inside the body are never painted; that is the `Solid` layer's job and it is
+drawn opaque underneath. The strength is remembered between sessions.
+
+**The Results page is the picture and nothing else.** The right-hand column of
+input parameters is a Setup thing: on Results it is three hundred pixels of
+numbers describing a run that has already happened, that nothing on the page
+can change, taken off the only thing on the page anyone is looking at. It is
+not drawn there, and the viewport takes the width. Switching pages relays out
+the window, so the picture is the right size the moment you arrive rather than
+at the next resize.
+
+**The setup preview has a camera now.** It used to be drawn from a fixed angle
+— three quarters on and a little above, which is a fine angle for a first
+glance and no use at all for *is the nose really pointing the way it flies*,
+which is the one question that picture exists to answer, and the one that costs
+twenty minutes of solver time to get wrong. Middle drag turns it, `Shift` and
+middle drag slides it, the wheel zooms, `Home` puts it back. Left and right
+drag are untouched and still turn the **model**: the camera changes what you
+see and the model changes what gets simulated, and both are wanted about
+equally often. A muted line along the bottom of the preview says so, because a
+camera nobody knows about is the same as no camera.
+
+**Every 3D layer explains itself.** `Iso`, `Q` and `Streams` are what these
+things are called in every solver that draws them, which is no help whatever
+the first time you meet one, and the button is six letters wide with nowhere to
+say more. Resting the cursor on any of them puts a sentence over the top left
+of the picture: what the layer is, in words, and what the slider beside it
+does. "A skin drawn through every point where the field equals one chosen
+value, like a contour line but in 3D." "Q shows where the flow spins faster
+than it shears, which is what a vortex is."
+
+**The 2D colour controls are gone while the 3D view is up.** `Pressure`,
+`Velocity`, `Field`, `Vectors` and `Range` colour the flat view; the 3D view
+colours itself from its own `Colour` button. Leaving both on screen offered two
+ways to choose the same thing, one of which did nothing.
 
 **Navigating it is Blender's, because that is the one everybody already
 knows.** Left drag turns the view, middle drag slides it, the wheel zooms.
@@ -2396,9 +2480,11 @@ was computed with the body where it was, so the body does not jump — the
 
 **Keyboard, because the window used to answer to the mouse and nothing else:**
 `V` to swap views, `F` to frame, numpad 1/3/7 for front/right/top with `Ctrl`
-for the other three, 5 for isometric, 4/6/8/2 to turn in steps, 9 to flip, `G`
-and `R` to move and turn the selected body by a typed amount, arrows and
-`Home`/`End`/`Space` through the frame series, and in the setup view
+for the other three, 5 for isometric, 4/6/8/2 to turn in steps, 9 to flip, `C`
+for the cloud with `[` and `]` for how solid it is, `G` and `R` to move and
+turn the selected body by a typed amount, arrows and
+`Home`/`End`/`Space` through the frame series, and in the setup view `Home` to
+put the preview camera back,
 `Ctrl+Z`/`Ctrl+Y` (one undo stack over the whole setup state, not one per
 widget), `Ctrl+C`/`Ctrl+X`/`Ctrl+V` on rows or on the whole configuration,
 `Ctrl+F` to filter the panel, and `Ctrl+S`/`Ctrl+O` for `.cfdui` files.
