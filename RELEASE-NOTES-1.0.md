@@ -535,8 +535,14 @@ not drawn on this page — it belongs to Setup, and the picture takes the width.
   box with one body in it. It is the closest thing here to a schlieren
   photograph: the shock cone, the wake and the vortices stand in clear air with
   no level to choose and no plane to position. `C` toggles it, `[` and `]` or
-  the slider beside the button set how solid. Colour it by `density` for a
-  shock.
+  the slider beside the button set how solid.
+* **Cloud and Iso are a switch.** One at a time — both drawn at once is a fog
+  with a skin inside it. `C` and `I`, or the two buttons.
+* **Density**, the button or `D`, colours everything by the gas density, which
+  is what makes a shock look like a shock rather than a smear. A compressible
+  run writes it into every frame with nothing asked for, and a compressible
+  volume opens on it. In the flat view the `Field` button does the same in one
+  press and says which field it is showing.
 * **Vortices** are the Q criterion drawn as an isosurface with the vortex core
   lines through it. Turn it on, drag the Q slider until the structures separate
   from the noise. This is the answer to "where are the vortices" that a colour
@@ -2422,6 +2428,29 @@ scale — `[` and `]` do the same from the keyboard, `C` toggles the layer. Cell
 inside the body are never painted; that is the `Solid` layer's job and it is
 drawn opaque underneath. The strength is remembered between sessions.
 
+**`Cloud` and `Iso` are one switch, not two toggles.** They are two answers to
+the same question — what does the inside of this volume look like — drawn on
+top of each other, and both on is a translucent fog with a skin buried in it
+and no way to read either. Turning one on turns the other off; pressing the one
+already on turns it off and leaves the volume bare. `C` and `I` from the
+keyboard.
+
+**Density is one press away.** A compressible run writes density into every
+frame — not as an `extraFields` extra, as one of the two scalars the writer
+puts down before anything else — and until now the window had no route to it
+that did not involve clicking `Colour` eight times. There is a **Density**
+button in the 3D bar whenever the frame carries one, `D` does the same from the
+keyboard, and a compressible volume now *opens* coloured by density. Speed
+shows a shock as a smear and density shows it as an edge; that is the whole
+reason to want it. The flat view reaches it from its own `Field` button, which
+labels itself with the name it is showing.
+
+The `Colour` cycle itself was reordered to put the frame's own named fields
+third rather than eighth — speed, pressure, then whatever the run actually
+wrote, then u, v, w, vorticity and Q. The last five are derived from the
+velocity vector, which is always there, so they were never the ones that were
+hard to find.
+
 **The Results page is the picture and nothing else.** The right-hand column of
 input parameters is a Setup thing: on Results it is three hundred pixels of
 numbers describing a run that has already happened, that nothing on the page
@@ -2481,7 +2510,8 @@ was computed with the body where it was, so the body does not jump — the
 **Keyboard, because the window used to answer to the mouse and nothing else:**
 `V` to swap views, `F` to frame, numpad 1/3/7 for front/right/top with `Ctrl`
 for the other three, 5 for isometric, 4/6/8/2 to turn in steps, 9 to flip, `C`
-for the cloud with `[` and `]` for how solid it is, `G` and `R` to move and
+for the cloud, `I` for the isosurface, `[` and `]` for how solid the cloud is,
+`D` for density, `G` and `R` to move and
 turn the selected body by a typed amount, arrows and
 `Home`/`End`/`Space` through the frame series, and in the setup view `Home` to
 put the preview camera back,
@@ -2495,6 +2525,18 @@ widget), `Ctrl+C`/`Ctrl+X`/`Ctrl+V` on rows or on the whole configuration,
 
 Bugs that were live in 0.2 and are not now. Several of these were shipping
 silently, which is the only kind worth a section.
+
+**Every frame of every compressible run was called uncontinuable.** A frame
+carries the state a run can be picked up from, and the window decides whether
+`Continue run` is available by looking for it. It looked for `uFace`, `vFace`
+and `pRaw` — the face velocities and raw pressure an *incompressible* run
+leaves behind — and a compressible run leaves the conserved variables instead,
+`stateRho` and the four with it. So the check failed on every compressible
+frame, the button was greyed out, and each frame carried "RestartData state
+arrays do not match the visible grid" as a warning. The solver's own reader
+restarts from those arrays perfectly well and always has; only the window did
+not know what it was looking at. It knows now, and the arrays are still
+size-checked against the grid, so a truncated block is still refused.
 
 **The setup preview showed a cut that a volume run never makes.** It draws the
 model, a green quad for the section plane and an orange line where the two
