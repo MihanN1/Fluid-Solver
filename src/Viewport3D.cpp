@@ -153,6 +153,17 @@ constexpr float ZOOM_PER_NOTCH = 0.1200f;
 constexpr float AMBIENT = 0.35f;
 constexpr std::size_t MAX_SLICE_CELLS = 4194304u;
 
+// What the translucent cloud is allowed to cost. Two hundred thousand blocks
+// is 1.2 M triangles - about what the solid body of a detailed model already
+// costs - and beyond that the upload starts to show in the frame rate without
+// the picture getting any clearer, because the blocks are smaller than a
+// pixel by then. When more cells than this deserve drawing, the faintest are
+// the ones dropped.
+constexpr std::size_t MAX_CLOUD_CELLS = 200000u;
+// Below about one part in forty a block adds nothing but a tint over the
+// whole box, so the budget never spends itself on those.
+constexpr std::size_t FAINTEST_CLOUD_BIN = 6u;
+
 const int MARCHING_CUBE_EDGES[256] = {
     0x000, 0x109, 0x203, 0x30a, 0x406, 0x50f, 0x605, 0x70c,
     0x80c, 0x905, 0xa0f, 0xb06, 0xc0a, 0xd03, 0xe09, 0xf00,
@@ -1527,6 +1538,11 @@ void Viewport3D::setSettings(const Viewport3DSettings& settings) {
         rebuildMarkers();
     }
     if (colourChanged ||
+        previous.showVolume != settings_.showVolume ||
+        previous.volumeDensity != settings_.volumeDensity) {
+        rebuildCloud();
+    }
+    if (colourChanged ||
         previous.showIsosurface != settings_.showIsosurface ||
         previous.isoField != settings_.isoField ||
         previous.isoLevel != settings_.isoLevel) {
@@ -1660,8 +1676,12 @@ void Viewport3D::advance(float seconds) {
 }
 
 std::size_t Viewport3D::triangleCount() const {
+    // cloudCells_ rather than cloud_, because the cloud's triangles are only
+    // laid out once the camera has been looked at, and the count is read
+    // before the first frame is drawn.
     return (solid_.vertexCount() + slices_.vertexCount() +
-            isosurface_.vertexCount() + vortexSurface_.vertexCount()) / 3u;
+            isosurface_.vertexCount() + vortexSurface_.vertexCount()) / 3u +
+           cloudCells_.size() * 2u;
 }
 
 std::size_t Viewport3D::lineCount() const {
@@ -1677,11 +1697,287 @@ void Viewport3D::rebuildAll() {
     rebuildBox();
     rebuildSolid();
     rebuildSlices();
+    rebuildCloud();
     rebuildIsosurface();
     rebuildVortices();
     rebuildStreamlines();
     rebuildTracers();
     rebuildMarkers();
+}
+
+// The cloud: every cell of the volume that differs from the still air around
+// it, painted as a translucent block of its own colour.
+//
+// Two things make it affordable. The first is that most of a volume is
+// nothing - air at rest, one number repeated a million times - and nothing is
+// not drawn. The quiet value is found rather than assumed: the field is
+// histogrammed and the fullest bin is taken as the background, because the
+// still air is by a wide margin the most common reading in the box. How far a
+// cell sits from that bin is its opacity, so a shock sheet three cells thick
+// is solid and the four million cells of calm around it cost nothing.
+//
+// The second is that what survives is kept as cells, not triangles. Painting
+// translucent things needs them drawn far to near or the near ones blend into
+// a background that has not been laid down yet, and which way that is changes
+// whenever the camera crosses onto another axis. Re-sampling the field at that
+// moment would take a second; re-sorting cells that are already chosen takes a
+// millisecond, and that is what orderCloud does.
+void Viewport3D::rebuildCloud() {
+    cloudCells_.clear();
+    cloud_.clear();
+    cloudAxis_ = -1;
+    cloudCosine_ = 0.0f;
+    if (!frame_ || !settings_.showVolume) {
+        return;
+    }
+    const VtkFrame& frame = *frame_;
+    if (frame.nx == 0 || frame.ny == 0 || frame.nz == 0) {
+        return;
+    }
+    const ScalarVolume field =
+        sampleVolumeField(frame, settings_.colourBy, settings_.colourScalar);
+    if (field.empty()) {
+        return;
+    }
+    const DataRange range = colourRange(field);
+    const double span = range.maximum - range.minimum;
+    if (!(span > 0.0)) {
+        return;
+    }
+
+    // Where the still air sits, on a scale of nought to one across the colour
+    // range. 128 bins is finer than the eye reads off the colour bar and
+    // coarse enough that the background lands in one bin rather than smeared
+    // across several by round-off.
+    constexpr std::size_t QUIET_BINS = 128;
+    std::array<std::size_t, QUIET_BINS> occupancy{};
+    occupancy.fill(0);
+    const bool hasSolid = !frame.solid.empty();
+    for (std::size_t k = 0; k < frame.nz; ++k) {
+        for (std::size_t j = 0; j < frame.ny; ++j) {
+            for (std::size_t i = 0; i < frame.nx; ++i) {
+                if (hasSolid && frame.solid[frame.cellIndex(i, j, k)] != 0) {
+                    continue;
+                }
+                const float value = field.at(i, j, k);
+                if (!std::isfinite(value)) {
+                    continue;
+                }
+                const double t =
+                    (static_cast<double>(value) - range.minimum) / span;
+                const std::size_t bin = static_cast<std::size_t>(clampFloat(
+                    static_cast<float>(t) * static_cast<float>(QUIET_BINS),
+                    0.0f,
+                    static_cast<float>(QUIET_BINS - 1u)));
+                ++occupancy[bin];
+            }
+        }
+    }
+    std::size_t fullest = 0;
+    for (std::size_t bin = 1; bin < QUIET_BINS; ++bin) {
+        if (occupancy[bin] > occupancy[fullest]) {
+            fullest = bin;
+        }
+    }
+    // Nothing is quiet: a field with no background at all - a coordinate, say,
+    // or a run that has gone unstable everywhere. Fall back to the middle,
+    // which draws the extremes and leaves the centre clear.
+    const double quiet =
+        (static_cast<double>(fullest) + 0.5) / static_cast<double>(QUIET_BINS);
+    const double reach = std::max(std::max(quiet, 1.0 - quiet), 1.0e-6);
+
+    const float strength = clampFloat(settings_.volumeDensity, 0.05f, 8.0f);
+    const auto opacityOf = [&](float value) {
+        const double t = (static_cast<double>(value) - range.minimum) / span;
+        const double away = std::fabs(t - quiet) / reach;
+        // Squared, so that the faint haze around a shock thins out and the
+        // shock itself stays solid. Without it a cloud at any useful strength
+        // is a fog with the interesting part buried inside it.
+        const double shaped = away * away;
+        return clampFloat(
+            static_cast<float>(shaped) * strength, 0.0f, 1.0f);
+    };
+
+    // How opaque a cell has to be to be worth drawing at all. Counted first,
+    // because a cutoff low enough to be right for a clean run would hand a
+    // noisy one forty million blocks. The budget picks the cutoff instead: the
+    // most opaque cells that fit, and never fewer than the ones that are
+    // genuinely solid.
+    constexpr std::size_t OPACITY_BINS = 256;
+    std::array<std::size_t, OPACITY_BINS> strengths{};
+    strengths.fill(0);
+    for (std::size_t k = 0; k < frame.nz; ++k) {
+        for (std::size_t j = 0; j < frame.ny; ++j) {
+            for (std::size_t i = 0; i < frame.nx; ++i) {
+                if (hasSolid && frame.solid[frame.cellIndex(i, j, k)] != 0) {
+                    continue;
+                }
+                const float value = field.at(i, j, k);
+                if (!std::isfinite(value)) {
+                    continue;
+                }
+                const std::size_t bin = static_cast<std::size_t>(clampFloat(
+                    opacityOf(value) * static_cast<float>(OPACITY_BINS - 1u),
+                    0.0f,
+                    static_cast<float>(OPACITY_BINS - 1u)));
+                ++strengths[bin];
+            }
+        }
+    }
+    std::size_t kept = 0;
+    std::size_t floorBin = FAINTEST_CLOUD_BIN;
+    for (std::size_t bin = OPACITY_BINS; bin-- > FAINTEST_CLOUD_BIN;) {
+        if (kept + strengths[bin] > MAX_CLOUD_CELLS) {
+            floorBin = bin + 1u;
+            break;
+        }
+        kept += strengths[bin];
+        floorBin = bin;
+    }
+    if (kept == 0) {
+        return;
+    }
+    const float cutoff = static_cast<float>(floorBin) /
+                         static_cast<float>(OPACITY_BINS - 1u);
+
+    cloudCells_.reserve(std::min(kept, MAX_CLOUD_CELLS));
+    for (std::size_t k = 0; k < frame.nz &&
+                           cloudCells_.size() < MAX_CLOUD_CELLS; ++k) {
+        for (std::size_t j = 0; j < frame.ny &&
+                               cloudCells_.size() < MAX_CLOUD_CELLS; ++j) {
+            for (std::size_t i = 0; i < frame.nx &&
+                                   cloudCells_.size() < MAX_CLOUD_CELLS; ++i) {
+                if (hasSolid && frame.solid[frame.cellIndex(i, j, k)] != 0) {
+                    continue;
+                }
+                const float value = field.at(i, j, k);
+                if (!std::isfinite(value)) {
+                    continue;
+                }
+                const float opacity = opacityOf(value);
+                if (opacity < cutoff) {
+                    continue;
+                }
+                const sf::Color colour =
+                    scalarColor(value, range.minimum, range.maximum);
+                CloudCell cell;
+                cell.i = static_cast<std::uint32_t>(i);
+                cell.j = static_cast<std::uint32_t>(j);
+                cell.k = static_cast<std::uint32_t>(k);
+                cell.r = colour.r;
+                cell.g = colour.g;
+                cell.b = colour.b;
+                cell.a = static_cast<std::uint8_t>(std::lround(
+                    clampFloat(opacity, 0.0f, 1.0f) * 255.0f));
+                cloudCells_.push_back(cell);
+            }
+        }
+    }
+}
+
+// Lay the chosen cells out as one square each, facing down the axis the camera
+// is closest to looking along, in the order they have to be blended in.
+//
+// The sort is by counting, not comparison: the key is already a cell index
+// along one axis, so the cells can be dropped straight into buckets and read
+// back out. That is what makes turning the view cheap enough to do while the
+// mouse is moving.
+//
+// The cosine is how squarely the camera faces that axis. Seen from a corner a
+// ray crosses more of each cell than it does head on, so the same cloud ought
+// to look denser; the correction below puts that back, and without it the
+// picture visibly fades every time you rotate away from an axis and brightens
+// as you come back.
+void Viewport3D::orderCloud(int axis, bool descending, float cosine) {
+    cloud_.clear();
+    cloudAxis_ = axis;
+    cloudDescending_ = descending;
+    cloudCosine_ = cosine;
+    if (!frame_ || cloudCells_.empty()) {
+        return;
+    }
+    const VtkFrame& frame = *frame_;
+    const std::size_t depth = axis == 0
+        ? frame.nx
+        : (axis == 1 ? frame.ny : frame.nz);
+    if (depth == 0) {
+        return;
+    }
+
+    std::array<std::uint8_t, 256> corrected{};
+    const double exponent = 1.0 / std::max(static_cast<double>(cosine), 0.08);
+    for (std::size_t level = 0; level < corrected.size(); ++level) {
+        const double alpha = static_cast<double>(level) / 255.0;
+        const double thicker = 1.0 - std::pow(1.0 - alpha, exponent);
+        corrected[level] = static_cast<std::uint8_t>(
+            std::lround(clampFloat(
+                static_cast<float>(thicker), 0.0f, 1.0f) * 255.0f));
+    }
+
+    std::vector<std::uint32_t> starts(depth + 1u, 0u);
+    const auto keyOf = [axis](const CloudCell& cell) {
+        return axis == 0 ? cell.i : (axis == 1 ? cell.j : cell.k);
+    };
+    for (const CloudCell& cell : cloudCells_) {
+        ++starts[keyOf(cell) + 1u];
+    }
+    for (std::size_t level = 0; level < depth; ++level) {
+        starts[level + 1u] += starts[level];
+    }
+    std::vector<std::uint32_t> order(cloudCells_.size(), 0u);
+    std::vector<std::uint32_t> cursor(starts.begin(), starts.end() - 1);
+    for (std::size_t index = 0; index < cloudCells_.size(); ++index) {
+        order[cursor[keyOf(cloudCells_[index])]++] =
+            static_cast<std::uint32_t>(index);
+    }
+
+    const int axisA = axis == 0 ? 1 : 0;
+    const int axisB = axis == 2 ? 1 : 2;
+    const auto lowOf = [&](int which, std::size_t cell) {
+        if (which == 0) {
+            return static_cast<float>(frame.cellLeft(cell));
+        }
+        if (which == 1) {
+            return static_cast<float>(frame.cellBottom(cell));
+        }
+        return static_cast<float>(frame.cellFront(cell));
+    };
+    const auto highOf = [&](int which, std::size_t cell) {
+        if (which == 0) {
+            return static_cast<float>(frame.cellRight(cell));
+        }
+        if (which == 1) {
+            return static_cast<float>(frame.cellTop(cell));
+        }
+        return static_cast<float>(frame.cellBack(cell));
+    };
+    const int corners[6][2] = {
+        {0, 0}, {1, 0}, {1, 1}, {0, 0}, {1, 1}, {0, 1}
+    };
+
+    cloud_.reserve(cloudCells_.size() * 6u);
+    for (std::size_t step = 0; step < order.size(); ++step) {
+        const std::size_t place = descending
+            ? order.size() - 1u - step
+            : step;
+        const CloudCell& cell = cloudCells_[order[place]];
+        const std::size_t index[3] = {cell.i, cell.j, cell.k};
+        const float centre = 0.5f *
+            (lowOf(axis, index[axis]) + highOf(axis, index[axis]));
+        const sf::Color colour(
+            cell.r, cell.g, cell.b, corrected[cell.a]);
+        for (const auto& corner : corners) {
+            float point[3];
+            point[axis] = centre;
+            point[axisA] = corner[0] != 0
+                ? highOf(axisA, index[axisA])
+                : lowOf(axisA, index[axisA]);
+            point[axisB] = corner[1] != 0
+                ? highOf(axisB, index[axisB])
+                : lowOf(axisB, index[axisB]);
+            cloud_.add(point[0], point[1], point[2], colour);
+        }
+    }
 }
 
 // A microphone is a coordinate in a text row and nothing on screen, which
@@ -2410,6 +2706,44 @@ void Viewport3D::draw(sf::RenderWindow& window, const sf::FloatRect& area) {
     submit(vortexLines_, GL_LINES, "vortexLines");
     submit(tracers_, GL_LINES, "tracers");
     glLineWidth(1.0f);
+
+    // Last, and only now: translucent things have to be laid over a picture
+    // that is already finished, or they blend with a background instead of
+    // with what is behind them. Depth is still read, so the body still hides
+    // the cloud behind it, but not written, or the first block drawn would
+    // shut out every block behind it - which is the whole of the cloud.
+    if (!cloudCells_.empty()) {
+        const Vector3 look = basis.target - basis.eye;
+        const float toward[3] = {look.x, look.y, look.z};
+        int axis = 0;
+        for (int candidate = 1; candidate < 3; ++candidate) {
+            if (std::fabs(toward[candidate]) > std::fabs(toward[axis])) {
+                axis = candidate;
+            }
+        }
+        const float length = std::sqrt(
+            toward[0] * toward[0] + toward[1] * toward[1] +
+            toward[2] * toward[2]);
+        const float cosine = length > 0.0f
+            ? std::fabs(toward[axis]) / length
+            : 1.0f;
+        const bool descending = toward[axis] > 0.0f;
+        if (axis != cloudAxis_ || descending != cloudDescending_ ||
+            std::fabs(cosine - cloudCosine_) > 0.08f) {
+            orderCloud(axis, descending, cosine);
+        }
+        glEnable(GL_BLEND);
+        glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+        if (depthAvailable) {
+            glDepthMask(GL_FALSE);
+        }
+        glShadeModel(GL_FLAT);
+        submit(cloud_, GL_TRIANGLES, "cloud");
+        if (depthAvailable) {
+            glDepthMask(GL_TRUE);
+        }
+        glDisable(GL_BLEND);
+    }
 
     glDisableClientState(GL_COLOR_ARRAY);
     glDisableClientState(GL_VERTEX_ARRAY);

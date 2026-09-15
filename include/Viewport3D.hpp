@@ -55,6 +55,12 @@ struct Viewport3DSettings {
     bool showIsosurface = false;
     VolumeField isoField = VolumeField::Pressure;
     float isoLevel = 0.5f;
+    // The whole volume painted as translucent cells rather than cut open with
+    // a plane or reduced to one surface: every cell that differs from the
+    // still air around it is a little coloured block you can see through, and
+    // the ones that match it are not drawn at all.
+    bool showVolume = false;
+    float volumeDensity = 1.0f;
     bool showVortices = false;
     float vortexLevel = 0.15f;
     bool showStreamlines = false;
@@ -209,10 +215,27 @@ private:
         float highZ = 1.0f;
     };
 
+    // One cell of the translucent cloud: where it is and what colour it came
+    // out, kept apart from the triangles because the triangles have to be
+    // rebuilt in a different order every time the camera crosses onto another
+    // axis, and re-sampling the field to do that would cost a hundred times
+    // what re-ordering these does.
+    struct CloudCell {
+        std::uint32_t i = 0;
+        std::uint32_t j = 0;
+        std::uint32_t k = 0;
+        std::uint8_t r = 0;
+        std::uint8_t g = 0;
+        std::uint8_t b = 0;
+        std::uint8_t a = 0;
+    };
+
     void rebuildAll();
     void rebuildBox();
     void rebuildSolid();
     void rebuildSlices();
+    void rebuildCloud();
+    void orderCloud(int axis, bool descending, float cosine);
     void rebuildIsosurface();
     void rebuildVortices();
     void rebuildStreamlines();
@@ -241,6 +264,11 @@ private:
     Batch streamlines_;
     Batch tracers_;
     Batch markers_;
+    Batch cloud_;
+    std::vector<CloudCell> cloudCells_;
+    int cloudAxis_ = -1;
+    bool cloudDescending_ = false;
+    float cloudCosine_ = 0.0f;
     std::vector<Streamline> paths_;
     unsigned int positionBuffer_ = 0;
     unsigned int colourBuffer_ = 0;

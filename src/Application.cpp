@@ -85,6 +85,13 @@ constexpr float PARAMETER_ROW_HEIGHT = 44.0f;
 constexpr float PARAMETER_GROUP_HEIGHT = 25.0f;
 constexpr float PARAMETER_SCROLL_STEP = 88.0f;
 constexpr double PI = 3.14159265358979323846;
+// The angle the setup preview opens at, and goes back to on Home. Three
+// quarters on and a little above, which shows length, width and height of a
+// model at once without any of the three hiding another.
+constexpr double SETUP_VIEW_YAW = -35.0 * PI / 180.0;
+constexpr double SETUP_VIEW_PITCH = 25.0 * PI / 180.0;
+constexpr double SETUP_ORBIT_RADIANS_PER_PIXEL = 0.009;
+constexpr double SETUP_PITCH_LIMIT = 1.5533430343;
 constexpr std::size_t DECODED_FRAME_CACHE_BYTES = 1024ull * 1024ull * 1024ull;
 // The byte budget above is the real limit; this only stops a series of tiny
 // frames from filling the cache with thousands of entries. It used to be 16,
@@ -863,7 +870,9 @@ enum ViewControl : std::size_t {
     ControlSliceX,
     ControlSliceY,
     ControlSliceZ,
+    ControlCloud,
     ControlIso,
+    ControlDensity,
     ControlVortices,
     ControlStreamlines,
     ControlTracers,
@@ -884,6 +893,7 @@ enum ViewTrackIndex : std::size_t {
     TrackSliceX,
     TrackSliceY,
     TrackSliceZ,
+    TrackCloud,
     TrackIso,
     TrackVortex,
     TrackSlice2D,
@@ -2165,7 +2175,9 @@ public:
             } else {
                 drawResults();
             }
-            drawProperties();
+            if (parametersVisible()) {
+                drawProperties();
+            }
             drawTopTabs();
             drawLoadingIndicator();
             drawStatus();
@@ -2226,7 +2238,15 @@ private:
         layoutSize_ = size;
         const float width = static_cast<float>(size.x);
         const float height = static_cast<float>(size.y);
-        panelX_ = std::max(360.0f, width - LEFT_PANEL_WIDTH);
+        // The whole right-hand column of input parameters is a Setup thing.
+        // On Results it is 330 pixels of numbers that describe a run which has
+        // already happened and that nothing on this page can change - and it
+        // is 330 pixels taken off the picture, which is the only thing on this
+        // page anybody is looking at. Push it off the edge and the viewport
+        // takes the space.
+        panelX_ = parametersVisible()
+            ? std::max(360.0f, width - LEFT_PANEL_WIDTH)
+            : width;
         {
             float x = 12.0f;
             const auto place = [&](Button& button, float w) {
@@ -2408,11 +2428,25 @@ private:
                 y += 34.0f;
             }
         };
-        place(pressureButton_, 104.0f);
-        place(velocityButton_, 104.0f);
-        place(fieldButton_, 146.0f);
-        place(vectorButton_, 114.0f);
-        place(rangeButton_, 132.0f);
+        // Pressure, Velocity, Field, Vectors and Range are the 2D view's own
+        // controls; the 3D view colours itself from the Colour button in its
+        // own bar. Leaving them on screen there offers two ways to choose the
+        // same thing, one of which does nothing.
+        const bool flatControls = !view3D_;
+        for (Button* control : {&pressureButton_, &velocityButton_,
+                                &fieldButton_, &vectorButton_, &rangeButton_}) {
+            if (!flatControls) {
+                control->bounds = {{0.0f, -100000.0f}, {1.0f, 1.0f}};
+                control->enabled = false;
+            }
+        }
+        if (flatControls) {
+            place(pressureButton_, 104.0f);
+            place(velocityButton_, 104.0f);
+            place(fieldButton_, 146.0f);
+            place(vectorButton_, 114.0f);
+            place(rangeButton_, 132.0f);
+        }
         place(runDetailsButton_, 110.0f);
         place(continueRunButton_, 128.0f);
         place(recoverSetupButton_, 130.0f);
@@ -2449,11 +2483,14 @@ private:
             enable(ControlSliceX, 74.0f);
             enable(ControlSliceY, 74.0f);
             enable(ControlSliceZ, 74.0f);
+            enable(ControlCloud, 74.0f);
             enable(ControlIso, 66.0f);
             enable(ControlVortices, 96.0f);
             enable(ControlStreamlines, 96.0f);
             enable(ControlTracers, 90.0f);
             enable(ControlColour, 148.0f);
+            if (frameCarriesDensity())
+                enable(ControlDensity, 82.0f);
             newRow();
             enable(ControlFront, 68.0f);
             enable(ControlBack, 68.0f);
@@ -2468,6 +2505,8 @@ private:
                 placeTrack(TrackSliceY);
             if (view3DSettings_.sliceZ)
                 placeTrack(TrackSliceZ);
+            if (view3DSettings_.showVolume)
+                placeTrack(TrackCloud);
             if (view3DSettings_.showIsosurface)
                 placeTrack(TrackIso);
             if (view3DSettings_.showVortices)
@@ -2499,7 +2538,9 @@ private:
             resultQuantity_ == ResultQuantity::Velocity;
         const std::vector<std::string>& available =
             activeFrame_ ? activeFrame_->scalarNames : emptyScalarNames();
-        fieldButton_.enabled = !available.empty();
+        pressureButton_.enabled = !view3D_;
+        velocityButton_.enabled = !view3D_;
+        fieldButton_.enabled = !available.empty() && !view3D_;
         fieldButton_.selected = resultQuantity_ == ResultQuantity::Scalar;
         fieldButton_.label =
             available.empty()
@@ -2509,7 +2550,7 @@ private:
         vectorButton_.label =
             showVelocityVectors_ ? "Vectors: On" : "Vectors: Off";
         vectorButton_.selected = showVelocityVectors_;
-        vectorButton_.enabled = !frames_.empty();
+        vectorButton_.enabled = !frames_.empty() && !view3D_;
         const bool loadingResults =
             resultCatalogFuture_.valid() || !inFlightFrames_.empty();
         const bool solverAvailable =
@@ -2529,7 +2570,7 @@ private:
         saveConfigButton_.enabled = !solverProcess_.active && !loadingResults;
         loadConfigButton_.enabled = !solverProcess_.active && !loadingResults;
         revealVtkButton_.enabled = currentExplorerTarget().has_value();
-        rangeButton_.enabled = !frames_.empty();
+        rangeButton_.enabled = !frames_.empty() && !view3D_;
         rangeButton_.label =
             std::string("Range: ") + (useSeriesRange_ ? "series" : "frame") +
             (trimmedRange_ ? " 99%" : " full");
@@ -2571,14 +2612,16 @@ private:
         toggle(ControlSliceX, "Slice X", view3DSettings_.sliceX);
         toggle(ControlSliceY, "Slice Y", view3DSettings_.sliceY);
         toggle(ControlSliceZ, "Slice Z", view3DSettings_.sliceZ);
+        toggle(ControlCloud, "Cloud", view3DSettings_.showVolume);
         toggle(ControlIso, "Iso", view3DSettings_.showIsosurface);
         toggle(ControlVortices, "Vortices", view3DSettings_.showVortices);
         toggle(ControlStreamlines, "Streams",
                view3DSettings_.showStreamlines);
         toggle(ControlTracers, "Tracers", view3DSettings_.animateTracers);
         viewControls_[ControlColour].label =
-            std::string("Colour: ") + volumeFieldName(view3DSettings_.colourBy);
+            "Colour: " + colourFieldLabel();
         viewControls_[ControlColour].selected = false;
+        toggle(ControlDensity, "Density", colouredByDensity());
         toggle(ControlFront, "Front", false);
         toggle(ControlBack, "Back", false);
         toggle(ControlLeft, "Left", false);
@@ -2654,6 +2697,12 @@ private:
                 if (handleLayoutKeyPressed(*key))
                     return;
             }
+            if (mode_ == DisplayMode::Setup &&
+                key->scancode == sf::Keyboard::Scan::Home) {
+                resetSetupView();
+                status_ = "Preview back to the opening angle.";
+                return;
+            }
             if (mode_ == DisplayMode::Results) {
                 if (handleResultsKeyPressed(*key)) {
                     return;
@@ -2696,12 +2745,12 @@ private:
 
         if (button == sf::Mouse::Button::Left &&
             setupTab_.hit(position)) {
-            mode_ = DisplayMode::Setup;
+            setDisplayMode(DisplayMode::Setup);
             return;
         }
         if (button == sf::Mouse::Button::Left &&
             resultsTab_.hit(position)) {
-            mode_ = DisplayMode::Results;
+            setDisplayMode(DisplayMode::Results);
             return;
         }
         if (button == sf::Mouse::Button::Left &&
@@ -2917,6 +2966,20 @@ private:
             return;
         }
 
+        if (button == sf::Mouse::Button::Middle) {
+            // Blender's arrangement, and the one the 3D result view already
+            // uses: the wheel pressed turns the camera, the wheel pressed with
+            // Shift slides it, the wheel rolled zooms. Left and right keep
+            // turning the MODEL, which is a different thing and wanted just as
+            // often - the camera moves what you see, the model moves what gets
+            // simulated.
+            const bool shift =
+                sf::Keyboard::isKeyPressed(sf::Keyboard::Scan::LShift) ||
+                sf::Keyboard::isKeyPressed(sf::Keyboard::Scan::RShift);
+            panningSetup_ = shift;
+            orbitingSetup_ = !shift;
+            return;
+        }
         if (layoutMode_)
             return;
         if (button == sf::Mouse::Button::Right) {
@@ -2924,6 +2987,28 @@ private:
         } else if (button == sf::Mouse::Button::Left) {
             rotatingObject_ = true;
         }
+    }
+
+    void resetSetupView() {
+        setupYaw_ = SETUP_VIEW_YAW;
+        setupPitch_ = SETUP_VIEW_PITCH;
+        setupPan_ = {0.0f, 0.0f};
+        setupZoom_ = 1.0f;
+    }
+
+    void orbitSetupView(sf::Vector2f delta) {
+        setupYaw_ += static_cast<double>(delta.x) *
+            SETUP_ORBIT_RADIANS_PER_PIXEL;
+        setupPitch_ = std::clamp(
+            setupPitch_ - static_cast<double>(delta.y) *
+                SETUP_ORBIT_RADIANS_PER_PIXEL,
+            -SETUP_PITCH_LIMIT,
+            SETUP_PITCH_LIMIT);
+        const double turn = 2.0 * PI;
+        while (setupYaw_ > turn)
+            setupYaw_ -= turn;
+        while (setupYaw_ < -turn)
+            setupYaw_ += turn;
     }
 
     void handleResultsMousePressed(
@@ -3073,6 +3158,7 @@ private:
             setViewMode(!view3D_);
             return true;
         }
+
         if (view3D_) {
             // A running transform owns the keyboard until Enter or Escape, so
             // that typing 5 into it means five and not "numpad 5 flips the
@@ -3130,6 +3216,35 @@ private:
             case sf::Keyboard::Key::R:
                 beginTransform(2);
                 return true;
+            case sf::Keyboard::Key::C:
+                handleViewControl(ControlCloud);
+                return true;
+            case sf::Keyboard::Key::I:
+                handleViewControl(ControlIso);
+                return true;
+            // D and not W/A/S/D: those pan the flat view, and the flat view
+            // reaches density from its own Field button in one press.
+            case sf::Keyboard::Key::D:
+                showDensity();
+                updateLayout(layoutSize_);
+                return true;
+            // The cloud thickens and thins on the bracket keys, because the
+            // useful strength depends on what is in the box and the only way
+            // to find it is to watch the picture while it changes.
+            case sf::Keyboard::Key::LBracket:
+            case sf::Keyboard::Key::RBracket: {
+                const float step =
+                    key.code == sf::Keyboard::Key::RBracket ? 1.25f : 0.8f;
+                view3DSettings_.volumeDensity = clampFloat(
+                    view3DSettings_.volumeDensity * step,
+                    CLOUD_DENSITY_LOW,
+                    CLOUD_DENSITY_HIGH);
+                syncViewportSettings();
+                status_ = "Cloud " +
+                    formatValue(view3DSettings_.volumeDensity, false, "x") +
+                    ".";
+                return true;
+            }
             default:
                 break;
             }
@@ -3248,6 +3363,10 @@ private:
             setHorizontalSlice(position.x);
         } else if (draggingVerticalSlice_) {
             setVerticalSlice(position.y);
+        } else if (orbitingSetup_) {
+            orbitSetupView(delta);
+        } else if (panningSetup_) {
+            setupPan_ += delta;
         } else if (rotatingObject_) {
             const bool shift =
                 sf::Keyboard::isKeyPressed(sf::Keyboard::Scan::LShift) ||
@@ -3331,6 +3450,8 @@ private:
     void endDragging() {
         orbiting3D_ = false;
         panning3D_ = false;
+        orbitingSetup_ = false;
+        panningSetup_ = false;
         draggingViewTrack_.reset();
         paintStroke_ = false;
         layoutDragging_ = false;
@@ -3846,6 +3967,24 @@ private:
         }
     }
 
+    bool parametersVisible() const {
+        return mode_ == DisplayMode::Setup;
+    }
+
+    // Every way of changing pages goes through here, because the page decides
+    // how wide the picture is and the layout has to be recomputed to match. A
+    // plain assignment leaves the viewport the size the other page wanted
+    // until the next resize.
+    void setDisplayMode(DisplayMode mode) {
+        if (mode_ == mode) {
+            return;
+        }
+        mode_ = mode;
+        endDragging();
+        cancelSliderEdit(false);
+        updateLayout(layoutSize_);
+    }
+
     sf::FloatRect parameterViewport() const {
         const float height = static_cast<float>(layoutSize_.y);
         const float bottom =
@@ -4309,6 +4448,17 @@ private:
                 outputRoot_ = std::filesystem::u8path(value);
             } else if (key == "resultView3D") {
                 view3D_ = value == "1";
+            } else if (key == "cloudDensity") {
+                try {
+                    const double parsed = std::stod(value);
+                    if (std::isfinite(parsed) && parsed > 0.0) {
+                        view3DSettings_.volumeDensity = clampFloat(
+                            static_cast<float>(parsed),
+                            CLOUD_DENSITY_LOW,
+                            CLOUD_DENSITY_HIGH);
+                    }
+                } catch (const std::exception&) {
+                }
             } else if (key == "uiCacheMB") {
                 try {
                     const double parsed = std::stod(value);
@@ -4329,6 +4479,10 @@ private:
         }
         output << "outputRoot=" << outputRoot_.u8string() << '\n';
         output << "resultView3D=" << (view3D_ ? 1 : 0) << '\n';
+        output << "cloudDensity=" <<
+            editableNumber(
+                static_cast<double>(view3DSettings_.volumeDensity), true)
+               << '\n';
         output << "uiCacheMB=" <<
             editableNumber(sliders_[CacheMegabytes].value, true) << '\n';
     }
@@ -4623,7 +4777,7 @@ private:
         }
         const std::string report = applyConfigurationDocument(document, false);
         applyCacheBudget();
-        mode_ = DisplayMode::Setup;
+        setDisplayMode(DisplayMode::Setup);
         status_ = "Recovered the settings of solver step " +
             std::to_string(activeFrame_->frameNumber) + ": " + report;
     }
@@ -4790,6 +4944,7 @@ private:
         sectionSegmentsSliceX_ = std::numeric_limits<double>::quiet_NaN();
         sectionSegmentsSliceZ_ = std::numeric_limits<double>::quiet_NaN();
         setupZoom_ = 1.0f;
+        resetSetupView();
     }
 
     void generateAndRun() {
@@ -5393,7 +5548,7 @@ private:
             }
             resultsWarning_ += "SOLVER REPORTED STDERR.";
         }
-        mode_ = DisplayMode::Results;
+        setDisplayMode(DisplayMode::Results);
         const auto indexMilliseconds = std::chrono::duration_cast<
             std::chrono::milliseconds>(
             std::chrono::steady_clock::now() - resultCatalogStarted_).count();
@@ -5829,8 +5984,8 @@ private:
                 : 1.0;
         relative = multiply(relative, inverseScale);
 
-        const double yaw = -35.0 * PI / 180.0;
-        const double pitch = 25.0 * PI / 180.0;
+        const double yaw = setupYaw_;
+        const double pitch = setupPitch_;
         const double yawX =
             std::cos(yaw) * relative.x -
             std::sin(yaw) * relative.z;
@@ -5849,9 +6004,9 @@ private:
             setupZoom_;
         return {
             {
-                viewport.position.x + viewport.size.x / 2.0f +
+                viewport.position.x + viewport.size.x / 2.0f + setupPan_.x +
                     static_cast<float>(yawX) * scale,
-                viewport.position.y + viewport.size.y / 2.0f -
+                viewport.position.y + viewport.size.y / 2.0f + setupPan_.y -
                     static_cast<float>(pitchY) * scale
             },
             depth
@@ -6173,6 +6328,25 @@ private:
             text << "\nWARNING: large grid; preview, RAM and output cost increase sharply.";
         }
         return text.str();
+    }
+
+    // A camera you can move is no use if nobody knows it moves. One muted line
+    // along the bottom of the preview, and only while there is something in
+    // there to look at.
+    void drawSetupNavigationHint() {
+        if (geometry_.empty() || setupViewport_.size.x < 420.0f) {
+            return;
+        }
+        window_->draw(makeText(
+            font_,
+            "Middle drag turns the view, Shift+middle slides it, wheel zooms, "
+            "Home resets. Left and right drag still turn the model itself.",
+            11,
+            {
+                setupViewport_.position.x + 14.0f,
+                setupViewport_.position.y + setupViewport_.size.y - 20.0f
+            },
+            MUTED));
     }
 
     void drawSetupInfoOverlay() {
@@ -7680,6 +7854,7 @@ private:
         drawLayoutControls();
         if (!painting_ && !layoutMode_) {
             drawSetupInfoOverlay();
+            drawSetupNavigationHint();
             drawSliceControls();
         }
     }
@@ -8079,6 +8254,7 @@ private:
             drawResultWarning();
         }
         drawResultControls();
+        drawViewControlHelp();
         if (showRunDetails_) {
             drawRunDetailsOverlay();
         }
@@ -8100,10 +8276,18 @@ private:
 
     // A slice plane is the whole of a nz=1 result and only a cut through a
     // volume, so the two cases do not want the same view. A volume opens on
-    // its isosurface with every plane off; a single plane opens on the plane,
+    // the cloud with every plane off; a single plane opens on the plane,
     // because with that off there is nothing left to look at. Applied once per
     // kind of result, so switching a plane back on afterwards sticks until a
     // result of the other kind is loaded.
+    //
+    // The cloud rather than the isosurface, which is what this used to open
+    // on. An isosurface is one number's worth of the field - a skin at exactly
+    // that value and nothing either side of it - so a shock arrives as a
+    // crumpled sheet with holes in it wherever the level happens to fall
+    // between two cells, and the answer to "is this right" is to drag a slider
+    // until it looks like something. The cloud shows the whole field at once
+    // and needs nothing chosen.
     void applyViewDefaults() {
         if (!activeFrame_) {
             return;
@@ -8116,8 +8300,18 @@ private:
         view3DSettings_.sliceX = false;
         view3DSettings_.sliceY = false;
         view3DSettings_.sliceZ = kind == 0;
-        view3DSettings_.showIsosurface = kind == 1;
+        view3DSettings_.showVolume = kind == 1;
+        view3DSettings_.showIsosurface = false;
         if (kind == 1) {
+            // And coloured by density when the run wrote one, which a
+            // compressible run always does. Speed shows a shock as a smear
+            // and density shows it as an edge, and a volume that has a
+            // density field in it is a volume where that is the question.
+            const char* density = densityScalarName(*activeFrame_);
+            if (density != nullptr) {
+                view3DSettings_.colourBy = VolumeField::Scalar;
+                view3DSettings_.colourScalar = density;
+            }
             view3DSettings_.isoField = view3DSettings_.colourBy;
         }
     }
@@ -8281,19 +8475,151 @@ private:
         }
     }
 
+    // What the 3D view is coloured by, written out. A named scalar answers to
+    // its own name rather than to the word "scalar", which is the only way to
+    // tell density from speed when both are in the frame.
+    std::string colourFieldLabel() const {
+        if (view3DSettings_.colourBy == VolumeField::Scalar) {
+            return view3DSettings_.colourScalar.empty()
+                ? std::string("scalar")
+                : view3DSettings_.colourScalar;
+        }
+        return volumeFieldName(view3DSettings_.colourBy);
+    }
+
+    // A compressible run writes density into every frame, always - it is not
+    // an extraFields extra, it is one of the two scalars the writer puts down
+    // before anything else. So the question is never whether it is there, only
+    // whether the window will show it.
+    static const char* densityScalarName(const VtkFrame& frame) {
+        for (const std::string& name : frame.scalarNames) {
+            if (name == "density")
+                return "density";
+        }
+        // An older run, or somebody else's file, may call it rho.
+        for (const std::string& name : frame.scalarNames) {
+            if (name == "rho")
+                return "rho";
+        }
+        return nullptr;
+    }
+
+    bool frameCarriesDensity() const {
+        return activeFrame_ && densityScalarName(*activeFrame_) != nullptr;
+    }
+
+    bool colouredByDensity() const {
+        if (!activeFrame_ ||
+            view3DSettings_.colourBy != VolumeField::Scalar) {
+            return false;
+        }
+        const char* name = densityScalarName(*activeFrame_);
+        return name != nullptr && view3DSettings_.colourScalar == name;
+    }
+
+    // Straight to density, in one press, from wherever the cycle happens to
+    // be. In 2D that is the Field button's business and this only points it at
+    // the right entry.
+    bool showDensity() {
+        if (!activeFrame_) {
+            return false;
+        }
+        const char* name = densityScalarName(*activeFrame_);
+        if (name == nullptr) {
+            status_ = "This frame carries no density field. The compressible "
+                      "solver writes one in every frame; an incompressible "
+                      "run has no density to write.";
+            return true;
+        }
+        if (view3D_) {
+            view3DSettings_.colourBy = VolumeField::Scalar;
+            view3DSettings_.colourScalar = name;
+            view3DSettings_.isoField = VolumeField::Scalar;
+            syncViewportSettings();
+        } else {
+            resultQuantity_ = ResultQuantity::Scalar;
+            activeScalarName_ = name;
+            resultTextureCacheValid_ = false;
+        }
+        status_ = "Coloured by density - the shock is where it jumps.";
+        return true;
+    }
+
+    // Speed, pressure, then whatever the frame carries by name, then the rest.
+    // The frame's own scalars sit third rather than eighth because density is
+    // the first of them on a compressible run and is what anybody looking at a
+    // shock wants; u, v, w, vorticity and Q are further down because they are
+    // derived from the velocity vector, which is always there, and so are
+    // never the thing that was hard to find.
     void cycleVolumeField() {
-        static const std::array<VolumeField, 7> order{{
-            VolumeField::Speed, VolumeField::Pressure, VolumeField::VelocityX,
-            VolumeField::VelocityY, VolumeField::VelocityZ,
-            VolumeField::Vorticity, VolumeField::QCriterion}};
-        std::size_t next = 0;
-        for (std::size_t index = 0; index < order.size(); ++index)
-            if (order[index] == view3DSettings_.colourBy)
-                next = index + 1;
-        view3DSettings_.colourBy = order[next % order.size()];
+        static const std::array<VolumeField, 2> leading{{
+            VolumeField::Speed, VolumeField::Pressure}};
+        static const std::array<VolumeField, 5> trailing{{
+            VolumeField::VelocityX, VolumeField::VelocityY,
+            VolumeField::VelocityZ, VolumeField::Vorticity,
+            VolumeField::QCriterion}};
+        const std::vector<std::string>& scalars =
+            activeFrame_ ? activeFrame_->scalarNames : emptyScalarNames();
+        const std::size_t middle = leading.size() + scalars.size();
+        const std::size_t total = middle + trailing.size();
+
+        std::size_t current = 0;
+        if (view3DSettings_.colourBy == VolumeField::Scalar) {
+            current = leading.size();
+            for (std::size_t index = 0; index < scalars.size(); ++index)
+                if (scalars[index] == view3DSettings_.colourScalar)
+                    current = leading.size() + index;
+        } else {
+            for (std::size_t index = 0; index < leading.size(); ++index)
+                if (leading[index] == view3DSettings_.colourBy)
+                    current = index;
+            for (std::size_t index = 0; index < trailing.size(); ++index)
+                if (trailing[index] == view3DSettings_.colourBy)
+                    current = middle + index;
+        }
+
+        const std::size_t next = (current + 1) % std::max<std::size_t>(1, total);
+        if (next < leading.size()) {
+            view3DSettings_.colourBy = leading[next];
+            view3DSettings_.colourScalar.clear();
+        } else if (next < middle) {
+            view3DSettings_.colourBy = VolumeField::Scalar;
+            view3DSettings_.colourScalar = scalars[next - leading.size()];
+        } else {
+            view3DSettings_.colourBy = trailing[next - middle];
+            view3DSettings_.colourScalar.clear();
+        }
+        // The isosurface follows the colour, so a surface of constant density
+        // is one button away rather than a separate hunt.
+        view3DSettings_.isoField = view3DSettings_.colourBy;
         syncViewportSettings();
-        status_ = std::string("3D view coloured by ") +
-            volumeFieldName(view3DSettings_.colourBy) + ".";
+        status_ = "3D view coloured by " + colourFieldLabel() + ".";
+    }
+
+    // Cloud and Iso are two answers to the same question - what does the
+    // inside of this volume look like - and they are drawn on top of each
+    // other, so having both on is a translucent fog with a skin buried in it
+    // and no way to read either. One at a time, then, and pressing the one
+    // that is already on turns it off and leaves the volume bare.
+    //
+    // 0 neither, 1 cloud, 2 isosurface.
+    void setVolumeStyle(int style) {
+        view3DSettings_.showVolume = style == 1;
+        view3DSettings_.showIsosurface = style == 2;
+        if (style == 2) {
+            view3DSettings_.isoField = view3DSettings_.colourBy;
+        }
+        status_ = style == 1
+            ? "Cloud: every cell that differs from the still air, painted "
+              "see-through. The slider beside it sets how solid."
+            : (style == 2
+                   ? "Isosurface: a skin through every point where " +
+                         colourFieldLabel() +
+                         " equals the level on the slider."
+                   : std::string("Volume bare - only the body, the box and "
+                                 "whatever slices are on."));
+        syncViewportSettings();
+        updateLayout(layoutSize_);
     }
 
     std::size_t viewTrackPlanes(std::size_t track) const {
@@ -8304,6 +8630,30 @@ private:
         if (track == TrackSliceY) return activeFrame_->ny;
         if (track == TrackSliceZ) return activeFrame_->nz;
         return slicePlaneCount();
+    }
+
+    // The cloud slider runs from a tenth to eight, and it runs that way on a
+    // log scale: doubling is one step of the same size wherever you are on the
+    // rail. On a linear rail everything usable would be crowded into the first
+    // eighth of it.
+    static constexpr float CLOUD_DENSITY_LOW = 0.1f;
+    static constexpr float CLOUD_DENSITY_HIGH = 8.0f;
+
+    float cloudTrackFraction() const {
+        const float low = std::log(CLOUD_DENSITY_LOW);
+        const float high = std::log(CLOUD_DENSITY_HIGH);
+        const float here = std::log(clampFloat(
+            view3DSettings_.volumeDensity,
+            CLOUD_DENSITY_LOW,
+            CLOUD_DENSITY_HIGH));
+        return clampFloat((here - low) / (high - low), 0.0f, 1.0f);
+    }
+
+    void setCloudTrackFraction(float fraction) {
+        const float low = std::log(CLOUD_DENSITY_LOW);
+        const float high = std::log(CLOUD_DENSITY_HIGH);
+        view3DSettings_.volumeDensity = std::exp(
+            low + clampFloat(fraction, 0.0f, 1.0f) * (high - low));
     }
 
     float viewTrackFraction(std::size_t track) const {
@@ -8322,6 +8672,8 @@ private:
         case TrackSliceZ:
             return planeFraction(view3DSettings_.sliceIndexZ,
                                  viewTrackPlanes(track));
+        case TrackCloud:
+            return cloudTrackFraction();
         case TrackIso:
             return view3DSettings_.isoLevel;
         case TrackVortex:
@@ -8347,6 +8699,9 @@ private:
         case TrackSliceZ:
             return planeText("Slice Z", view3DSettings_.sliceIndexZ,
                              viewTrackPlanes(track));
+        case TrackCloud:
+            return "Cloud " +
+                formatValue(view3DSettings_.volumeDensity, false, "x");
         case TrackIso:
             return "Isosurface " +
                 formatValue(view3DSettings_.isoLevel, false, std::string());
@@ -8380,6 +8735,9 @@ private:
             break;
         case TrackSliceZ:
             view3DSettings_.sliceIndexZ = planeOf(viewTrackPlanes(track));
+            break;
+        case TrackCloud:
+            setCloudTrackFraction(static_cast<float>(fraction));
             break;
         case TrackIso:
             view3DSettings_.isoLevel = static_cast<float>(fraction);
@@ -8436,10 +8794,16 @@ private:
         case ControlSliceZ:
             view3DSettings_.sliceZ = !view3DSettings_.sliceZ;
             break;
+        case ControlCloud:
+            setVolumeStyle(view3DSettings_.showVolume ? 0 : 1);
+            return true;
         case ControlIso:
-            view3DSettings_.showIsosurface = !view3DSettings_.showIsosurface;
-            view3DSettings_.isoField = view3DSettings_.colourBy;
-            break;
+            setVolumeStyle(view3DSettings_.showIsosurface ? 0 : 2);
+            return true;
+        case ControlDensity:
+            showDensity();
+            updateLayout(layoutSize_);
+            return true;
         case ControlVortices:
             view3DSettings_.showVortices = !view3DSettings_.showVortices;
             break;
@@ -8780,6 +9144,125 @@ private:
             TEXT));
     }
 
+    // What a 3D layer actually is, in the plainest words that are still true.
+    // "Iso", "Q" and "Streams" are the names these things have in every solver
+    // that draws them, which is no help at all the first time you meet them,
+    // and the button is six letters wide with nowhere to say more.
+    const char* viewControlHelp(std::size_t control) const {
+        switch (control) {
+        case ControlFrameAll:
+            return "Frame all - put the whole box back on screen, whatever "
+                   "the camera was doing.";
+        case ControlOrtho:
+            return "Ortho - no perspective: far things stay the same size as "
+                   "near ones, so distances can be compared by eye.";
+        case ControlRotateTool:
+            return "Rotate - left drag turns the camera around the data.";
+        case ControlMoveTool:
+            return "Move - left drag slides the camera sideways instead.";
+        case ControlBox:
+            return "Box - the wire outline of the domain and its three axes.";
+        case ControlGrid:
+            return "Grid - cell lines on the far walls, for reading off where "
+                   "something is.";
+        case ControlSolid:
+            return "Solid - the body itself: the cells the flow is not "
+                   "allowed into.";
+        case ControlWire:
+            return "Wire - draw the body as edges only, so you can see the "
+                   "flow through it.";
+        case ControlSliceX:
+        case ControlSliceY:
+        case ControlSliceZ:
+            return "Slice - one flat cut through the volume, coloured cell by "
+                   "cell. The slider picks which plane.";
+        case ControlCloud:
+            return "Cloud - the whole volume painted see-through: every cell "
+                   "that differs from the still air is a coloured block, the "
+                   "rest is not drawn. The slider sets how solid. Turns Iso "
+                   "off; the two are alternatives. Key: C.";
+        case ControlIso:
+            return "Iso - a skin drawn through every point where the field "
+                   "equals one chosen value, like a contour line but in 3D. "
+                   "The slider picks the value. Turns Cloud off; the two are "
+                   "alternatives. Key: I.";
+        case ControlDensity:
+            return "Density - colour by the gas density, which is what makes "
+                   "a shock look like a shock. A compressible run writes it "
+                   "into every frame. Key: D.";
+        case ControlVortices:
+            return "Vortices - Q shows where the flow spins faster than it "
+                   "shears, which is what a vortex is. Tip and wake vortices "
+                   "come out as tubes.";
+        case ControlStreamlines:
+            return "Streams - the path a weightless speck would take through "
+                   "this one frame, drawn from hundreds of starting points.";
+        case ControlTracers:
+            return "Tracers - the same paths with a bright dot running along "
+                   "each, so the direction and the speed are visible.";
+        case ControlColour:
+            return "Colour - which number the colours mean. Density is the "
+                   "one that shows a shock as a shock.";
+        case ControlFront:
+        case ControlBack:
+        case ControlLeft:
+        case ControlRight:
+        case ControlTop:
+        case ControlBottom:
+            return "Snap the camera square onto one axis. Numpad 1/3/7 do the "
+                   "same, with Ctrl for the opposite side.";
+        default:
+            return "Which axis the 2D view cuts along.";
+        }
+    }
+
+    void drawViewControlHelp() {
+        if (!view3D_ || !activeFrame_) {
+            return;
+        }
+        const char* help = nullptr;
+        for (std::size_t control = 0; control < viewControls_.size();
+             ++control) {
+            const Button& button = viewControls_[control];
+            if (button.enabled && button.bounds.contains(lastMouse_)) {
+                help = viewControlHelp(control);
+                break;
+            }
+        }
+        if (help == nullptr) {
+            return;
+        }
+        const float width = std::min(
+            600.0f, std::max(320.0f, resultViewport_.size.x - 24.0f));
+        const std::size_t columns = static_cast<std::size_t>(
+            std::max(28.0f, (width - 22.0f) / 5.9f));
+        const std::vector<std::string> lines = wrapText(help, columns);
+        const float lineHeight = 15.0f;
+        const float height =
+            static_cast<float>(lines.size()) * lineHeight + 14.0f;
+        // Top left of the picture, under the frame caption: the bottom left
+        // already carries the triangle count and the pick readout, and the
+        // cursor is up on the button row anyway.
+        const sf::Vector2f position{
+            resultViewport_.position.x + 10.0f,
+            resultViewport_.position.y +
+                (resultsWarning_.empty() ? 30.0f : 64.0f)
+        };
+        sf::RectangleShape background({width, height});
+        background.setPosition(position);
+        background.setFillColor(OVERLAY_BACKGROUND);
+        background.setOutlineColor(ACCENT_DARK);
+        background.setOutlineThickness(1.0f);
+        window_->draw(background);
+        for (std::size_t line = 0; line < lines.size(); ++line) {
+            window_->draw(makeText(
+                font_, lines[line], 12,
+                {position.x + 11.0f,
+                 position.y + 7.0f + static_cast<float>(line) * lineHeight},
+                TEXT));
+        }
+    }
+
     void drawResultControls() {
         playbackButton_.draw(*window_, font_, lastMouse_);
         recoverSetupButton_.draw(*window_, font_, lastMouse_);
@@ -8811,7 +9294,7 @@ private:
         std::ostringstream counts;
         counts << viewport3D_.triangleCount() << " triangles, "
                << viewport3D_.lineCount() << " lines, coloured by "
-               << volumeFieldName(view3DSettings_.colourBy);
+               << colourFieldLabel();
         window_->draw(makeText(
             font_,
             counts.str(),
@@ -9170,17 +9653,19 @@ private:
         const float height = static_cast<float>(layoutSize_.y);
         drawArea({{0.0f, 0.0f}, {width, HEADER_HEIGHT}}, HEADER);
         drawDivider(0.0f, HEADER_HEIGHT - 1.0f, width, 1.0f);
-        drawArea(
-            {{panelX_, HEADER_HEIGHT},
-             {width - panelX_, height - HEADER_HEIGHT}},
-            PANEL);
-        drawDivider(panelX_, HEADER_HEIGHT, 1.0f, height - HEADER_HEIGHT);
-        const sf::FloatRect outliner = outlinerBounds();
-        drawDivider(
-            outliner.position.x,
-            outliner.position.y + outliner.size.y,
-            outliner.size.x,
-            1.0f);
+        if (parametersVisible()) {
+            drawArea(
+                {{panelX_, HEADER_HEIGHT},
+                 {width - panelX_, height - HEADER_HEIGHT}},
+                PANEL);
+            drawDivider(panelX_, HEADER_HEIGHT, 1.0f, height - HEADER_HEIGHT);
+            const sf::FloatRect outliner = outlinerBounds();
+            drawDivider(
+                outliner.position.x,
+                outliner.position.y + outliner.size.y,
+                outliner.size.x,
+                1.0f);
+        }
         drawArea({{0.0f, height - 108.0f}, {panelX_, 84.0f}}, HEADER);
         drawDivider(0.0f, height - 108.0f, panelX_, 1.0f);
     }
@@ -9194,7 +9679,9 @@ private:
         solverExeButton_.draw(*window_, font_, lastMouse_);
         importButton_.draw(*window_, font_, lastMouse_);
         outputFolderButton_.draw(*window_, font_, lastMouse_);
-        drawOutliner();
+        if (parametersVisible()) {
+            drawOutliner();
+        }
     }
 
     void rebuildOutliner() {
@@ -9563,6 +10050,15 @@ private:
     sf::Vector2f lastMouse_{0.0f, 0.0f};
 
     float setupZoom_ = 1.0f;
+    // Where the setup preview is looking from. It used to be looking from a
+    // fixed -35/25, which is a fine angle for a first glance and no use at all
+    // for "is the nose really pointing the way it flies" - the one question
+    // this picture exists to answer.
+    double setupYaw_ = SETUP_VIEW_YAW;
+    double setupPitch_ = SETUP_VIEW_PITCH;
+    sf::Vector2f setupPan_{0.0f, 0.0f};
+    bool orbitingSetup_ = false;
+    bool panningSetup_ = false;
 
     std::vector<Snapshot> undoStack_;
     std::vector<Snapshot> redoStack_;

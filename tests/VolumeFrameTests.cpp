@@ -794,6 +794,79 @@ void testPicking() {
           "a ray into the corner of the viewport claimed a solid hit");
 }
 
+// The cloud picks cells out of a volume by how far they are from the reading
+// that fills most of the box, so a field that is flat everywhere except for a
+// sheet should produce the sheet and nothing else.
+void testTranslucentCloud() {
+    const std::size_t size = 16;
+    const double spacing = 1.0 / static_cast<double>(size);
+    auto frame = std::make_shared<maskui::VtkFrame>(
+        buildVolume(size, size, size, spacing));
+    std::size_t sheetCells = 0;
+    for (std::size_t k = 0; k < size; ++k)
+        for (std::size_t j = 0; j < size; ++j)
+            for (std::size_t i = 0; i < size; ++i) {
+                frame->velocity[frame->cellIndex(i, j, k)] = {0.0f, 0.0f, 0.0f};
+                const bool onSheet = i == 8;
+                frame->pressure[frame->cellIndex(i, j, k)] =
+                    onSheet ? 2.0f : 1.0f;
+                if (onSheet)
+                    ++sheetCells;
+            }
+    finishVolume(*frame);
+    frame->pressureRange = maskui::DataRange{true, 1.0, 2.0};
+    frame->pressureTrimmedRange = frame->pressureRange;
+
+    maskui::Viewport3D viewport;
+    maskui::Viewport3DSettings settings;
+    settings.showBox = false;
+    settings.showGrid = false;
+    settings.showSolid = false;
+    settings.showSlices = false;
+    settings.showIsosurface = false;
+    settings.showVortices = false;
+    settings.showStreamlines = false;
+    settings.showMicrophones = false;
+    settings.colourBy = maskui::VolumeField::Pressure;
+    settings.showVolume = false;
+    viewport.setSettings(settings);
+    viewport.setFrame(frame);
+    check(viewport.triangleCount() == 0u,
+          "something was drawn with every layer turned off");
+
+    settings.showVolume = true;
+    settings.volumeDensity = 1.0f;
+    viewport.setSettings(settings);
+    const std::size_t drawn = viewport.triangleCount() / 2u;
+    check(drawn == sheetCells,
+          "the cloud drew " + std::to_string(drawn) + " cells of a " +
+              std::to_string(sheetCells) + "-cell sheet");
+
+    // Solid cells belong to the body, which is drawn opaque; painting them
+    // again as translucent blocks would tint it.
+    for (std::size_t k = 0; k < size; ++k)
+        for (std::size_t j = 0; j < size; ++j)
+            frame->solid[frame->cellIndex(8, j, k)] = 1u;
+    auto masked = std::make_shared<maskui::VtkFrame>(*frame);
+    viewport.setFrame(masked);
+    check(viewport.triangleCount() == 0u,
+          "the cloud painted cells that are inside the body");
+
+    // And a field with nothing in it at all has nothing to show.
+    auto flat = std::make_shared<maskui::VtkFrame>(
+        buildVolume(size, size, size, spacing));
+    for (std::size_t index = 0; index < flat->pressure.size(); ++index) {
+        flat->pressure[index] = 1.0f;
+        flat->velocity[index] = {0.0f, 0.0f, 0.0f};
+    }
+    finishVolume(*flat);
+    flat->pressureRange = maskui::DataRange{true, 1.0, 1.0};
+    flat->pressureTrimmedRange = flat->pressureRange;
+    viewport.setFrame(flat);
+    check(viewport.triangleCount() == 0u,
+          "the cloud drew blocks for a field that is the same everywhere");
+}
+
 void testViewportBuilds() {
     const std::size_t size = 12;
     const double spacing = 1.0 / static_cast<double>(size);
@@ -964,6 +1037,7 @@ int main() {
     testStreamlines();
     testPicking();
     testViewportBuilds();
+    testTranslucentCloud();
     testMovingBodySeries(root);
 
     std::error_code cleanupError;

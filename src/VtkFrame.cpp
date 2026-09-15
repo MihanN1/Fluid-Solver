@@ -1148,6 +1148,8 @@ VtkFrame VtkFrameParser::parse(const std::filesystem::path& path) {
     std::size_t uFaceCount = 0;
     std::size_t vFaceCount = 0;
     std::size_t pRawCount = 0;
+    std::size_t conservedArrays = 0;
+    std::size_t conservedCount = 0;
 
     while (!cursor.empty()) {
         const std::string declaration = cursor.take();
@@ -1398,6 +1400,22 @@ VtkFrame VtkFrameParser::parse(const std::filesystem::path& path) {
                     } else if (name == "pRaw") {
                         hasPRaw = type == "float" && componentCount == 1;
                         pRawCount = valueCount;
+                    } else if (
+                        name == "stateRho" || name == "stateRhoU" ||
+                        name == "stateRhoV" || name == "stateRhoE") {
+                        // The compressible solver stores the conserved
+                        // variables themselves rather than face velocities and
+                        // a raw pressure, which is what an incompressible run
+                        // leaves behind. Its own reader restarts from these,
+                        // and the window used to call every one of its frames
+                        // uncontinuable and put a warning on it.
+                        if (type == "float" && componentCount == 1 &&
+                            valueCount > 0 &&
+                            (conservedArrays == 0 ||
+                             valueCount == conservedCount)) {
+                            ++conservedArrays;
+                            conservedCount = valueCount;
+                        }
                     }
                 } else {
                     throw VtkParseError(
@@ -1426,7 +1444,12 @@ VtkFrame VtkFrameParser::parse(const std::filesystem::path& path) {
         uFaceCount == (frame.nx + 1u) * frame.ny &&
         vFaceCount == frame.nx * (frame.ny + 1u) &&
         pRawCount == frame.nx * frame.ny;
-    const bool restartSizesMatch = legacyArraysMatch || hasFacePack;
+    const bool conservedArraysMatch =
+        conservedArrays == 4u &&
+        frame.nx < std::numeric_limits<std::size_t>::max() &&
+        conservedCount == frame.nx * frame.ny * frame.nz;
+    const bool restartSizesMatch =
+        legacyArraysMatch || hasFacePack || conservedArraysMatch;
     frame.restart.restartCapable =
         hasRestartConfig && restartSizesMatch &&
         frame.restart.currentTime.has_value() &&

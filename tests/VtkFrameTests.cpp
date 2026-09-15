@@ -117,6 +117,60 @@ void writeRectilinearFrame(const std::filesystem::path& path) {
     output << '\n';
 }
 
+
+// Exactly what the compressible writer lays down: pressure, then density, then
+// the mask, then velocity, and a restart block of conserved variables rather
+// than the face velocities an incompressible run leaves. Both halves of that
+// used to be lost on the way in - density was in the file and unreachable from
+// the window, and every frame of every compressible run was called
+// uncontinuable, with a warning on it, while the solver itself restarted from
+// the same file perfectly well.
+void writeCompressibleFrame(
+    const std::filesystem::path& path,
+    std::size_t conservedCount = 4) {
+    std::ofstream output(path, std::ios::binary | std::ios::trunc);
+    output << "# vtk DataFile Version 3.0\n"
+           << "Fluid Solver output, step 30\n"
+           << "BINARY\n"
+           << "DATASET STRUCTURED_POINTS\n"
+           << "DIMENSIONS 3 3 1\n"
+           << "ORIGIN 0 0 0\n"
+           << "SPACING 0.5 0.5 1\n"
+           << "CELL_DATA 4\n"
+           << "SCALARS pressure float 1\nLOOKUP_TABLE default\n";
+    for (int value = 0; value < 4; ++value)
+        writeFloat(output, 101325.0f + 100.0f * static_cast<float>(value));
+    output << "\nSCALARS density float 1\nLOOKUP_TABLE default\n";
+    for (int value = 0; value < 4; ++value)
+        writeFloat(output, 1.225f + 0.1f * static_cast<float>(value));
+    output << "\nSCALARS solid unsigned_char 1\nLOOKUP_TABLE default\n";
+    for (int value = 0; value < 4; ++value)
+        output.put('\0');
+    output << "\nVECTORS velocity float\n";
+    for (int value = 0; value < 12; ++value)
+        writeFloat(output, 0.0f);
+
+    const std::string config =
+        "formatVersion=1\n"
+        "regime=compressible\n"
+        "Lx=1\nLy=1\nnx=2\nny=2\nnz=1\n"
+        "totalTime=10\n"
+        "restartTime=4.5\n"
+        "restartStep=30\n"
+        "restartDt=0.01\n";
+    output << "\nFIELD RestartData 6\n"
+           << "configText 1 " << config.size() << " char\n";
+    output.write(config.data(), static_cast<std::streamsize>(config.size()));
+    const char* names[5] = {
+        "stateRho", "stateRhoU", "stateRhoV", "stateRhoW", "stateRhoE"};
+    for (const char* name : names) {
+        output << "\n" << name << " 1 " << conservedCount << " float\n";
+        for (std::size_t value = 0; value < conservedCount; ++value)
+            writeFloat(output, 1.0f);
+    }
+    output << '\n';
+}
+
 int fail(const std::string& message) {
     std::cerr << message << '\n';
     return 1;
@@ -167,6 +221,38 @@ int main() {
     const maskui::VtkFrame bad = maskui::VtkFrameParser::parse(malformed);
     if (bad.restart.restartCapable) {
         return fail("mismatched RestartData sizes were accepted");
+    }
+
+
+    const std::filesystem::path compressible = root / "solution_30.vtk";
+    writeCompressibleFrame(compressible);
+    const maskui::VtkFrame gas = maskui::VtkFrameParser::parse(compressible);
+    if (gas.scalars.find("density") == gas.scalars.end()) {
+        return fail("the density a compressible run writes into every frame "
+                    "did not survive parsing");
+    }
+    if (gas.scalarNames.empty() || gas.scalarNames.front() != "density") {
+        return fail("density was not the first named field, which is what "
+                    "puts it one press away on the Field button");
+    }
+    if (std::abs(gas.scalars.at("density").at(2) - 1.425f) > 1e-6f) {
+        return fail("density came back with the wrong values");
+    }
+    if (!gas.restart.restartCapable) {
+        return fail("a compressible frame was called uncontinuable; its "
+                    "conserved arrays are exactly what the solver restarts "
+                    "from");
+    }
+    for (const std::string& warning : gas.warnings) {
+        if (warning.find("RestartData") != std::string::npos) {
+            return fail("a compressible frame was warned about: " + warning);
+        }
+    }
+
+    const std::filesystem::path stunted = root / "solution_31.vtk";
+    writeCompressibleFrame(stunted, 3);
+    if (maskui::VtkFrameParser::parse(stunted).restart.restartCapable) {
+        return fail("conserved arrays shorter than the grid were accepted");
     }
 
     const std::filesystem::path phased = root / "solution_22.vtk";
