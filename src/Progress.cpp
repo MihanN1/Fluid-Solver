@@ -413,6 +413,11 @@ void begin(const std::string& title, double startAt, double total,
     }
 
 #if defined(_WIN32)
+    // The console window keeps whatever title it was launched with, which is
+    // the full path of the executable when it was double-clicked and the name
+    // of the shell when it was not. Neither is what the taskbar button and the
+    // Task Manager entry should say.
+    SetConsoleTitleW(widen(CFD_APP_NAME).c_str());
     // Installed whether or not the tray is on: Ctrl+C asking for a clean stop
     // - one that finishes the step and writes the frame - beats killing the
     // process halfway through a file, and that is worth having in every build.

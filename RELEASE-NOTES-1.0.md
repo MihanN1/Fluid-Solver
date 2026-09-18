@@ -2616,27 +2616,86 @@ see and the model changes what gets simulated, and both are wanted about
 equally often. A muted line along the bottom of the preview says so, because a
 camera nobody knows about is the same as no camera.
 
-**`Continue run` says what it is about to do, in seconds.** It used to take
-whatever the `Continue: add time` row happened to hold, which is zero unless
-you went looking for that row - so it ran to `Total time`, which the run had
-usually all but reached, and gave you two more frames and a shrug. And typing
-the extra time into Setup and pressing Generate instead started the whole thing
-over from zero, because that is what Generate does. Neither of those is
-obviously wrong until it has wasted an afternoon.
+**`Continue run` opens the Setup page at that frame.** It used to take whatever
+the `Continue: add time` row happened to hold, which is zero unless you went
+looking for that row - so it ran to `Total time`, which the run had usually all
+but reached, and gave you two more frames and a shrug. And typing the extra
+time into Setup and pressing Generate instead started the whole thing over from
+zero, because that is what Generate does. Neither is obviously wrong until it
+has eaten an afternoon.
 
-It is a list now, worked out from the run on screen: **a quarter as long
-again**, **half as long again**, **the same again**, **twice as long again**,
-**on to Total time** when there is any left, and the amount in the panel row if
-somebody did set it. Resting on any of them says where that lands - *"Run on to
-12 ms - that is 6 ms more than the frame on screen"* - and choosing one says
-what it is doing before it does it: *"Continuing from 6 ms for another 6 ms, to
-12 ms."* A run continued this way still goes into the folder it continues, so
-the frames stay one series.
+It now does the thing that was wanted in the first place: the run's own
+settings go onto the Setup page, with the frame on screen as the starting
+point, and everything on that page is yours to change before it runs - how far
+it goes, whether a wall is open, one more microphone. The run button reads
+**Continue run** while that is armed, with **Start from zero** next to it for
+the other choice; whichever you press is what happens, and nothing is carried
+on behind your back.
 
-**The 2D colour controls are gone while the 3D view is up.** `Pressure`,
-`Velocity`, `Field`, `Vectors` and `Range` colour the flat view; the 3D view
-colours itself from its own `Colour` button. Leaving both on screen offered two
-ways to choose the same thing, one of which did nothing.
+**The top bar is in groups.** `Setup` `Results` | `Open frames` `Import STL /
+OBJ` | `Show output folder` `Output folder` | `Select solver` `Keys` |
+`Stop simulation`, with a rule between them, so which buttons belong together
+is something you can see. Stop stands apart from the rest at the end, because
+it is the one button up there that interrupts work.
+
+**Every key the window answers to, on one screen.** The `Keys` button, or `F1`,
+puts the lot up: the ones that work anywhere, the setup preview's, the result
+page's, the 3D viewport's and the flat view's, each under its own heading. A
+shortcut nobody can find is a shortcut nobody has.
+
+**`Shift+F5` stops the run**, from anywhere in the window, which is the thing
+you most want to be able to do without hunting for a button - and is
+deliberately not a key that can be hit by accident while typing a number into
+the panel.
+
+**Pressure and Velocity are gone from the flat view's bar.** They were two more
+ways to reach two of the entries already in the `Shows` list, with nothing on
+the bar to say that that is what they were.
+
+**Both windows say what they are.** The UI's title bar read `CFD Mask UI 1.0.0`
+- the name of the build folder, not the name of the program - and the solver's
+console kept whatever title Windows gave it, which for a double-clicked console
+program is the full path of the executable. They are `Fluid Solver UI` and
+`Fluid Solver` now, in the title bar, on the taskbar button and in the Task
+Manager.
+
+**The mask warning says what differs.** `MASK MISMATCH: Fluid Solver VTK
+differs from GUI preview. SOLVER REPORTED STDERR.` told you a comparison had
+failed and nothing about which, by how much, or whether it mattered - and it
+appeared after **every volume run**, because the preview mask is one plane and
+a volume run voxelises the model in three dimensions, so the two could never
+match. The check belongs to plane runs, where the two are the same thing and it
+is exact; it now says how many cells differ and what share of the grid that is,
+or that the grid itself is a different size; and the solver's error output is
+quoted rather than announced.
+
+**Opening a frame, and looking at it, got faster.** Measured on a 128^3
+compressible frame - 2.1 million cells, 44 MB - rather than guessed at: reading
+the file is 5.6 ms and byte-swapping all of it is 1.6, so the ninety-odd
+milliseconds that remained were arithmetic. Most of it was the trimmed colour
+range, two `nth_element` passes over a copy of each field, about 28 ms a field
+and paid for pressure, for speed and for every named scalar. It is a histogram
+now - min and max, then one increment per value into 4096 bins, then a walk
+over the bins - which places the quantile to one part in four thousand of the
+range, which is exactly as good at ending a colour scale, with no second copy
+and every core working. 93 ms to 73 on two cores.
+
+And the 3D view samples a field **once** rather than once per layer. Its colour
+is one setting for everything drawn, so with the cloud, an isosurface, the
+vortices and a slice all on and all coloured by Q, five passes were computing
+the same velocity gradient tensor per cell. The viewport keeps the three most
+recently sampled fields and hands the same one to everybody. Q itself, the
+dearest field there is, now runs across cores as well: 80 ms to 55 on two.
+Everything on at once, coloured by Q, went from 195 ms to 147 - while sampling
+Q on its own is 55, which is the whole point.
+
+A run continued that way still goes into the folder it continues, so the frames
+stay one series.
+
+**The 2D colour controls are gone while the 3D view is up.** `Shows`,
+`Vectors` and `Range` colour the flat view; the 3D view colours itself from its
+own `Colour` button. Leaving both on screen offered two ways to choose the same
+thing, one of which did nothing.
 
 **Navigating it is Blender's, because that is the one everybody already
 knows.** Left drag turns the view, middle drag slides it, the wheel zooms.

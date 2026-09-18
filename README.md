@@ -2913,6 +2913,10 @@ meant, and having the run put its frames somewhere underneath it instead would
 be the sort of helpfulness nobody asked for. Left empty, everything goes where
 it always did.
 
+The console window is also titled **Fluid Solver** rather than the full path of
+the executable, which is what Windows puts there when a console program is
+double-clicked and what the taskbar button and the Task Manager entry then show.
+
 Elsewhere there is no tray a static console binary can reach without dragging
 in a desktop toolkit, so the same progress goes into the terminal's title,
 which is what the taskbar entry or the Dock shows for that window.
