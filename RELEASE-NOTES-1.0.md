@@ -2657,7 +2657,29 @@ the bar to say that that is what they were.
 console kept whatever title Windows gave it, which for a double-clicked console
 program is the full path of the executable. They are `Fluid Solver UI` and
 `Fluid Solver` now, in the title bar, on the taskbar button and in the Task
-Manager.
+Manager. The solver's version resource described it as a
+`2D incompressible Navier-Stokes solver`, which is what the Task Manager
+process list showed and was two thirds wrong by 1.0: it solves a volume, and
+it has a compressible core. It now reads
+`Fluid Solver - solve the flow and write the frames`.
+
+**A field the run wrote is not offered twice.** `extraFields=speed` writes a
+speed field, and the colour list already had one worked out from the velocity
+vector that every frame carries - so the list showed `speed` twice, a decimal
+place apart, with nothing to say which was which. The run's own copy is left
+out where the list already covers it. Same for `vorticity` in the 3D view; in
+the flat view the run's own vorticity is the only one there is, so it stays.
+
+**An isosurface is no longer painted in stripes.** A marching-cubes vertex sits
+*between* two cells by construction - that is the whole idea - and the colour
+was taken from whichever of them the vertex happened to round into. The two
+cells are on opposite sides of the level, so their values differ by as much as
+anything in the picture, and the surface came out banded in the two of them,
+alternating as it weaved from one cell to the next. On a two-fluid run, where
+`phase` is 0 on one side of the surface and 1 on the other, a free surface that
+is all one thing was drawn as rainbow corduroy. The colour is interpolated to
+where the vertex actually is now, so a surface of constant anything is one
+colour, shaded by its own normal, which is what shows the shape.
 
 **The mask warning says what differs.** `MASK MISMATCH: Fluid Solver VTK
 differs from GUI preview. SOLVER REPORTED STDERR.` told you a comparison had
