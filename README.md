@@ -462,8 +462,8 @@ sentence saying what the name means; a button five letters wide has room for
 | **Flow** | **streams**, the path a weightless speck would take, and **tracers**, dots running along them |
 | **Show** | **body**, **wireframe**, **box**, **grid**, **microphones** |
 | **Colour** | one field for everything that is drawn: **off**, pressure, speed, u, v, w, vorticity, Q, and every scalar the frame carries. A cloud of Q is a cloud of vortices; an isosurface of density is a shock |
-| **Camera** | **rotate** / **move** for what left-drag does, **ortho**, **frame all**, and the six axis views |
-| **Range** | which values the colour scale spans: the series or this frame, trimmed or whole |
+| **Camera** | **rotate** / **move** for what left-drag does, **isometric**, **frame all**, and the six axis views |
+| **Range** | how far the colour scale is stretched: **99%**, leaving out the outermost half per cent at each end, or **full**. The 2D view's own Range button adds the series-wide scale, which the 3D view has no equivalent of — it paints u, v, w, vorticity and Q as well, and none of those is known until a frame is sampled |
 | **Run** | **continue this run**, **run details**, **recover the setup** |
 
 Every entry carries a sentence, shown in a box beside the list while the cursor
@@ -761,12 +761,13 @@ brought that could not be shown.
 
 ### Recovering one out of a `.vtk` frame
 
-**Recover setup**, next to the result view's other buttons, is the useful half.
+**Run > recover the setup**, in the result view's bar, is the useful half.
 Every frame the solver writes carries its own configuration in a `configText`
 block at the end — that is how a continuation works — so the settings of any
 run can be read straight back out of any frame it produced:
 
-- point the UI at a folder of frames, pick one, press **Recover setup**;
+- point the UI at a folder of frames, pick one, choose **Run > recover the
+  setup**;
 - the panel fills in with what that run was actually launched with, down to
   `nz`, `Lz`, the six boundary kinds and the body grammar;
 - the view switches back to Setup, and the status line names the solver step it
@@ -832,11 +833,16 @@ you have typed a number in and want it back.
 | middle-drag | pan |
 | wheel | zoom |
 | left-click, without dragging | pick: a body selects it, a domain face focuses that face's boundary row |
-| hover | read out the cell under the cursor |
+| hover | read out the cell under the cursor, in a box beside it |
 | `V` | switch between the 3D viewport and the 2D view |
 | `F` | frame the whole volume |
+| `C` / `I` / `Q` | the cloud, the isosurface, the vortices — one layer each, the other two left alone |
+| `[` / `]` | how solid the cloud is |
+| `D` | colour everything by density |
+| `G` / `R` | move and turn the selected body by a typed amount |
 | `Numpad 1` / `Numpad 3` / `Numpad 7` | front, right and top views; hold `Ctrl` for the opposite side |
 | `Numpad 5` | orthographic or perspective |
+| `Numpad 4` / `6` / `8` / `2` | turn the view in 15 degree steps; `Numpad 9` flips to the opposite side |
 
 **In the 2D view, on a volume:**
 
