@@ -370,6 +370,9 @@ bool validateFluidSolverRunConfig(const FluidSolverRunConfig& config,
     if (config.extraFields.find_first_of("\r\n") != std::string::npos) {
         return fail(error, "extraFields must not contain CR or LF");
     }
+    if (config.runName.find_first_of("\r\n") != std::string::npos) {
+        return fail(error, "runName must not contain CR or LF");
+    }
     if (config.phases != 1 && config.phases != 2) {
         return fail(error, "phases is 1 or 2: a second phase field would need "
                            "a rule for what happens where three fluids meet, "
@@ -681,6 +684,9 @@ bool buildFluidSolverArguments(
     }
     if (config.supportsExtraFields) {
         arguments.push_back("extraFields=" + config.extraFields);
+    }
+    if (config.supportsRunName && !config.runName.empty()) {
+        arguments.push_back("runName=" + config.runName);
     }
     if (config.supportsSchemes) {
         arguments.push_back("convection=" + config.convection);

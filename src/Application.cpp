@@ -11,6 +11,9 @@
 #include "ResultView.hpp"
 #include "SectionAdapter.hpp"
 #include "TrayIcon.hpp"
+#include "UpdateCheck.hpp"
+
+#include <mutex>
 #include "Viewport3D.hpp"
 #include "VtkFrame.hpp"
 #include "VelocityOverlay.hpp"
@@ -725,7 +728,18 @@ struct ChildProcess {
             TRUE,
             // The new process group is what makes a Ctrl+Break in terminate()
             // reach the solver and nothing else - including this UI.
-            CREATE_NO_WINDOW | CREATE_NEW_PROCESS_GROUP,
+            //
+            // And below normal priority, which is what stops the window
+            // freezing while a run is on. The solver takes every core it is
+            // given and holds them for minutes at a time; at equal priority
+            // Windows then hands this process a slice only when one of those
+            // threads happens to yield, and the window goes from sixty frames
+            // a second to about three. Below normal costs the run a percent or
+            // so - nothing else on an idle machine wants the cores - and gives
+            // the window back. Set at creation rather than afterwards so the
+            // very first seconds, when the mask is being cut, are covered too.
+            CREATE_NO_WINDOW | CREATE_NEW_PROCESS_GROUP |
+                BELOW_NORMAL_PRIORITY_CLASS,
             nullptr,
             runDirectory.c_str(),
             &startup,
@@ -869,6 +883,7 @@ enum ViewControl : std::size_t {
     ControlWire,
     ControlSliceX,
     ControlSliceY,
+    ControlHelp,
     ControlSliceZ,
     ControlCloud,
     ControlIso,
@@ -1433,17 +1448,60 @@ std::filesystem::path defaultOutputRoot(
     return std::filesystem::path("output");
 }
 
+// A run folder has to survive being a folder name, so anything that is not a
+// letter, a digit or one of - _ . and space becomes a dash. Empty afterwards
+// means the name was all punctuation and the timestamp is used instead.
+std::string runFolderName(const std::string& name) {
+    std::string out;
+    out.reserve(name.size());
+    for (const char character : name) {
+        const unsigned char raw = static_cast<unsigned char>(character);
+        const bool plain = std::isalnum(raw) || character == ' ' ||
+                           character == '-' || character == '_' ||
+                           character == '.' || raw >= 0x80;
+        if (plain) {
+            out.push_back(character);
+        } else if (!out.empty() && out.back() != '-') {
+            out.push_back('-');
+        }
+    }
+    while (!out.empty() && (out.back() == ' ' || out.back() == '.' ||
+                            out.back() == '-')) {
+        out.pop_back();
+    }
+    while (!out.empty() && (out.front() == ' ' || out.front() == '-')) {
+        out.erase(out.begin());
+    }
+    return out;
+}
+
 std::filesystem::path createRunDirectory(
     const std::filesystem::path& root,
+    const std::string& name,
     std::string& error) {
     if (root.empty()) {
         error = "Output folder is empty.";
         return {};
     }
-    const auto timestamp =
-        std::chrono::high_resolution_clock::now().time_since_epoch().count();
-    const std::filesystem::path directory =
-        root / ("run-" + std::to_string(timestamp));
+    std::filesystem::path directory;
+    const std::string folder = runFolderName(name);
+    if (folder.empty()) {
+        const auto timestamp = std::chrono::high_resolution_clock::now()
+                                   .time_since_epoch()
+                                   .count();
+        directory = root / ("run-" + std::to_string(timestamp));
+    } else {
+        // A name you type twice means two runs, not one overwritten one, so
+        // the second gets a 2 after it.
+        directory = root / std::filesystem::u8path(folder);
+        std::error_code exists;
+        for (int attempt = 2;
+             std::filesystem::exists(directory, exists) && attempt < 1000;
+             ++attempt) {
+            directory = root / std::filesystem::u8path(
+                                   folder + " " + std::to_string(attempt));
+        }
+    }
     std::error_code filesystemError;
     std::filesystem::create_directories(directory, filesystemError);
     if (filesystemError) {
@@ -1505,6 +1563,7 @@ struct SolverExecutableInfo {
     bool supportsCompressible = false;
     bool supportsProfiles = false;
     bool supportsExtraFields = false;
+    bool supportsRunName = false;
     bool supportsSchemes = false;
     bool supportsBoundaries = false;
     bool supportsCase = false;
@@ -1697,6 +1756,7 @@ SolverExecutableInfo inspectSolverExecutable(
     info.supportsCompressible = binaryContains(executable, "machInlet");
     info.supportsProfiles = binaryContains(executable, "profiles");
     info.supportsExtraFields = binaryContains(executable, "extraFields");
+    info.supportsRunName = binaryContains(executable, "runName");
     info.supportsSchemes = binaryContains(executable, "timeScheme");
     info.supportsBoundaries = binaryContains(executable, "bcBottom");
     info.supportsCase = binaryContains(executable, "caseType");
@@ -1987,6 +2047,8 @@ public:
               Slider{"MG V-cycles", "", 1.0, 100.0, 2.0, true, false},
               Slider{"MG tolerance", "", 1e-10, 1e-2, 1e-4, false, true},
               Slider{"MG minimum coarse size", "cells", 1.0, 512.0, 8.0, true, false},
+              Slider{"Run name", "", 0.0, 1.0, 0.0, false, false, false, 0.0,
+                     ControlKind::Text},
               Slider{"VTK save interval", "steps", 1.0, 100000.0, 20.0, true, true},
               Slider{"Extra frame fields", "", 0.0, 1.0, 0.0, false, false, false, 0.0,
                      ControlKind::Text},
@@ -2001,6 +2063,7 @@ public:
             slider.defaultText = slider.text;
         }
         loadPreferences();
+        startUpdateCheck();
         std::string selectionError;
         const std::optional<std::filesystem::path> selected =
             readFluidSolverSelection(
@@ -2261,6 +2324,10 @@ private:
             place(solverExeButton_, 124.0f);
             place(importButton_, 132.0f);
             place(outputFolderButton_, 124.0f);
+            // Only takes a place in the bar when there is something to say.
+            updateButton_.bounds = updateOffered()
+                ? sf::FloatRect{{x, 6.0f}, {168.0f, 32.0f}}
+                : sf::FloatRect{{0.0f, -100000.0f}, {1.0f, 1.0f}};
         }
         resetDefaultsButton_.bounds = {
             {panelX_ + 18.0f, height - 106.0f}, {92.0f, 34.0f}};
@@ -2472,6 +2539,7 @@ private:
         };
         if (view3D_ && activeFrame_) {
             newRow();
+            enable(ControlHelp, 52.0f);
             enable(ControlFrameAll, 88.0f);
             enable(ControlOrtho, 82.0f);
             enable(ControlRotateTool, 80.0f);
@@ -2565,6 +2633,9 @@ private:
             !solverProcess_.active && !loadingResults;
         openVtkButton_.enabled = !solverProcess_.active && !loadingResults;
         stopSimulationButton_.enabled = solverProcess_.active;
+        stopSimulationButton_.label = stopRequestedAt_.has_value()
+            ? "Stopping - kill?"
+            : "Stop simulation";
         solverExeButton_.enabled = !solverProcess_.active;
         resetDefaultsButton_.enabled = !solverProcess_.active && !loadingResults;
         saveConfigButton_.enabled = !solverProcess_.active && !loadingResults;
@@ -2600,6 +2671,7 @@ private:
             viewControls_[control].label = label;
             viewControls_[control].selected = on;
         };
+        toggle(ControlHelp, "What?", showViewHelp_);
         toggle(ControlFrameAll, "Frame all", false);
         toggle(ControlOrtho, "Ortho",
                viewport3D_.camera().orthographic);
@@ -2774,6 +2846,20 @@ private:
             return;
         }
 
+        if (button == sf::Mouse::Button::Left && updateOffered() &&
+            updateButton_.hit(position)) {
+            std::string url;
+            {
+                std::lock_guard<std::mutex> guard(updateMutex_);
+                url = updateResult_.url;
+                updateSeen_ = true;
+            }
+            status_ = update::openUrl(url)
+                ? "Opened the release page in your browser."
+                : "Could not open a browser. The page is " + url;
+            updateLayout(layoutSize_);
+            return;
+        }
         if (button == sf::Mouse::Button::Left &&
             importButton_.hit(position)) {
             importGeometry();
@@ -3340,10 +3426,18 @@ private:
             return;
         }
         if (mode_ == DisplayMode::Results && view3D_ && activeFrame_) {
-            pickText_ = resultViewport_.contains(position)
-                ? pickDescription(viewport3D_.pickAt(
-                      resultViewport_, position.x, position.y))
-                : std::string();
+            if (resultViewport_.contains(position)) {
+                const Viewport3D::Pick pick = viewport3D_.pickAt(
+                    resultViewport_, position.x, position.y);
+                pickText_ = pickDescription(pick);
+                viewport3D_.setHighlight(
+                    pick.hit &&
+                        pick.reason != Viewport3D::Pick::Reason::BoxWall,
+                    pick.i, pick.j, pick.k);
+            } else {
+                pickText_.clear();
+                viewport3D_.setHighlight(false);
+            }
         }
         if (layoutDragging_) {
             dragLayoutSelection(delta);
@@ -3748,9 +3842,13 @@ private:
             std::istreambuf_iterator<char>()
         };
 
-        // "Step 1230, t = 3.71591 s, dt = ..." - the last one wins.
+        // "Step 1230, t = 3.71591 s, dt = ..." from the projection solver and
+        // "step   1230  t = 3.71591 s  dt = ..." from the compressible one.
+        // The needle used to carry the comma, so it matched the first and
+        // never the second, and every compressible run showed no percentage at
+        // all - which is most of what this window is used for.
         std::optional<double> latest;
-        const std::string needle = ", t = ";
+        const std::string needle = "t = ";
         std::size_t at = tail.find(needle);
         while (at != std::string::npos) {
             try {
@@ -3849,6 +3947,7 @@ private:
     void endRunProgress(bool finished) {
         runProgress_ = -1.0;
         runProgressText_.clear();
+        stopRequestedAt_.reset();
         tray_.setSimulationRunning(false);
         publishRunProgress();
         if (windowHidden_) {
@@ -3942,33 +4041,121 @@ private:
 #endif
     }
 
+    // Ask first, and do not stand there waiting for the answer.
+    //
+    // A stop used to kill the process after four seconds of a blocking wait,
+    // which is four seconds of a dead window, and four seconds is not enough
+    // to finish writing a two hundred megabyte frame - so the run lost the
+    // step it was on and sometimes left half a file behind. Now the button
+    // writes the stop file the solver watches for, the ordinary poll notices
+    // the process leave, and the frames load themselves. Pressing it a second
+    // time means it, and kills.
     void stopSimulationAndLoadFrames() {
         if (!solverProcess_.active) {
             status_ = "No Fluid Solver simulation is active.";
             return;
         }
-        std::string error;
-        if (!solverProcess_.terminate(&error)) {
-            status_ = error;
+        if (stopRequestedAt_.has_value()) {
+            std::string error;
+            if (!solverProcess_.terminate(&error)) {
+                status_ = error;
+                return;
+            }
+            stopRequestedAt_.reset();
+            currentRunRequiresComputedFrame_ = false;
+            loadWhateverWasSaved("Killed Fluid Solver.");
             return;
         }
-        currentRunRequiresComputedFrame_ = false;
+        std::string error;
+        if (!requestSolverStop(error)) {
+            // No stop file means an older solver, or a folder that cannot be
+            // written to: fall back to the way this always worked.
+            std::string killError;
+            if (!solverProcess_.terminate(&killError)) {
+                status_ = killError;
+                return;
+            }
+            currentRunRequiresComputedFrame_ = false;
+            loadWhateverWasSaved("Stopped Fluid Solver.");
+            return;
+        }
+        stopRequestedAt_ = std::chrono::steady_clock::now();
+        status_ = "Asked Fluid Solver to stop. It finishes the step it is on "
+                  "and writes the frame, so the run can be continued from "
+                  "where it left off. Press Stop again to kill it instead.";
+    }
+
+    // The file the solver watches for. One line, and it means "finish this
+    // step, save, and come back" - the same thing Ctrl+C does in a console,
+    // and the only thing that works when the solver has no console of its own.
+    bool requestSolverStop(std::string& error) {
+        if (currentRunDirectory_.empty()) {
+            error = "This run has no directory to leave a stop file in.";
+            return false;
+        }
+        std::ofstream stopFile(
+            currentRunDirectory_ / "stop",
+            std::ios::binary | std::ios::trunc);
+        if (!stopFile.is_open()) {
+            error = "Cannot write a stop file in the run folder.";
+            return false;
+        }
+        stopFile << "stop\n";
+        return stopFile.good();
+    }
+
+    void loadWhateverWasSaved(const std::string& prefix) {
         try {
             const std::vector<std::filesystem::path> paths =
                 VtkFrameParser::discoverFrames(currentRunDirectory_);
             if (paths.empty()) {
-                status_ = "Stopped Fluid Solver; no VTK frames were saved.";
+                status_ = prefix + " No VTK frames were saved.";
                 return;
             }
             loadResultPaths(paths, ResultOrigin::StoppedFluidSolverRun);
         } catch (const std::exception& exception) {
-            status_ = std::string("Stopped Fluid Solver. VTK load failed: ") +
-                exception.what();
+            status_ = prefix + " VTK load failed: " + exception.what();
         }
     }
 
     bool parametersVisible() const {
         return mode_ == DisplayMode::Setup;
+    }
+
+    // The update check now happens here rather than only in the installer. It
+    // runs once, on a thread of its own, and all it ever does to the window is
+    // put a button in the top bar saying which version is out; pressing it
+    // opens the release page. It does not replace the running program behind
+    // your back - a portable build is a folder the user chose where to put and
+    // may be running from a read-only share, and a window that overwrites
+    // itself while a two hour solve is going is not a feature.
+    bool updateOffered() {
+        std::lock_guard<std::mutex> guard(updateMutex_);
+        return updateResult_.checked && updateResult_.newer && !updateSeen_;
+    }
+
+    void startUpdateCheck() {
+        update::checkInBackground([this](update::Result result) {
+            std::lock_guard<std::mutex> guard(updateMutex_);
+            updateResult_ = std::move(result);
+        });
+    }
+
+    void refreshUpdateButton() {
+        std::string latest;
+        {
+            std::lock_guard<std::mutex> guard(updateMutex_);
+            if (!updateResult_.checked || !updateResult_.newer) {
+                return;
+            }
+            latest = updateResult_.latest;
+        }
+        const std::string label = "Update: " + latest;
+        if (updateButton_.label != label) {
+            updateButton_.label = label;
+            updateButton_.enabled = true;
+            updateLayout(layoutSize_);
+        }
     }
 
     // Every way of changing pages goes through here, because the page decides
@@ -4240,6 +4427,8 @@ private:
         config.profiles = sliders_[Profiles].text;
         config.supportsExtraFields = solverInfo_.supportsExtraFields;
         config.extraFields = sliders_[ExtraFields].text;
+        config.supportsRunName = solverInfo_.supportsRunName;
+        config.runName = sliders_[RunName].text;
 
         config.supportsSchemes = solverInfo_.supportsSchemes;
         config.convection = sliders_[Convection].choice();
@@ -5032,7 +5221,7 @@ private:
                       1u);
 
         const std::filesystem::path runDirectory =
-            createRunDirectory(outputRoot_, error);
+            createRunDirectory(outputRoot_, sliders_[RunName].text, error);
         if (runDirectory.empty()) {
             status_ = error;
             return;
@@ -5265,11 +5454,22 @@ private:
             return;
         }
 
-        const std::filesystem::path runDirectory =
-            createRunDirectory(outputRoot_, error);
-        if (runDirectory.empty()) {
-            status_ = error;
-            return;
+        // Into the folder the frame came from, not a new one. A continuation
+        // IS the run it continues - the same setup carried further - and
+        // splitting it across two folders meant the series that belongs
+        // together had to be opened twice and could not be played through.
+        // The solver names a continued frame solution_<from>_<step>.vtk, so
+        // nothing collides with what is already there.
+        std::filesystem::path runDirectory = frame.sourcePath.parent_path();
+        std::error_code writable;
+        if (runDirectory.empty() ||
+            !std::filesystem::is_directory(runDirectory, writable)) {
+            runDirectory =
+                createRunDirectory(outputRoot_, sliders_[RunName].text, error);
+            if (runDirectory.empty()) {
+                status_ = error;
+                return;
+            }
         }
         std::vector<std::string> arguments;
         if (!buildFluidSolverArguments(
@@ -6317,7 +6517,10 @@ private:
              << " | approx MG levels " << levels;
         if (estimatedSteps > 0) {
             text << " | rough steps " << estimatedSteps
-                 << " | VTK ~" << estimatedVtks;
+                 << " | VTK ~" << estimatedVtks
+                 << " | ~" << formatBytes(
+                        static_cast<long double>(estimatedVtks) *
+                        static_cast<long double>(frameByteEstimate()));
         }
         text << '\n'
              << "Output: " << compactPath(outputRoot_) << '\n'
@@ -6347,6 +6550,59 @@ private:
                 setupViewport_.position.y + setupViewport_.size.y - 20.0f
             },
             MUTED));
+    }
+
+    // Roughly what one frame will weigh, from what the run is going to write
+    // into it. Pressure, the solid mask and the velocity vector are in every
+    // frame; a compressible run adds density; each extraFields entry is
+    // another float a cell; an incompressible frame carries the packed face
+    // velocities, which measure out at about a fifth of a float a face.
+    //
+    // It is an estimate and it is labelled as one, but it is the difference
+    // between finding out that forty frames is nine gigabytes before the run
+    // or after it.
+    double frameByteEstimate() const {
+        const double cells =
+            std::max(1.0, sliders_[CellsX].value) *
+            std::max(1.0, sliders_[CellsY].value) *
+            std::max(1.0, sliders_[CellsZ].value);
+        const bool compressible =
+            sliders_[RegimeKind].choice() == "compressible";
+        // pressure + solid + velocity
+        double perCell = 4.0 + 1.0 + 12.0;
+        if (compressible) {
+            perCell += 4.0;                       // density
+            if (sliders_[Phases].value >= 1.5)
+                perCell += 4.0;                   // species
+        } else {
+            perCell += 3.3;                       // packed face velocities
+            if (sliders_[Phases].value >= 1.5)
+                perCell += 4.0;                   // phase fraction
+        }
+        const std::string& extras = sliders_[ExtraFields].text;
+        if (!extras.empty()) {
+            std::size_t fields = 1;
+            for (const char character : extras) {
+                if (character == ',')
+                    ++fields;
+            }
+            perCell += 4.0 * static_cast<double>(fields);
+        }
+        return cells * perCell;
+    }
+
+    static std::string formatBytes(long double bytes) {
+        const char* units[] = {"B", "KB", "MB", "GB", "TB"};
+        int unit = 0;
+        while (bytes >= 1024.0L && unit < 4) {
+            bytes /= 1024.0L;
+            ++unit;
+        }
+        std::ostringstream out;
+        out << std::fixed
+            << std::setprecision(bytes < 10.0L && unit > 0 ? 1 : 0)
+            << static_cast<double>(bytes) << ' ' << units[unit];
+        return out.str();
     }
 
     void drawSetupInfoOverlay() {
@@ -8254,6 +8510,7 @@ private:
             drawResultWarning();
         }
         drawResultControls();
+        drawPinnedViewHelp();
         drawViewControlHelp();
         if (showRunDetails_) {
             drawRunDetailsOverlay();
@@ -8706,8 +8963,10 @@ private:
             return "Isosurface " +
                 formatValue(view3DSettings_.isoLevel, false, std::string());
         case TrackVortex:
-            return "Vortex Q " +
-                formatValue(view3DSettings_.vortexLevel, false, std::string());
+            return "Vortices: strongest " +
+                std::to_string(static_cast<int>(std::lround(
+                    100.0f * (1.0f - view3DSettings_.vortexLevel)))) +
+                "% of what is rotating";
         default:
             return planeText(
                 (std::string("Slice ") + sliceAxisName()).c_str(),
@@ -8794,6 +9053,12 @@ private:
         case ControlSliceZ:
             view3DSettings_.sliceZ = !view3DSettings_.sliceZ;
             break;
+        case ControlHelp:
+            showViewHelp_ = !showViewHelp_;
+            status_ = showViewHelp_
+                ? "Every layer, explained. Press What? again to put it away."
+                : "";
+            return true;
         case ControlCloud:
             setVolumeStyle(view3DSettings_.showVolume ? 0 : 1);
             return true;
@@ -8881,22 +9146,41 @@ private:
         }
         const VtkFrame& frame = *activeFrame_;
         std::ostringstream text;
-        text << "cell " << pick.i << ", " << pick.j << ", " << pick.k
+        // What the ray ran into, first, because "cell 412, 30, 30" on its own
+        // gives no way to tell a reading off the shock from a reading off the
+        // wall of the box behind it.
+        switch (pick.reason) {
+        case Viewport3D::Pick::Reason::Solid:
+            text << "on the body";
+            break;
+        case Viewport3D::Pick::Reason::Cloud:
+            text << "in the cloud";
+            break;
+        case Viewport3D::Pick::Reason::Slice:
+            text << "on the slice";
+            break;
+        default:
+            text << "nothing drawn along this line - reading the cell where it "
+                    "enters the box";
+            break;
+        }
+        text << "   cell " << pick.i << ", " << pick.j << ", " << pick.k
              << "   x " << formatValue(pick.x, false, "m")
              << "   y " << formatValue(pick.y, false, "m")
              << "   z " << formatValue(pick.z, false, "m");
-        const std::size_t index = frame.cellIndex(pick.i, pick.j, pick.k);
         if (pick.solidHit) {
-            text << "   solid, object " << pick.objectId;
-            return text.str();
-        }
-        if (index < frame.pressure.size()) {
-            text << "   p " << formatValue(frame.pressure[index], false, "Pa")
-                 << "   speed "
-                 << formatValue(frame.velocityMagnitude[index], false, "m/s");
+            text << "   object " << pick.objectId;
         }
         if (pick.face >= 0 && pick.face < 6) {
             text << "   " << sliders_[boundaryKindRow(pick.face)].label;
+        }
+        for (const auto& row : cellReadout(
+                 frame, pick.i, pick.j, pick.k, pick.solidHit)) {
+            text << "   ";
+            if (!row.first.empty()) {
+                text << row.first << ' ';
+            }
+            text << row.second;
         }
         return text.str();
     }
@@ -9181,6 +9465,9 @@ private:
                    "that differs from the still air is a coloured block, the "
                    "rest is not drawn. The slider sets how solid. Turns Iso "
                    "off; the two are alternatives. Key: C.";
+        case ControlHelp:
+            return "What? - the whole panel of explanations, pinned open, "
+                   "rather than one line at a time on hover.";
         case ControlIso:
             return "Iso - a skin drawn through every point where the field "
                    "equals one chosen value, like a contour line but in 3D. "
@@ -9193,7 +9480,8 @@ private:
         case ControlVortices:
             return "Vortices - Q shows where the flow spins faster than it "
                    "shears, which is what a vortex is. Tip and wake vortices "
-                   "come out as tubes.";
+                   "come out as tubes. The slider is how strict: right for "
+                   "only the strongest cores, left for every swirl.";
         case ControlStreamlines:
             return "Streams - the path a weightless speck would take through "
                    "this one frame, drawn from hundreds of starting points.";
@@ -9216,8 +9504,87 @@ private:
         }
     }
 
+    // The whole panel at once, pinned open, because reading one line at a
+    // time on hover means you have to already know which button to hover.
+    // Grouped the way the picture is built up: what the volume is drawn as,
+    // then what is drawn in it, then where you are looking from.
+    void drawPinnedViewHelp() {
+        if (!showViewHelp_ || !view3D_ || !activeFrame_) {
+            return;
+        }
+        struct Entry {
+            const char* heading;
+            std::size_t control;
+        };
+        static const Entry entries[] = {
+            {"How the volume is drawn - one at a time", ControlCloud},
+            {nullptr, ControlIso},
+            {nullptr, ControlSliceX},
+            {"What else is in the picture", ControlSolid},
+            {nullptr, ControlWire},
+            {nullptr, ControlVortices},
+            {nullptr, ControlStreamlines},
+            {nullptr, ControlTracers},
+            {nullptr, ControlBox},
+            {nullptr, ControlGrid},
+            {"Colour", ControlColour},
+            {nullptr, ControlDensity},
+            {"The camera", ControlRotateTool},
+            {nullptr, ControlMoveTool},
+            {nullptr, ControlOrtho},
+            {nullptr, ControlFrameAll},
+            {nullptr, ControlFront}
+        };
+
+        const float width = std::min(
+            620.0f, std::max(340.0f, resultViewport_.size.x - 24.0f));
+        const std::size_t columns = static_cast<std::size_t>(
+            std::max(30.0f, (width - 26.0f) / 5.9f));
+        std::vector<std::pair<bool, std::string>> lines;
+        for (const Entry& entry : entries) {
+            if (entry.heading != nullptr) {
+                if (!lines.empty()) {
+                    lines.emplace_back(false, std::string());
+                }
+                lines.emplace_back(true, entry.heading);
+            }
+            for (const std::string& line :
+                 wrapText(viewControlHelp(entry.control), columns)) {
+                lines.emplace_back(false, line);
+            }
+        }
+
+        const float lineHeight = 15.0f;
+        const float height = std::min(
+            resultViewport_.size.y - 16.0f,
+            static_cast<float>(lines.size()) * lineHeight + 16.0f);
+        const sf::Vector2f position{
+            resultViewport_.position.x + 10.0f,
+            resultViewport_.position.y + 8.0f
+        };
+        sf::RectangleShape background({width, height});
+        background.setPosition(position);
+        background.setFillColor(OVERLAY_BACKGROUND);
+        background.setOutlineColor(ACCENT);
+        background.setOutlineThickness(1.0f);
+        window_->draw(background);
+        float y = position.y + 8.0f;
+        for (const auto& line : lines) {
+            if (y + lineHeight > position.y + height) {
+                break;
+            }
+            if (!line.second.empty()) {
+                window_->draw(makeText(
+                    font_, line.second, 12,
+                    {position.x + 12.0f, y},
+                    line.first ? ACCENT : TEXT));
+            }
+            y += lineHeight;
+        }
+    }
+
     void drawViewControlHelp() {
-        if (!view3D_ || !activeFrame_) {
+        if (!view3D_ || !activeFrame_ || showViewHelp_) {
             return;
         }
         const char* help = nullptr;
@@ -9317,6 +9684,56 @@ private:
         }
     }
 
+    // Everything the frame holds about the cell under the cursor, not a
+    // chosen four of it. A run writes density, and temperature, and Mach, and
+    // whatever else extraFields was asked for; showing two of them and hiding
+    // the rest means opening the file in ParaView to answer "what is the
+    // density there", which is the one question this readout exists for.
+    std::vector<std::pair<std::string, std::string>> cellReadout(
+        const VtkFrame& frame,
+        std::size_t i,
+        std::size_t j,
+        std::size_t k,
+        bool solid) const {
+        std::vector<std::pair<std::string, std::string>> rows;
+        const std::size_t index = frame.cellIndex(i, j, k);
+        const auto number = [](float value, const char* unit) {
+            return std::isfinite(value)
+                ? formatValue(value, false, unit)
+                : std::string("non-finite");
+        };
+        if (solid) {
+            rows.emplace_back("", "inside the body - no flow here");
+            return rows;
+        }
+        if (index < frame.pressure.size()) {
+            rows.emplace_back("pressure", number(frame.pressure[index], "Pa"));
+        }
+        if (index < frame.velocity.size()) {
+            const auto& velocity = frame.velocity[index];
+            rows.emplace_back("u", number(velocity.x, "m/s"));
+            rows.emplace_back("v", number(velocity.y, "m/s"));
+            if (frame.volumetric()) {
+                rows.emplace_back("w", number(velocity.z, "m/s"));
+            }
+        }
+        if (index < frame.velocityMagnitude.size()) {
+            rows.emplace_back(
+                "speed", number(frame.velocityMagnitude[index], "m/s"));
+        }
+        // In file order, which is the order the solver wrote them: density
+        // first on a compressible run, then whatever extraFields added.
+        for (const std::string& name : frame.scalarNames) {
+            const auto found = frame.scalars.find(name);
+            if (found == frame.scalars.end() ||
+                index >= found->second.size()) {
+                continue;
+            }
+            rows.emplace_back(name, number(found->second[index], ""));
+        }
+        return rows;
+    }
+
     void drawResultTooltip() {
         if (!activeFrame_ || panningResults_ || draggingFrame_ ||
             draggingZoom_ || !resultViewport_.contains(lastMouse_)) {
@@ -9332,55 +9749,40 @@ private:
             return;
         }
 
-        const auto scalarText = [](float value, bool finite,
-                                   const std::string& unit) {
-            return finite ? formatValue(value, false, unit) : "non-finite";
-        };
         std::ostringstream value;
-        value << "Pixel X: " << sample->x << "   Y: " << sample->y << '\n'
-              << "Position x: "
-              << formatValue(sample->physicalX, false, "m")
-              << "   y: "
-              << formatValue(sample->physicalY, false, "m") << '\n';
-        if (sample->solid) {
-            value << "u: n/a   v: n/a\n"
-                  << "Speed: n/a (solid)\nPressure: n/a (solid)";
-        } else {
-            value << "u: "
-                  << scalarText(
-                         sample->velocityX,
-                         sample->speedFinite,
-                         "m/s")
-                  << "   v: "
-                  << scalarText(
-                         sample->velocityY,
-                         sample->speedFinite,
-                         "m/s")
-                  << "\nSpeed: "
-                  << scalarText(sample->speed, sample->speedFinite, "m/s")
-                  << "\nPressure: "
-                  << scalarText(
-                         sample->pressure,
-                         sample->pressureFinite,
-                         "Pa");
-        }
-
+        value << "cell " << sample->x << ", " << sample->y
+              << "   x " << formatValue(sample->physicalX, false, "m")
+              << "   y " << formatValue(sample->physicalY, false, "m");
         if (sliceCache_.slicing()) {
-            value << "\nSlice " << sliceAxisName() << ' '
+            value << "\nslice " << sliceAxisName() << ' '
                   << (sliceIndex_ + 1) << '/' << slicePlaneCount();
         }
+        for (const auto& row : cellReadout(
+                 frame, sample->x, sample->y, 0, sample->solid)) {
+            value << '\n';
+            if (!row.first.empty()) {
+                value << row.first << ": ";
+            }
+            value << row.second;
+        }
 
-        constexpr float tooltipWidth = 270.0f;
-        const float tooltipHeight = sliceCache_.slicing() ? 126.0f : 110.0f;
+        const std::string text = value.str();
+        const std::size_t lines =
+            1u + static_cast<std::size_t>(
+                     std::count(text.begin(), text.end(), '\n'));
+        constexpr float tooltipWidth = 290.0f;
+        const float tooltipHeight = 14.0f + static_cast<float>(lines) * 15.0f;
         sf::Vector2f position = lastMouse_ + sf::Vector2f{14.0f, 14.0f};
         position.x = std::clamp(
             position.x,
             4.0f,
-            static_cast<float>(layoutSize_.x) - tooltipWidth - 4.0f);
+            std::max(4.0f,
+                     static_cast<float>(layoutSize_.x) - tooltipWidth - 4.0f));
         position.y = std::clamp(
             position.y,
             52.0f,
-            static_cast<float>(layoutSize_.y) - tooltipHeight - 28.0f);
+            std::max(52.0f,
+                     static_cast<float>(layoutSize_.y) - tooltipHeight - 28.0f));
 
         sf::RectangleShape background({tooltipWidth, tooltipHeight});
         background.setPosition(position);
@@ -9390,7 +9792,7 @@ private:
         window_->draw(background);
         window_->draw(makeText(
             font_,
-            value.str(),
+            text,
             12,
             position + sf::Vector2f{9.0f, 7.0f},
             TEXT));
@@ -9679,6 +10081,9 @@ private:
         solverExeButton_.draw(*window_, font_, lastMouse_);
         importButton_.draw(*window_, font_, lastMouse_);
         outputFolderButton_.draw(*window_, font_, lastMouse_);
+        if (updateOffered()) {
+            updateButton_.draw(*window_, font_, lastMouse_);
+        }
         if (parametersVisible()) {
             drawOutliner();
         }
@@ -10125,6 +10530,15 @@ private:
     std::string windowTitle_;
     std::string publishedTitle_;
     std::string runProgressText_;
+    bool showViewHelp_ = false;
+    // The update check's answer, written by its own thread and read by the
+    // drawing one. A mutex rather than an atomic because it is a string and a
+    // bool that have to agree with each other.
+    std::mutex updateMutex_;
+    update::Result updateResult_;
+    bool updateSeen_ = false;
+    Button updateButton_{"Update available"};
+    std::optional<std::chrono::steady_clock::time_point> stopRequestedAt_;
     // Negative means "running, but how far along is not known" - which is what
     // a solver too old to print its simulated time leaves us with.
     double runProgress_ = -1.0;

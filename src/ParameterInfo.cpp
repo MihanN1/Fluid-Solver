@@ -41,7 +41,7 @@ const char* parameterKey(std::size_t index) {
         "dtUpdateInterval", "dtSafety",
         "convection", "limiter", "timeScheme",
         "omega", "smootherOmega", "mgIterations", "mgTolerance",
-        "mgMinCoarseSize", "saveInterval", "extraFields",
+        "mgMinCoarseSize", "runName", "saveInterval", "extraFields",
         "useCuda", "useAvx2", "useOpenMP",
         "threads", "uiCacheMB"
     }};
@@ -333,6 +333,8 @@ const char* parameterHint(std::size_t index) {
         return "How exactly the pressure has to balance before the step is accepted. Smaller is more accurate and slower.";
     case MgMinCoarseSize:
         return "How small the coarsest pressure grid is allowed to get. 8 cells a side is the usual floor.";
+    case RunName:
+        return "What to call this run. It becomes the folder the frames go in, so two runs do not land on top of each other and you can tell them apart a week later.";
     case SaveInterval:
         return "How many steps between saved frames. Fewer frames means a smaller output folder and a choppier animation.";
     case ExtraFields:
@@ -540,6 +542,8 @@ std::string parameterHelp(std::size_t index) {
         return "Which limiter muscl uses. minmod is the most diffusive and the safest, superbee the least of both.";
     case TimeSchemeKind:
         return "euler is one projection a step. rk2 and rk3 project on every stage, cost that many times more and are what anything other than upwind needs under it.";
+    case RunName:
+        return "A name for this run. Empty gives the old run-<timestamp> folder; anything else becomes the folder name, and appears in the tray and the title while it runs.";
     case ExtraFields:
         return "Extra fields written into every frame for ParaView and the results view: vorticity, divergence, speed, objectId, comma separated.";
     case DomainX:

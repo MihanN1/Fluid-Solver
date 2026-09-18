@@ -114,12 +114,18 @@ add_library(mask_ui_core STATIC
     src/SectionAdapter.cpp
     src/tiny_obj_loader_impl.cpp
     src/TrayIcon.cpp
+    src/UpdateCheck.cpp
     src/VtkFrame.cpp
     src/VelocityOverlay.cpp
     src/Viewport3D.cpp
 )
 
 target_link_libraries(mask_ui_core PUBLIC SFML::Graphics)
+
+# The update check lives in the core now, and it needs to know which version it
+# is asking about.
+target_compile_definitions(mask_ui_core
+    PUBLIC CFD_MASK_UI_VERSION="${PROJECT_VERSION}")
 
 target_include_directories(mask_ui_core
     PUBLIC
@@ -253,9 +259,13 @@ if(WIN32)
     # shell32 the tray icon, ole32 ITaskbarList3 (the progress on the taskbar
     # button), user32 the hidden window the tray posts its clicks to.
     target_link_libraries(cfd_mask_ui_optimized PRIVATE shell32 ole32 user32)
-    target_link_libraries(mask_ui_core PUBLIC shell32 ole32 user32)
+    # winhttp is the update check, which now lives in the window rather than
+    # only in the installer.
+    target_link_libraries(mask_ui_core PUBLIC shell32 ole32 user32 winhttp)
+    find_package(Threads REQUIRED)
+    target_link_libraries(mask_ui_core PUBLIC Threads::Threads)
 else()
-    # The tray thread, and fork/exec's waitpid.
+    # The tray thread, the update check's thread, and fork/exec's waitpid.
     find_package(Threads REQUIRED)
     target_link_libraries(mask_ui_core PUBLIC Threads::Threads)
 endif()

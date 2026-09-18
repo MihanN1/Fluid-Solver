@@ -127,6 +127,10 @@ struct FluidSolverRunConfig {
 
     bool supportsExtraFields = false;
     std::string extraFields;
+    // What to call this run. Passed on only when the solver knows the key, so
+    // an older solver is handed a line it understands.
+    bool supportsRunName = false;
+    std::string runName;
 
     bool supportsSchemes = false;
     std::string convection = "upwind";

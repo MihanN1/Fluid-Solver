@@ -62,7 +62,11 @@ struct Viewport3DSettings {
     bool showVolume = false;
     float volumeDensity = 1.0f;
     bool showVortices = false;
-    float vortexLevel = 0.15f;
+    // How strict the Q cut is, as a share of the cells that are rotating at
+    // all rather than a share of the single largest Q in the box - see
+    // vortexThreshold. 0.85 draws the strongest fifteen per cent, which is
+    // where a tip vortex and a wake read clearly on every run tried.
+    float vortexLevel = 0.85f;
     bool showStreamlines = false;
     int streamlineSeeds = 400;
     int streamlineSteps = 400;
@@ -169,6 +173,9 @@ public:
         float x = 0.0f;
         float y = 0.0f;
         float z = 0.0f;
+        // Why this cell and not another one: what the ray actually ran into.
+        enum class Reason { BoxWall, Solid, Cloud, Slice };
+        Reason reason = Reason::BoxWall;
     };
 
     void setFrame(std::shared_ptr<const VtkFrame> frame);
@@ -188,6 +195,11 @@ public:
     void advance(float seconds);
 
     Pick pickAt(const sf::FloatRect& area, float screenX, float screenY) const;
+
+    // Outline one cell in the picture, so "the cursor is on this cell" is
+    // something you can see rather than three numbers to be taken on trust.
+    void setHighlight(bool on, std::size_t i = 0, std::size_t j = 0,
+                      std::size_t k = 0);
 
     std::size_t triangleCount() const;
     std::size_t lineCount() const;
@@ -241,6 +253,7 @@ private:
     void rebuildStreamlines();
     void rebuildTracers();
     void rebuildMarkers();
+    void rebuildHighlight();
     Bounds bounds() const;
     DataRange colourRange(const ScalarVolume& volume) const;
     void appendSurface(
@@ -265,6 +278,13 @@ private:
     Batch tracers_;
     Batch markers_;
     Batch cloud_;
+    Batch highlight_;
+    bool highlightOn_ = false;
+    std::size_t highlightCell_[3] = {0, 0, 0};
+    // One byte a cell saying "the cloud draws this one". The pick walks the
+    // ray through it, so hovering stops on the first thing that is actually on
+    // screen instead of on the wall of the box the ray came in through.
+    std::vector<std::uint8_t> cloudMask_;
     std::vector<CloudCell> cloudCells_;
     int cloudAxis_ = -1;
     bool cloudDescending_ = false;

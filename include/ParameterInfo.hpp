@@ -145,6 +145,7 @@ enum ParameterIndex : std::size_t {
     MgIterations,
     MgTolerance,
     MgMinCoarseSize,
+    RunName,
     SaveInterval,
     ExtraFields,
     UseCuda,
@@ -174,7 +175,7 @@ constexpr std::array<ParameterGroupInfo, 16> PARAMETER_GROUPS{{
     {Cfl, "TIME"},
     {Convection, "NUMERICS"},
     {CoarseSorOmega, "PRESSURE / MULTIGRID"},
-    {SaveInterval, "OUTPUT"},
+    {RunName, "OUTPUT"},
     {UseCuda, "ACCELERATION"},
     {CacheMegabytes, "UI"}
 }};

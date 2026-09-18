@@ -1703,6 +1703,7 @@ void Viewport3D::rebuildAll() {
     rebuildStreamlines();
     rebuildTracers();
     rebuildMarkers();
+    rebuildHighlight();
 }
 
 // The cloud: every cell of the volume that differs from the still air around
@@ -1724,6 +1725,7 @@ void Viewport3D::rebuildAll() {
 // millisecond, and that is what orderCloud does.
 void Viewport3D::rebuildCloud() {
     cloudCells_.clear();
+    cloudMask_.clear();
     cloud_.clear();
     cloudAxis_ = -1;
     cloudCosine_ = 0.0f;
@@ -1841,6 +1843,7 @@ void Viewport3D::rebuildCloud() {
                          static_cast<float>(OPACITY_BINS - 1u);
 
     cloudCells_.reserve(std::min(kept, MAX_CLOUD_CELLS));
+    cloudMask_.assign(frame.nx * frame.ny * frame.nz, 0u);
     for (std::size_t k = 0; k < frame.nz &&
                            cloudCells_.size() < MAX_CLOUD_CELLS; ++k) {
         for (std::size_t j = 0; j < frame.ny &&
@@ -1870,8 +1873,81 @@ void Viewport3D::rebuildCloud() {
                 cell.a = static_cast<std::uint8_t>(std::lround(
                     clampFloat(opacity, 0.0f, 1.0f) * 255.0f));
                 cloudCells_.push_back(cell);
+                cloudMask_[frame.cellIndex(i, j, k)] = 1u;
             }
         }
+    }
+}
+
+// The outline of one cell, drawn a whisker larger than the cell so it is not
+// hidden inside whatever is being drawn there. A cell of a five million cell
+// grid is a pixel or two on screen, so the box is grown to a minimum size -
+// better a mark you can see that is slightly too big than an exact one that is
+// invisible.
+void Viewport3D::setHighlight(bool on, std::size_t i, std::size_t j,
+                              std::size_t k) {
+    if (highlightOn_ == on && highlightCell_[0] == i &&
+        highlightCell_[1] == j && highlightCell_[2] == k) {
+        return;
+    }
+    highlightOn_ = on;
+    highlightCell_[0] = i;
+    highlightCell_[1] = j;
+    highlightCell_[2] = k;
+    rebuildHighlight();
+}
+
+void Viewport3D::rebuildHighlight() {
+    highlight_.clear();
+    if (!highlightOn_ || !frame_) {
+        return;
+    }
+    const VtkFrame& frame = *frame_;
+    if (highlightCell_[0] >= frame.nx || highlightCell_[1] >= frame.ny ||
+        highlightCell_[2] >= frame.nz) {
+        return;
+    }
+    const Bounds box = bounds();
+    const float shortest = std::min(
+        std::min(box.highX - box.lowX, box.highY - box.lowY),
+        box.highZ - box.lowZ);
+    const float least = 0.012f * shortest;
+
+    float low[3] = {
+        static_cast<float>(frame.cellLeft(highlightCell_[0])),
+        static_cast<float>(frame.cellBottom(highlightCell_[1])),
+        static_cast<float>(frame.cellFront(highlightCell_[2]))
+    };
+    float high[3] = {
+        static_cast<float>(frame.cellRight(highlightCell_[0])),
+        static_cast<float>(frame.cellTop(highlightCell_[1])),
+        static_cast<float>(frame.cellBack(highlightCell_[2]))
+    };
+    for (int axis = 0; axis < 3; ++axis) {
+        const float grow = 0.5f * std::max(0.0f, least - (high[axis] - low[axis]));
+        low[axis] -= grow;
+        high[axis] += grow;
+    }
+
+    const sf::Color colour(255, 255, 255);
+    const int edges[12][2] = {
+        {0, 1}, {1, 3}, {3, 2}, {2, 0},
+        {4, 5}, {5, 7}, {7, 6}, {6, 4},
+        {0, 4}, {1, 5}, {2, 6}, {3, 7}
+    };
+    const auto corner = [&](int index, float out[3]) {
+        out[0] = (index & 1) ? high[0] : low[0];
+        out[1] = (index & 2) ? high[1] : low[1];
+        out[2] = (index & 4) ? high[2] : low[2];
+    };
+    highlight_.reserve(24u);
+    for (const auto& edge : edges) {
+        float a[3];
+        float b[3];
+        corner(edge[0], a);
+        corner(edge[1], b);
+        highlight_.add(a[0], a[1], a[2], colour);
+        highlight_.add(b[0], b[1], b[2], colour);
     }
 }
 
@@ -2371,6 +2447,73 @@ void Viewport3D::rebuildIsosurface() {
     appendSurface(isosurface_, mesh, colourField, colourRange(colourField));
 }
 
+// Where to cut the Q field so that what comes back is the vortices.
+//
+// This used to be a fraction of the single largest Q in the box, and that is
+// why the Vortices button so often drew nothing at all. Q's maximum lives in
+// one cell, usually jammed against the body or sitting in a shock, and it is
+// orders of magnitude above where the tip vortex and the wake actually are: a
+// flyby frame here reads 3.3e7 at its peak while the wake is around 1e5, so
+// the default of "fifteen per cent of the peak" asked for a surface at 5e6 and
+// there was nothing there to draw. The slider then did nothing until its last
+// hair of travel, which reads exactly like a broken button.
+//
+// So the slider means a share of the cells instead, and reads as strictness:
+// at 0.85 it draws the strongest fifteen per cent of the cells that are
+// rotating at all, at 1.0 only the very strongest, at 0 everything with any
+// rotation in it. That always has something in it when the flow has vortices,
+// nothing when it does not, and moving the slider moves the surface by a
+// visible amount everywhere along its travel.
+float vortexThreshold(const ScalarVolume& criterion, float strictness) {
+    constexpr std::size_t BINS = 512;
+    double highest = 0.0;
+    std::size_t positive = 0;
+    for (const float value : criterion.values) {
+        if (std::isfinite(value) && value > 0.0f) {
+            ++positive;
+            highest = std::max(highest, static_cast<double>(value));
+        }
+    }
+    if (positive == 0 || !(highest > 0.0)) {
+        return 0.0f;
+    }
+    // Logarithmic bins: Q spans four or five decades in any real flow, and on
+    // a linear scale every cell that matters lands in the first bin.
+    const double floorValue = highest * 1.0e-6;
+    const double lowLog = std::log(floorValue);
+    const double span = std::log(highest) - lowLog;
+    if (!(span > 0.0)) {
+        return static_cast<float>(highest);
+    }
+    std::array<std::size_t, BINS> counts{};
+    counts.fill(0);
+    for (const float value : criterion.values) {
+        if (!std::isfinite(value) || value <= 0.0f) {
+            continue;
+        }
+        const double at =
+            (std::log(std::max(static_cast<double>(value), floorValue)) -
+             lowLog) / span;
+        const std::size_t bin = static_cast<std::size_t>(clampFloat(
+            static_cast<float>(at) * static_cast<float>(BINS - 1u),
+            0.0f,
+            static_cast<float>(BINS - 1u)));
+        ++counts[bin];
+    }
+    const double keep = static_cast<double>(positive) *
+        static_cast<double>(clampFloat(1.0f - strictness, 0.002f, 1.0f));
+    std::size_t running = 0;
+    for (std::size_t bin = BINS; bin-- > 0;) {
+        running += counts[bin];
+        if (static_cast<double>(running) >= keep) {
+            const double at =
+                static_cast<double>(bin) / static_cast<double>(BINS - 1u);
+            return static_cast<float>(std::exp(lowLog + at * span));
+        }
+    }
+    return static_cast<float>(floorValue);
+}
+
 void Viewport3D::rebuildVortices() {
     vortexSurface_.clear();
     vortexLines_.clear();
@@ -2383,12 +2526,10 @@ void Viewport3D::rebuildVortices() {
     if (criterion.empty() || !criterion.range.available) {
         return;
     }
-    const double highest = std::max(criterion.range.maximum, 0.0);
-    if (!(highest > 0.0)) {
+    const float level = vortexThreshold(criterion, settings_.vortexLevel);
+    if (!(level > 0.0f)) {
         return;
     }
-    const float level = static_cast<float>(
-        highest * static_cast<double>(clampFloat(settings_.vortexLevel, 0.0f, 1.0f)));
 
     const SurfaceMesh mesh = marchingCubes(
         criterion,
@@ -2699,6 +2840,7 @@ void Viewport3D::draw(sf::RenderWindow& window, const sf::FloatRect& area) {
     }
     glLineWidth(2.5f);
     submit(markers_, GL_LINES, "markers");
+    submit(highlight_, GL_LINES, "highlight");
     glLineWidth(1.5f);
     submit(box_, GL_LINES, "box");
     submit(streamlines_, GL_LINES, "streamlines");
@@ -2867,9 +3009,23 @@ Viewport3D::Pick Viewport3D::pickAt(
     pick.x = point[0];
     pick.y = point[1];
     pick.z = point[2];
+    pick.reason = Pick::Reason::BoxWall;
     if (entryAxis >= 0) {
         pick.face = entryAxis * 2 + (entryHigh ? 1 : 0);
     }
+
+    // Which planes the ray is allowed to stop on. A slice is a picture of one
+    // plane of cells, so the cell under the cursor on a slice is the cell that
+    // plane is showing there - and that is what a reading taken by pointing at
+    // it has to be.
+    const bool planeOn[3] = {
+        settings_.showSlices && settings_.sliceX,
+        settings_.showSlices && settings_.sliceY,
+        settings_.showSlices && settings_.sliceZ
+    };
+    const std::size_t planeAt[3] = {
+        settings_.sliceIndexX, settings_.sliceIndexY, settings_.sliceIndexZ
+    };
 
     int direction3[3];
     float nextCrossing[3];
@@ -2896,8 +3052,54 @@ Viewport3D::Pick Viewport3D::pickAt(
             static_cast<std::size_t>(cell[0]),
             static_cast<std::size_t>(cell[1]),
             static_cast<std::size_t>(cell[2]));
-        if (!frame.solid.empty() && frame.solid[index] != 0) {
+        // The first thing along the ray that is actually on screen. Before
+        // this, a ray that missed the body reported the cell it entered the
+        // box through - a cell on the far wall, behind everything, which is
+        // why the readout looked like it was picking at random. Now the walk
+        // stops on the body, on a cloud block, or where it crosses a slice
+        // plane, and says which of the three it was.
+        //
+        // The body comes first because it is opaque: nothing behind it is
+        // visible, so nothing behind it can be what the cursor is on. The
+        // cloud comes next, and a slice plane last, because a plane is the
+        // thing you see through the other two.
+        const bool solidHere =
+            !frame.solid.empty() && frame.solid[index] != 0;
+        if (!solidHere && !cloudMask_.empty() && cloudMask_[index] != 0) {
+            pick.reason = Pick::Reason::Cloud;
+            pick.i = static_cast<std::size_t>(cell[0]);
+            pick.j = static_cast<std::size_t>(cell[1]);
+            pick.k = static_cast<std::size_t>(cell[2]);
+            pick.x = 0.5f * (lowOf(0, pick.i) + highOf(0, pick.i));
+            pick.y = 0.5f * (lowOf(1, pick.j) + highOf(1, pick.j));
+            pick.z = 0.5f * (lowOf(2, pick.k) + highOf(2, pick.k));
+            return pick;
+        }
+        // Only in a volume. In a single plane the slice IS the result, every
+        // cell is on it, and stopping at the first one would mean never
+        // reaching the body behind it.
+        bool onPlane = false;
+        if (frame.nz > 1u) {
+            for (int axis = 0; axis < 3; ++axis) {
+                if (planeOn[axis] &&
+                    static_cast<std::size_t>(cell[axis]) == planeAt[axis]) {
+                    onPlane = true;
+                }
+            }
+        }
+        if (!solidHere && onPlane) {
+            pick.reason = Pick::Reason::Slice;
+            pick.i = static_cast<std::size_t>(cell[0]);
+            pick.j = static_cast<std::size_t>(cell[1]);
+            pick.k = static_cast<std::size_t>(cell[2]);
+            pick.x = 0.5f * (lowOf(0, pick.i) + highOf(0, pick.i));
+            pick.y = 0.5f * (lowOf(1, pick.j) + highOf(1, pick.j));
+            pick.z = 0.5f * (lowOf(2, pick.k) + highOf(2, pick.k));
+            return pick;
+        }
+        if (solidHere) {
             pick.solidHit = true;
+            pick.reason = Pick::Reason::Solid;
             pick.i = static_cast<std::size_t>(cell[0]);
             pick.j = static_cast<std::size_t>(cell[1]);
             pick.k = static_cast<std::size_t>(cell[2]);

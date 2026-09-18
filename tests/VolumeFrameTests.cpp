@@ -724,6 +724,14 @@ void testPicking() {
     finishVolume(*frame);
 
     maskui::Viewport3D viewport;
+    // Nothing drawn in front of the body: this is a test of the ray and the
+    // mask, and a slice plane is opaque, so with one on the honest answer to
+    // "what is under the cursor" is the plane. That case has its own test
+    // below.
+    maskui::Viewport3DSettings bare;
+    bare.showSlices = false;
+    bare.showVolume = false;
+    viewport.setSettings(bare);
     viewport.setFrame(frame);
     const sf::FloatRect area({0.0f, 0.0f}, {800.0f, 600.0f});
     const float centreX = 400.0f;
@@ -865,6 +873,122 @@ void testTranslucentCloud() {
     viewport.setFrame(flat);
     check(viewport.triangleCount() == 0u,
           "the cloud drew blocks for a field that is the same everywhere");
+}
+
+// A slice is drawn as a solid sheet of coloured cells, so anything behind it
+// is not visible and cannot be what the cursor is on. The pick has to agree
+// with the picture, and say which of the two it stopped on.
+void testPickStopsOnWhatIsDrawn() {
+    const std::size_t size = 16;
+    const double spacing = 1.0 / static_cast<double>(size);
+    auto frame = std::make_shared<maskui::VtkFrame>(
+        buildVolume(size, size, size, spacing));
+    frame->solid[frame->cellIndex(8, 8, 12)] = 1u;
+    finishVolume(*frame);
+
+    maskui::Viewport3D viewport;
+    maskui::Viewport3DSettings settings;
+    settings.showSlices = true;
+    settings.sliceX = false;
+    settings.sliceY = false;
+    settings.sliceZ = true;
+    // Nearer the camera than the body, which sits at k = 12: this view looks
+    // along -z, so a higher plane index is the one in front.
+    settings.sliceIndexZ = 14;
+    settings.showVolume = false;
+    viewport.setSettings(settings);
+    viewport.setFrame(frame);
+    viewport.setView(2, false);
+    viewport.frameAll();
+
+    const sf::FloatRect area({0.0f, 0.0f}, {800.0f, 600.0f});
+    const maskui::Viewport3D::Pick front =
+        viewport.pickAt(area, 400.0f, 300.0f);
+    check(front.hit, "a ray straight at the middle of the box hit nothing");
+    check(front.reason == maskui::Viewport3D::Pick::Reason::Slice,
+          "a ray that crosses a slice plane did not stop on it");
+    check(front.k == 14u,
+          "the pick landed on plane " + std::to_string(front.k) +
+              " instead of the one being drawn");
+
+    // With the plane off, the same ray reaches the body behind it.
+    settings.showSlices = false;
+    viewport.setSettings(settings);
+    const maskui::Viewport3D::Pick through =
+        viewport.pickAt(area, 400.0f, 300.0f);
+    check(through.solidHit &&
+              through.reason == maskui::Viewport3D::Pick::Reason::Solid,
+          "with nothing in front of it the body was not picked");
+}
+
+// The vortex threshold used to be a share of the single largest Q in the box,
+// and the largest Q lives in one cell against the body, orders of magnitude
+// above the wake - so the default setting asked for a surface where there was
+// nothing and the button appeared to do nothing at all. It is a share of the
+// rotating cells now, so it always finds the vortices that exist, and the
+// slider has to move the answer along its whole travel rather than only at one
+// end.
+void testVortexThresholdFollowsTheSlider() {
+    const std::size_t size = 20;
+    const double spacing = 1.0 / static_cast<double>(size);
+    auto frame = std::make_shared<maskui::VtkFrame>(
+        buildVolume(size, size, size, spacing));
+    // One tight vortex down the middle and one broad, slow one beside it, so
+    // there is a strong core and a weak one to tell apart.
+    for (std::size_t k = 0; k < size; ++k)
+        for (std::size_t j = 0; j < size; ++j)
+            for (std::size_t i = 0; i < size; ++i) {
+                const double x = frame->cellCentreX(i);
+                const double y = frame->cellCentreY(j);
+                const auto swirl = [&](double cx, double cy, double core,
+                                       double strength) {
+                    const double dx = x - cx;
+                    const double dy = y - cy;
+                    const double r2 = dx * dx + dy * dy + core * core;
+                    return std::make_pair(-strength * dy / r2,
+                                          strength * dx / r2);
+                };
+                const auto tight = swirl(0.3, 0.5, 0.02, 0.02);
+                const auto broad = swirl(0.7, 0.5, 0.12, 0.02);
+                frame->velocity[frame->cellIndex(i, j, k)] = {
+                    static_cast<float>(tight.first + broad.first),
+                    static_cast<float>(tight.second + broad.second),
+                    0.0f
+                };
+                frame->pressure[frame->cellIndex(i, j, k)] = 1.0f;
+            }
+    finishVolume(*frame);
+
+    maskui::Viewport3D viewport;
+    maskui::Viewport3DSettings settings;
+    settings.showSolid = false;
+    settings.showSlices = false;
+    settings.showBox = false;
+    settings.showVolume = false;
+    settings.showVortices = true;
+
+    std::size_t loose = 0;
+    std::size_t middling = 0;
+    std::size_t strict = 0;
+    const auto trianglesAt = [&](float strictness) {
+        settings.vortexLevel = strictness;
+        viewport.setSettings(settings);
+        viewport.setFrame(frame);
+        return viewport.triangleCount();
+    };
+    loose = trianglesAt(0.1f);
+    middling = trianglesAt(0.85f);
+    strict = trianglesAt(0.99f);
+
+    check(middling > 0u,
+          "the default vortex setting drew no surface at all for a field that "
+          "is nothing but vortices");
+    check(loose > middling,
+          "a looser vortex cut did not draw more than the default: " +
+              std::to_string(loose) + " against " + std::to_string(middling));
+    check(strict < middling,
+          "a stricter vortex cut did not draw less than the default: " +
+              std::to_string(strict) + " against " + std::to_string(middling));
 }
 
 void testViewportBuilds() {
@@ -1036,6 +1160,8 @@ int main() {
     testVortices();
     testStreamlines();
     testPicking();
+    testPickStopsOnWhatIsDrawn();
+    testVortexThresholdFollowsTheSlider();
     testViewportBuilds();
     testTranslucentCloud();
     testMovingBodySeries(root);
