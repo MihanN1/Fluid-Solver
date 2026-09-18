@@ -9746,9 +9746,15 @@ private:
         if (owner == ControlVolumeStyle) {
             setVolumeStyle(index);
         } else if (owner == ControlSnapTo) {
+            // Not "far". windef.h still carries the 16-bit memory model's
+            // "#define far" and "#define near", so a variable of either name
+            // is deleted by the preprocessor before the compiler sees it -
+            // and MSVC then reads the "[6]" that is left as a structured
+            // binding and gives up on the rest of the file.
             static const int axis[6] = {2, 2, 0, 0, 1, 1};
-            static const bool far[6] = {false, true, true, false, false, true};
-            viewport3D_.setView(axis[index], far[index]);
+            static const bool awayFrom[6] = {
+                false, true, true, false, false, true};
+            viewport3D_.setView(axis[index], awayFrom[index]);
             status_ = "Looking at the " + chosen + " of the box.";
         } else if (owner == ControlColour) {
             chooseColourField(chosen);
