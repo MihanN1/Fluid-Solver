@@ -201,6 +201,11 @@ public:
     void setHighlight(bool on, std::size_t i = 0, std::size_t j = 0,
                       std::size_t k = 0);
 
+    // Outline one wall of the box: -1 for none, otherwise axis * 2 + (far
+    // side). Resting on an entry of the Snap to menu lights up the side it
+    // would take you to, so the six names do not have to be learned.
+    void setFaceHighlight(int face);
+
     std::size_t triangleCount() const;
     std::size_t lineCount() const;
 
@@ -254,6 +259,7 @@ private:
     void rebuildTracers();
     void rebuildMarkers();
     void rebuildHighlight();
+    void rebuildFaceHighlight();
     Bounds bounds() const;
     DataRange colourRange(const ScalarVolume& volume) const;
     void appendSurface(
@@ -279,6 +285,8 @@ private:
     Batch markers_;
     Batch cloud_;
     Batch highlight_;
+    Batch faceHighlight_;
+    int faceHighlighted_ = -1;
     bool highlightOn_ = false;
     std::size_t highlightCell_[3] = {0, 0, 0};
     // One byte a cell saying "the cloud draws this one". The pick walks the

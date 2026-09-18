@@ -155,6 +155,27 @@ bool validateArgumentPath(const char* name,
 
 } // namespace
 
+std::optional<double> simulatedTimeFromSolverOutput(const std::string& tail) {
+    // The leading space is what keeps this off "dt = ": the character before
+    // the t there is a d, not a space.
+    const std::string needle = " t = ";
+    std::optional<double> latest;
+    std::size_t at = tail.find(needle);
+    while (at != std::string::npos) {
+        try {
+            std::size_t consumed = 0;
+            const double value =
+                std::stod(tail.substr(at + needle.size(), 32), &consumed);
+            if (consumed > 0 && std::isfinite(value)) {
+                latest = value;
+            }
+        } catch (const std::exception&) {
+        }
+        at = tail.find(needle, at + needle.size());
+    }
+    return latest;
+}
+
 bool validateFluidSolverRunConfig(const FluidSolverRunConfig& config,
                              std::string& error) {
     error.clear();
@@ -687,6 +708,9 @@ bool buildFluidSolverArguments(
     }
     if (config.supportsRunName && !config.runName.empty()) {
         arguments.push_back("runName=" + config.runName);
+    }
+    if (config.supportsVortices && !config.vortices.empty()) {
+        arguments.push_back("vortices=" + config.vortices);
     }
     if (config.supportsSchemes) {
         arguments.push_back("convection=" + config.convection);

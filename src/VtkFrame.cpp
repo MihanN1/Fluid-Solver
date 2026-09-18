@@ -1448,8 +1448,28 @@ VtkFrame VtkFrameParser::parse(const std::filesystem::path& path) {
         conservedArrays == 4u &&
         frame.nx < std::numeric_limits<std::size_t>::max() &&
         conservedCount == frame.nx * frame.ny * frame.nz;
-    const bool restartSizesMatch =
-        legacyArraysMatch || hasFacePack || conservedArraysMatch;
+
+    // A compressible frame does not carry the conserved variables any more:
+    // they are density, the velocity vector and pressure rearranged, and the
+    // solver puts them back on the way in. So what makes such a frame
+    // continuable is those three being present and the right size - which is
+    // the same test the solver's own reconstruction makes. Without this the
+    // Continue run button was dark on every frame written by a current solver,
+    // because the window was still looking for arrays nobody writes.
+    const std::size_t cellCount =
+        frame.nx < std::numeric_limits<std::size_t>::max()
+            ? frame.nx * frame.ny * frame.nz
+            : 0u;
+    const auto densityScalar = frame.scalars.find("density");
+    const bool rebuildableState =
+        cellCount != 0u &&
+        densityScalar != frame.scalars.end() &&
+        densityScalar->second.size() == cellCount &&
+        frame.pressure.size() == cellCount &&
+        frame.velocity.size() == cellCount;
+
+    const bool restartSizesMatch = legacyArraysMatch || hasFacePack ||
+                                   conservedArraysMatch || rebuildableState;
     frame.restart.restartCapable =
         hasRestartConfig && restartSizesMatch &&
         frame.restart.currentTime.has_value() &&

@@ -34,6 +34,42 @@ int fail(const std::string& message) {
 } // namespace
 
 int main() {
+    // The progress bar reads the simulated time out of the solver's own
+    // output, and has now been wrong twice: once matching only the projection
+    // solver's line, and once matching the "t = " inside "dt = " on the
+    // compressible one, which made it read out the time step and sit there.
+    {
+        const std::string projection =
+            "Step 1230, t = 3.71591 s, dt = 0.001, |u|max = 2\n";
+        const auto a = maskui::simulatedTimeFromSolverOutput(projection);
+        if (!a || std::abs(*a - 3.71591) > 1e-9) {
+            return fail("the projection solver's step line did not parse");
+        }
+
+        const std::string compressible =
+            "step     40  t = 0.000322 s  dt = 8.008e-06  Mach max 0.922\n";
+        const auto b = maskui::simulatedTimeFromSolverOutput(compressible);
+        if (!b || std::abs(*b - 0.000322) > 1e-12) {
+            return fail("the compressible step line did not parse: got " +
+                        (b ? std::to_string(*b) : std::string("nothing")));
+        }
+        if (b && *b < 1e-5) {
+            return fail("the compressible line parsed as its own dt, which is "
+                        "what made the bar sit at 6.83e-06 of 0.02 forever");
+        }
+
+        // The last line in the tail is the one that counts.
+        const std::string two = projection + compressible;
+        const auto c = maskui::simulatedTimeFromSolverOutput(two);
+        if (!c || std::abs(*c - 0.000322) > 1e-12) {
+            return fail("an older line won over the newest one");
+        }
+
+        if (maskui::simulatedTimeFromSolverOutput("nothing here").has_value()) {
+            return fail("output with no step line produced a time anyway");
+        }
+    }
+
     const auto unique = std::chrono::high_resolution_clock::now()
                             .time_since_epoch()
                             .count();

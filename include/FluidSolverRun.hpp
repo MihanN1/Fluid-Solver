@@ -7,6 +7,18 @@
 
 namespace maskui {
 
+// The simulated time a solver has reached, read out of the tail of its own
+// console output. Both solvers print it, in different shapes:
+//
+//   Step 1230, t = 3.71591 s, dt = 0.001 ...      the projection solver
+//   step   1230  t = 3.71591 s  dt = 8.0e-06 ...  the compressible one
+//
+// Out here rather than inside the window because the two ways of getting this
+// wrong - matching neither line, and matching the "t = " inside "dt = " - both
+// shipped, and neither was visible to a test while it lived in a private
+// method.
+std::optional<double> simulatedTimeFromSolverOutput(const std::string& tail);
+
 struct FluidSolverRunConfig {
     double Lx = 1.0;
     double Ly = 1.0;
@@ -131,6 +143,8 @@ struct FluidSolverRunConfig {
     // an older solver is handed a line it understands.
     bool supportsRunName = false;
     std::string runName;
+    bool supportsVortices = false;
+    std::string vortices;
 
     bool supportsSchemes = false;
     std::string convection = "upwind";

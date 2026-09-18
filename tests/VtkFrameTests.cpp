@@ -127,7 +127,9 @@ void writeRectilinearFrame(const std::filesystem::path& path) {
 // the same file perfectly well.
 void writeCompressibleFrame(
     const std::filesystem::path& path,
-    std::size_t conservedCount = 4) {
+    std::size_t conservedCount = 4,
+    bool withConserved = true,
+    bool withDensity = true) {
     std::ofstream output(path, std::ios::binary | std::ios::trunc);
     output << "# vtk DataFile Version 3.0\n"
            << "Fluid Solver output, step 30\n"
@@ -140,9 +142,11 @@ void writeCompressibleFrame(
            << "SCALARS pressure float 1\nLOOKUP_TABLE default\n";
     for (int value = 0; value < 4; ++value)
         writeFloat(output, 101325.0f + 100.0f * static_cast<float>(value));
-    output << "\nSCALARS density float 1\nLOOKUP_TABLE default\n";
-    for (int value = 0; value < 4; ++value)
-        writeFloat(output, 1.225f + 0.1f * static_cast<float>(value));
+    if (withDensity) {
+        output << "\nSCALARS density float 1\nLOOKUP_TABLE default\n";
+        for (int value = 0; value < 4; ++value)
+            writeFloat(output, 1.225f + 0.1f * static_cast<float>(value));
+    }
     output << "\nSCALARS solid unsigned_char 1\nLOOKUP_TABLE default\n";
     for (int value = 0; value < 4; ++value)
         output.put('\0');
@@ -158,15 +162,17 @@ void writeCompressibleFrame(
         "restartTime=4.5\n"
         "restartStep=30\n"
         "restartDt=0.01\n";
-    output << "\nFIELD RestartData 6\n"
+    output << "\nFIELD RestartData " << (withConserved ? 6 : 1) << "\n"
            << "configText 1 " << config.size() << " char\n";
     output.write(config.data(), static_cast<std::streamsize>(config.size()));
-    const char* names[5] = {
-        "stateRho", "stateRhoU", "stateRhoV", "stateRhoW", "stateRhoE"};
-    for (const char* name : names) {
-        output << "\n" << name << " 1 " << conservedCount << " float\n";
-        for (std::size_t value = 0; value < conservedCount; ++value)
-            writeFloat(output, 1.0f);
+    if (withConserved) {
+        const char* names[5] = {
+            "stateRho", "stateRhoU", "stateRhoV", "stateRhoW", "stateRhoE"};
+        for (const char* name : names) {
+            output << "\n" << name << " 1 " << conservedCount << " float\n";
+            for (std::size_t value = 0; value < conservedCount; ++value)
+                writeFloat(output, 1.0f);
+        }
     }
     output << '\n';
 }
@@ -249,10 +255,35 @@ int main() {
         }
     }
 
+    // And a frame written the way a current solver writes one: density,
+    // pressure and velocity, no conserved arrays at all. The solver rebuilds
+    // them on the way in, so this is continuable, and the window's Continue
+    // run button has to agree - it went dark on every new frame when it did
+    // not.
+    const std::filesystem::path slim = root / "solution_32.vtk";
+    writeCompressibleFrame(slim, 4, false);
+    const maskui::VtkFrame slimFrame = maskui::VtkFrameParser::parse(slim);
+    if (!slimFrame.restart.restartCapable) {
+        return fail("a frame carrying density, pressure and velocity was "
+                    "called uncontinuable; that is everything a restart "
+                    "needs");
+    }
+    for (const std::string& warning : slimFrame.warnings) {
+        if (warning.find("RestartData") != std::string::npos) {
+            return fail("a slim frame was warned about: " + warning);
+        }
+    }
+
+    // Nothing to continue from and nothing to rebuild one out of: the
+    // conserved arrays are shorter than the grid AND there is no density. A
+    // short block on its own no longer means anything, because a frame that
+    // shows density, pressure and velocity can be continued whatever its
+    // restart block says.
     const std::filesystem::path stunted = root / "solution_31.vtk";
-    writeCompressibleFrame(stunted, 3);
+    writeCompressibleFrame(stunted, 3, true, false);
     if (maskui::VtkFrameParser::parse(stunted).restart.restartCapable) {
-        return fail("conserved arrays shorter than the grid were accepted");
+        return fail("a frame with short conserved arrays and no density to "
+                    "rebuild them from was called continuable");
     }
 
     const std::filesystem::path phased = root / "solution_22.vtk";

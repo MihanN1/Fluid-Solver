@@ -7,7 +7,7 @@ const char* parameterKey(std::size_t index) {
         "U0", "nu", "ro",
         "phases", "rho1", "nu1", "rho2", "nu2",
         "phaseInit", "phaseLevel", "phaseX", "phaseY", "phaseZ", "vofScheme",
-        "mixing", "diffusivity", "surfaceTension", "contactAngle", "sources",
+        "mixing", "diffusivity", "surfaceTension", "contactAngle", "sources", "vortices",
         "gravityEnabled", "gravityAccel", "gravityAngle", "gravityTilt",
         "gravityMode",
         "regime", "gamma", "R", "gamma2", "R2", "T0", "pInf", "machInlet",
@@ -337,6 +337,8 @@ const char* parameterHint(std::size_t index) {
         return "What to call this run. It becomes the folder the frames go in, so two runs do not land on top of each other and you can tell them apart a week later.";
     case SaveInterval:
         return "How many steps between saved frames. Fewer frames means a smaller output folder and a choppier animation.";
+    case VortexLine:
+        return "Vortices put into the flow before the first step, so there is something for the Vortices view to draw without waiting for a body to shed one.";
     case ExtraFields:
         return "Extra quantities written into every frame - vorticity, Mach, temperature, loudness - so you can colour by them later.";
     case UseCuda:
@@ -544,6 +546,8 @@ std::string parameterHelp(std::size_t index) {
         return "euler is one projection a step. rk2 and rk3 project on every stage, cost that many times more and are what anything other than upwind needs under it.";
     case RunName:
         return "A name for this run. Empty gives the old run-<timestamp> folder; anything else becomes the folder name, and appears in the tray and the title while it runs.";
+    case VortexLine:
+        return "x=0.5,y=0.5,z=0.5,radius=0.05,strength=60,axis=z - the axis passes through that point, the swirl is fastest at that radius and that is how fast it is there, in m/s. Semicolons between several. Compressible runs get the isentropic vortex, which is an exact solution of the Euler equations and is carried along by the stream without changing shape. Keep the radius to eight cells or more or the scheme smears it away.";
     case ExtraFields:
         return "Extra fields written into every frame for ParaView and the results view: vorticity, divergence, speed, objectId, comma separated.";
     case DomainX:

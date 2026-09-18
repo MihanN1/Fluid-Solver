@@ -169,7 +169,15 @@ sf::Text makeText(
     unsigned int size,
     sf::Vector2f position,
     sf::Color color = TEXT) {
-    sf::Text text(font, value, size);
+    // Through fromUtf8, not straight from the std::string. SFML reads a
+    // std::string in the local single-byte encoding and gives one character
+    // per byte, so every path with a Cyrillic folder in it came out as
+    // "Ð¤Ð°Ð¹Ð»Ñ‹" - the UTF-8 bytes of the name, each drawn as its own
+    // Latin-1 character. Everything in this window that is not plain ASCII
+    // went through here, so this is the one place it had to be fixed.
+    sf::Text text(font,
+                  sf::String::fromUtf8(value.begin(), value.end()),
+                  size);
     text.setPosition(position);
     text.setFillColor(color);
     return text;
@@ -885,22 +893,16 @@ enum ViewControl : std::size_t {
     ControlSliceY,
     ControlHelp,
     ControlSliceZ,
-    ControlCloud,
-    ControlIso,
+    ControlVolumeStyle,
     ControlDensity,
-    ControlVortices,
     ControlStreamlines,
     ControlTracers,
     ControlColour,
-    ControlFront,
-    ControlBack,
-    ControlLeft,
-    ControlRight,
-    ControlTop,
-    ControlBottom,
-    ControlAxisX,
-    ControlAxisY,
-    ControlAxisZ,
+    ControlSnapTo,
+    ControlSliceAxis,
+    ControlShow,
+    ControlRange,
+    ControlFlatField,
     ViewControlCount
 };
 
@@ -1564,6 +1566,7 @@ struct SolverExecutableInfo {
     bool supportsProfiles = false;
     bool supportsExtraFields = false;
     bool supportsRunName = false;
+    bool supportsVortices = false;
     bool supportsSchemes = false;
     bool supportsBoundaries = false;
     bool supportsCase = false;
@@ -1757,6 +1760,7 @@ SolverExecutableInfo inspectSolverExecutable(
     info.supportsProfiles = binaryContains(executable, "profiles");
     info.supportsExtraFields = binaryContains(executable, "extraFields");
     info.supportsRunName = binaryContains(executable, "runName");
+    info.supportsVortices = binaryContains(executable, "vortices");
     info.supportsSchemes = binaryContains(executable, "timeScheme");
     info.supportsBoundaries = binaryContains(executable, "bcBottom");
     info.supportsCase = binaryContains(executable, "caseType");
@@ -1887,6 +1891,8 @@ public:
               Slider{"Surface tension", "mN/m", 0.0, 1000.0, 0.0, false, false},
               Slider{"Contact angle", "deg", 0.0, 180.0, 90.0, false, false},
               Slider{"Flow sources", "", 0.0, 1.0, 0.0, false, false, false, 0.0,
+                     ControlKind::Text},
+              Slider{"Vortices", "", 0.0, 1.0, 0.0, false, false, false, 0.0,
                      ControlKind::Text},
               Slider{"Gravity", "", 0.0, 1.0, 0.0, true, false, true},
               Slider{"Gravity g", "m/s2", 0.0, 100.0, 9.81, false, false},
@@ -2544,28 +2550,17 @@ private:
             enable(ControlOrtho, 82.0f);
             enable(ControlRotateTool, 80.0f);
             enable(ControlMoveTool, 72.0f);
-            enable(ControlBox, 62.0f);
-            enable(ControlGrid, 62.0f);
-            enable(ControlSolid, 70.0f);
-            enable(ControlWire, 70.0f);
+            enable(ControlShow, 74.0f);
             enable(ControlSliceX, 74.0f);
             enable(ControlSliceY, 74.0f);
             enable(ControlSliceZ, 74.0f);
-            enable(ControlCloud, 74.0f);
-            enable(ControlIso, 66.0f);
-            enable(ControlVortices, 96.0f);
+            enable(ControlVolumeStyle, 150.0f);
             enable(ControlStreamlines, 96.0f);
             enable(ControlTracers, 90.0f);
             enable(ControlColour, 148.0f);
             if (frameCarriesDensity())
                 enable(ControlDensity, 82.0f);
-            newRow();
-            enable(ControlFront, 68.0f);
-            enable(ControlBack, 68.0f);
-            enable(ControlLeft, 68.0f);
-            enable(ControlRight, 68.0f);
-            enable(ControlTop, 68.0f);
-            enable(ControlBottom, 74.0f);
+            enable(ControlSnapTo, 96.0f);
             newRow();
             if (view3DSettings_.sliceX)
                 placeTrack(TrackSliceX);
@@ -2581,9 +2576,7 @@ private:
                 placeTrack(TrackVortex);
         } else if (viewportShowsVolume()) {
             newRow();
-            enable(ControlAxisX, 74.0f);
-            enable(ControlAxisY, 74.0f);
-            enable(ControlAxisZ, 74.0f);
+            enable(ControlSliceAxis, 108.0f);
             placeTrack(TrackSlice2D);
         }
         resultBarBottom_ = y + 36.0f;
@@ -2610,11 +2603,16 @@ private:
         velocityButton_.enabled = !view3D_;
         fieldButton_.enabled = !available.empty() && !view3D_;
         fieldButton_.selected = resultQuantity_ == ResultQuantity::Scalar;
+        fieldButton_.enabled = !view3D_;
         fieldButton_.label =
-            available.empty()
-                ? "Field: none"
-                : "Field: " + (activeScalarName_.empty() ? available.front()
-                                                         : activeScalarName_);
+            "Shows: " +
+            (resultQuantity_ == ResultQuantity::Pressure
+                 ? std::string("pressure")
+                 : (resultQuantity_ == ResultQuantity::Velocity
+                        ? std::string("speed")
+                        : (activeScalarName_.empty()
+                               ? std::string("pressure")
+                               : activeScalarName_)));
         vectorButton_.label =
             showVelocityVectors_ ? "Vectors: On" : "Vectors: Off";
         vectorButton_.selected = showVelocityVectors_;
@@ -2677,32 +2675,30 @@ private:
                viewport3D_.camera().orthographic);
         toggle(ControlRotateTool, "Rotate", !moveTool_);
         toggle(ControlMoveTool, "Move", moveTool_);
-        toggle(ControlBox, "Box", view3DSettings_.showBox);
-        toggle(ControlGrid, "Grid", view3DSettings_.showGrid);
-        toggle(ControlSolid, "Solid", view3DSettings_.showSolid);
-        toggle(ControlWire, "Wire", view3DSettings_.wireframeSolid);
+
         toggle(ControlSliceX, "Slice X", view3DSettings_.sliceX);
         toggle(ControlSliceY, "Slice Y", view3DSettings_.sliceY);
         toggle(ControlSliceZ, "Slice Z", view3DSettings_.sliceZ);
-        toggle(ControlCloud, "Cloud", view3DSettings_.showVolume);
-        toggle(ControlIso, "Iso", view3DSettings_.showIsosurface);
-        toggle(ControlVortices, "Vortices", view3DSettings_.showVortices);
+        viewControls_[ControlVolumeStyle].label =
+            "Volume: " + std::string(volumeStyleName(volumeStyle()));
+        viewControls_[ControlVolumeStyle].selected = volumeStyle() != 0;
         toggle(ControlStreamlines, "Streams",
                view3DSettings_.showStreamlines);
         toggle(ControlTracers, "Tracers", view3DSettings_.animateTracers);
         viewControls_[ControlColour].label =
             "Colour: " + colourFieldLabel();
-        viewControls_[ControlColour].selected = false;
+        viewControls_[ControlColour].selected =
+            viewMenu_.open && viewMenu_.owner == ControlColour;
         toggle(ControlDensity, "Density", colouredByDensity());
-        toggle(ControlFront, "Front", false);
-        toggle(ControlBack, "Back", false);
-        toggle(ControlLeft, "Left", false);
-        toggle(ControlRight, "Right", false);
-        toggle(ControlTop, "Top", false);
-        toggle(ControlBottom, "Bottom", false);
-        toggle(ControlAxisX, "Axis X", sliceAxis_ == SliceAxis::X);
-        toggle(ControlAxisY, "Axis Y", sliceAxis_ == SliceAxis::Y);
-        toggle(ControlAxisZ, "Axis Z", sliceAxis_ == SliceAxis::Z);
+        toggle(ControlSnapTo, "Snap to", viewMenu_.open &&
+                                            viewMenu_.owner == ControlSnapTo);
+        viewControls_[ControlSliceAxis].label =
+            "Cut along: " + std::string(sliceAxisName());
+        viewControls_[ControlSliceAxis].selected =
+            viewMenu_.open && viewMenu_.owner == ControlSliceAxis;
+        viewControls_[ControlShow].label = "Show";
+        viewControls_[ControlShow].selected =
+            viewMenu_.open && viewMenu_.owner == ControlShow;
     }
 
     void handleEvent(const sf::Event& event) {
@@ -3100,6 +3096,14 @@ private:
     void handleResultsMousePressed(
         sf::Mouse::Button button,
         sf::Vector2f position) {
+        // An open menu gets the click first, or picking an item would also
+        // land on whatever is behind it. This covers the flat view's own
+        // pickers as well as the 3D bar's.
+        if (button == sf::Mouse::Button::Left && viewMenu_.open) {
+            if (handleViewMenuClick(position)) {
+                return;
+            }
+        }
         if (button == sf::Mouse::Button::Middle) {
             if (view3D_ && resultViewport_.contains(position)) {
                 panning3D_ = true;
@@ -3149,21 +3153,7 @@ private:
             return;
         }
         if (fieldButton_.hit(position) && fieldButton_.enabled) {
-            const std::vector<std::string>& names = activeFrame_->scalarNames;
-            std::size_t next = 0;
-            if (resultQuantity_ == ResultQuantity::Scalar) {
-                for (std::size_t index = 0; index < names.size(); ++index)
-                    if (names[index] == activeScalarName_)
-                        next = index + 1;
-            }
-            if (next >= names.size()) {
-                resultQuantity_ = ResultQuantity::Pressure;
-                activeScalarName_.clear();
-            } else {
-                resultQuantity_ = ResultQuantity::Scalar;
-                activeScalarName_ = names[next];
-            }
-            resultTextureCacheValid_ = false;
+            openViewMenuFrom(ControlFlatField, fieldButton_.bounds);
             return;
         }
         if (vectorButton_.hit(position)) {
@@ -3174,21 +3164,7 @@ private:
             return;
         }
         if (rangeButton_.hit(position)) {
-            // Four states, cycled by one button: series trimmed, series full,
-            // frame trimmed, frame full.
-            if (trimmedRange_) {
-                trimmedRange_ = false;
-            } else {
-                trimmedRange_ = true;
-                useSeriesRange_ = !useSeriesRange_;
-            }
-            resultTextureCacheValid_ = false;
-            status_ = std::string("Colours span ") +
-                (useSeriesRange_ ? "the whole series" : "this frame") +
-                (trimmedRange_
-                     ? ", with the outermost 0.5% at each end left out so a "
-                       "few extreme cells cannot flatten the rest."
-                     : ", every value included.");
+            openViewMenuFrom(ControlRange, rangeButton_.bounds);
             return;
         }
         if (continueRunButton_.hit(position)) {
@@ -3239,6 +3215,10 @@ private:
     bool handleResultsKeyPressed(const sf::Event::KeyPressed& key) {
         if (frames_.empty()) {
             return false;
+        }
+        if (viewMenu_.open && key.code == sf::Keyboard::Key::Escape) {
+            closeViewMenu();
+            return true;
         }
         if (key.code == sf::Keyboard::Key::V) {
             setViewMode(!view3D_);
@@ -3303,10 +3283,10 @@ private:
                 beginTransform(2);
                 return true;
             case sf::Keyboard::Key::C:
-                handleViewControl(ControlCloud);
+                setVolumeStyle(volumeStyle() == 1 ? 0 : 1);
                 return true;
             case sf::Keyboard::Key::I:
-                handleViewControl(ControlIso);
+                setVolumeStyle(volumeStyle() == 2 ? 0 : 2);
                 return true;
             // D and not W/A/S/D: those pan the flat view, and the flat view
             // reaches density from its own Field button in one press.
@@ -3424,6 +3404,9 @@ private:
         if (draggingViewTrack_.has_value()) {
             setViewTrackFromX(*draggingViewTrack_, position.x);
             return;
+        }
+        if (mode_ == DisplayMode::Results && viewMenu_.open) {
+            trackViewMenuHover(position);
         }
         if (mode_ == DisplayMode::Results && view3D_ && activeFrame_) {
             if (resultViewport_.contains(position)) {
@@ -3841,28 +3824,38 @@ private:
             std::istreambuf_iterator<char>(input),
             std::istreambuf_iterator<char>()
         };
+        return simulatedTimeFromSolverOutput(tail);
+    }
 
-        // "Step 1230, t = 3.71591 s, dt = ..." from the projection solver and
-        // "step   1230  t = 3.71591 s  dt = ..." from the compressible one.
-        // The needle used to carry the comma, so it matched the first and
-        // never the second, and every compressible run showed no percentage at
-        // all - which is most of what this window is used for.
-        std::optional<double> latest;
-        const std::string needle = "t = ";
-        std::size_t at = tail.find(needle);
-        while (at != std::string::npos) {
-            try {
-                std::size_t consumed = 0;
-                const double value =
-                    std::stod(tail.substr(at + needle.size(), 32), &consumed);
-                if (consumed > 0 && std::isfinite(value)) {
-                    latest = value;
-                }
-            } catch (const std::exception&) {
-            }
-            at = tail.find(needle, at + needle.size());
+    // Seconds, milliseconds or microseconds, whichever makes the number
+    // something you can say out loud.
+    static std::string formatSeconds(double seconds) {
+        const double magnitude = std::fabs(seconds);
+        const char* unit = "s";
+        double shown = seconds;
+        if (magnitude > 0.0 && magnitude < 1.0e-3) {
+            shown = seconds * 1.0e6;
+            unit = "us";
+        } else if (magnitude > 0.0 && magnitude < 1.0) {
+            shown = seconds * 1.0e3;
+            unit = "ms";
         }
-        return latest;
+        std::ostringstream out;
+        out << std::fixed
+            << std::setprecision(std::fabs(shown) < 10.0 ? 2 : 1)
+            << shown << ' ' << unit;
+        return out.str();
+    }
+
+    // Two decimals below one per cent, so the first minutes of a long run look
+    // like something happening rather than a flat zero.
+    static std::string percentText(double fraction) {
+        const double percent = 100.0 * std::clamp(fraction, 0.0, 1.0);
+        std::ostringstream out;
+        out << std::fixed
+            << std::setprecision(percent < 1.0 ? 2 : (percent < 10.0 ? 1 : 0))
+            << percent << '%';
+        return out.str();
     }
 
     void refreshSolverProgress() {
@@ -3888,14 +3881,14 @@ private:
 
         std::string progressText = "Fluid Solver is running";
         if (runProgress_ >= 0.0) {
-            progressText += " - " +
-                formatValue(runElapsedSeconds_, false, "") + " / " +
-                formatValue(runTargetSeconds_, false, "s") + " (" +
-                std::to_string(static_cast<int>(runProgress_ * 100.0 + 0.5)) +
-                "%)";
+            // The percentage first, because it is the part anyone reads, and
+            // the times in units that suit them: a supersonic run is measured
+            // in milliseconds and "6.83e-06 / 0.02" is not a sentence.
+            progressText += " - " + percentText(runProgress_) + ", " +
+                formatSeconds(runElapsedSeconds_) + " of " +
+                formatSeconds(runTargetSeconds_);
         } else if (reached) {
-            progressText += " - t = " +
-                formatValue(runElapsedSeconds_, false, "s");
+            progressText += " - t = " + formatSeconds(runElapsedSeconds_);
         }
         progressText += ". " + std::to_string(frameCount) + " frame(s) saved.";
         if (!scanProblem.empty()) {
@@ -3919,11 +3912,9 @@ private:
         if (!tray_.available() && window_ != nullptr) {
             std::string title = windowTitle_;
             if (running && runProgress_ >= 0.0) {
-                title += " - " +
-                    std::to_string(
-                        static_cast<int>(runProgress_ * 100.0 + 0.5)) +
-                    "% (" + formatValue(runElapsedSeconds_, false, "") + " / " +
-                    formatValue(runTargetSeconds_, false, "s") + ")";
+                title += " - " + percentText(runProgress_) + " (" +
+                    formatSeconds(runElapsedSeconds_) + " of " +
+                    formatSeconds(runTargetSeconds_) + ")";
             } else if (running) {
                 title += " - running";
             }
@@ -4429,6 +4420,8 @@ private:
         config.extraFields = sliders_[ExtraFields].text;
         config.supportsRunName = solverInfo_.supportsRunName;
         config.runName = sliders_[RunName].text;
+        config.supportsVortices = solverInfo_.supportsVortices;
+        config.vortices = sliders_[VortexLine].text;
 
         config.supportsSchemes = solverInfo_.supportsSchemes;
         config.convection = sliders_[Convection].choice();
@@ -7796,10 +7789,24 @@ private:
             return;
         const sf::FloatRect canvas = layoutCanvasRect();
         Pose pose = poseAt(layoutSelected_, layoutTime_);
+        // The canvas is one plane, and a keyframe has three coordinates. Shift
+        // puts the vertical drag on z instead of y, which is the whole of what
+        // was missing for animating in three dimensions - the keyframes have
+        // carried a z and written a vz to the solver all along, there was just
+        // no way to reach it with the mouse.
+        const bool depth =
+            sf::Keyboard::isKeyPressed(sf::Keyboard::Scan::LShift) ||
+            sf::Keyboard::isKeyPressed(sf::Keyboard::Scan::RShift);
         pose.x += static_cast<double>(delta.x / canvas.size.x) *
                   sliders_[DomainX].value;
-        pose.y -= static_cast<double>(delta.y / canvas.size.y) *
-                  sliders_[DomainY].value;
+        if (depth) {
+            pose.z -= static_cast<double>(delta.y / canvas.size.y) *
+                      sliders_[DomainZ].value;
+            pose.z = std::clamp(pose.z, 0.0, sliders_[DomainZ].value);
+        } else {
+            pose.y -= static_cast<double>(delta.y / canvas.size.y) *
+                      sliders_[DomainY].value;
+        }
         pose.time = layoutTime_;
         pose.interp = interpNames()[layoutInterp_];
         pose.ease = easeNames()[layoutEase_];
@@ -8025,8 +8032,17 @@ private:
             caption << "   |   body " << layoutSelected_ << "   |   "
                     << interpNames()[layoutInterp_] << " "
                     << easeNames()[layoutEase_];
-        caption << "   |   click a body, drag to place, K keyframes, "
-                   "right-drag or Q/E rotates, , and . step time";
+        if (layoutSelected_ > 0) {
+            // Where the selected body is right now, all three of it, because
+            // the canvas can only show two and z is the one you cannot see.
+            const Pose here = poseAt(layoutSelected_, layoutTime_);
+            caption << "   |   x " << formatValue(here.x, false, "m")
+                    << "  y " << formatValue(here.y, false, "m")
+                    << "  z " << formatValue(here.z, false, "m");
+        }
+        caption << "   |   click a body, drag to place, SHIFT+drag moves it "
+                   "in z, K keyframes, right-drag or Q/E rotates, , and . "
+                   "step time";
         window_->draw(makeText(font_, caption.str(), 12,
                                {track.position.x, track.position.y + 12.0f},
                                MUTED));
@@ -8310,8 +8326,12 @@ private:
         // already and reads better without the clip's rounding on its edges.
         window_->setView(savedView);
 
+        // Below the button row, not under it. Paint and Layout sit at the top
+        // left of this viewport from y+12 to y+42, and the legend was drawn at
+        // y+18 - straight underneath them, with the line that says whether
+        // this is a volume run hidden behind the Layout button.
         const sf::Vector2f legendPosition =
-            setupViewport_.position + sf::Vector2f{18.0f, 18.0f};
+            setupViewport_.position + sf::Vector2f{12.0f, 52.0f};
         sf::RectangleShape legendBackground({330.0f, 59.0f});
         legendBackground.setPosition(legendPosition);
         legendBackground.setFillColor(sf::Color{8, 10, 9, 225});
@@ -8504,7 +8524,9 @@ private:
             } else {
                 drawResultCells();
                 drawLegend();
-                drawResultTooltip();
+                if (!viewMenu_.open) {
+                    drawResultTooltip();
+                }
             }
             drawResultSliders();
             drawResultWarning();
@@ -8512,6 +8534,7 @@ private:
         drawResultControls();
         drawPinnedViewHelp();
         drawViewControlHelp();
+        drawViewMenu();
         if (showRunDetails_) {
             drawRunDetailsOverlay();
         }
@@ -8853,6 +8876,24 @@ private:
         status_ = "3D view coloured by " + colourFieldLabel() + ".";
     }
 
+    // 0 off, 1 cloud, 2 isosurface, 3 vortices. Read off the settings rather
+    // than stored beside them, so there is one truth about what is on.
+    int volumeStyle() const {
+        if (view3DSettings_.showVolume) return 1;
+        if (view3DSettings_.showIsosurface) return 2;
+        if (view3DSettings_.showVortices) return 3;
+        return 0;
+    }
+
+    static const char* volumeStyleName(int style) {
+        switch (style) {
+        case 1: return "cloud";
+        case 2: return "isosurface";
+        case 3: return "vortices";
+        default: return "off";
+        }
+    }
+
     // Cloud and Iso are two answers to the same question - what does the
     // inside of this volume look like - and they are drawn on top of each
     // other, so having both on is a translucent fog with a skin buried in it
@@ -8863,18 +8904,29 @@ private:
     void setVolumeStyle(int style) {
         view3DSettings_.showVolume = style == 1;
         view3DSettings_.showIsosurface = style == 2;
+        view3DSettings_.showVortices = style == 3;
         if (style == 2) {
             view3DSettings_.isoField = view3DSettings_.colourBy;
         }
-        status_ = style == 1
-            ? "Cloud: every cell that differs from the still air, painted "
-              "see-through. The slider beside it sets how solid."
-            : (style == 2
-                   ? "Isosurface: a skin through every point where " +
-                         colourFieldLabel() +
-                         " equals the level on the slider."
-                   : std::string("Volume bare - only the body, the box and "
-                                 "whatever slices are on."));
+        switch (style) {
+        case 1:
+            status_ = "Cloud: every cell that differs from the still air, "
+                      "painted see-through. The slider sets how solid.";
+            break;
+        case 2:
+            status_ = "Isosurface: a skin through every point where " +
+                colourFieldLabel() + " equals the level on the slider.";
+            break;
+        case 3:
+            status_ = "Vortices: where the flow spins faster than it shears. "
+                      "The slider is how strict - right for the strongest "
+                      "cores only.";
+            break;
+        default:
+            status_ = "Volume off - the body, the box and whatever slices "
+                      "are on.";
+            break;
+        }
         syncViewportSettings();
         updateLayout(layoutSize_);
     }
@@ -9059,19 +9111,16 @@ private:
                 ? "Every layer, explained. Press What? again to put it away."
                 : "";
             return true;
-        case ControlCloud:
-            setVolumeStyle(view3DSettings_.showVolume ? 0 : 1);
+        case ControlVolumeStyle:
+            openViewMenu(ControlVolumeStyle);
             return true;
-        case ControlIso:
-            setVolumeStyle(view3DSettings_.showIsosurface ? 0 : 2);
+        case ControlSnapTo:
+            openViewMenu(ControlSnapTo);
             return true;
         case ControlDensity:
             showDensity();
             updateLayout(layoutSize_);
             return true;
-        case ControlVortices:
-            view3DSettings_.showVortices = !view3DSettings_.showVortices;
-            break;
         case ControlStreamlines:
             view3DSettings_.showStreamlines =
                 !view3DSettings_.showStreamlines;
@@ -9080,35 +9129,13 @@ private:
             view3DSettings_.animateTracers = !view3DSettings_.animateTracers;
             break;
         case ControlColour:
-            cycleVolumeField();
-            updateLayout(layoutSize_);
+            openViewMenu(ControlColour);
             return true;
-        case ControlFront:
-            viewport3D_.setView(2, false);
-            return true;
-        case ControlBack:
-            viewport3D_.setView(2, true);
-            return true;
-        case ControlLeft:
-            viewport3D_.setView(0, true);
-            return true;
-        case ControlRight:
-            viewport3D_.setView(0, false);
-            return true;
-        case ControlTop:
-            viewport3D_.setView(1, false);
-            return true;
-        case ControlBottom:
-            viewport3D_.setView(1, true);
-            return true;
-        case ControlAxisX:
-            setSlicePlane(SliceAxis::X, sliceIndex_);
-            return true;
-        case ControlAxisY:
-            setSlicePlane(SliceAxis::Y, sliceIndex_);
+        case ControlSliceAxis:
+            openViewMenu(ControlSliceAxis);
             return true;
         default:
-            setSlicePlane(SliceAxis::Z, sliceIndex_);
+            openViewMenu(ControlShow);
             return true;
         }
         syncViewportSettings();
@@ -9444,44 +9471,37 @@ private:
             return "Rotate - left drag turns the camera around the data.";
         case ControlMoveTool:
             return "Move - left drag slides the camera sideways instead.";
-        case ControlBox:
-            return "Box - the wire outline of the domain and its three axes.";
-        case ControlGrid:
-            return "Grid - cell lines on the far walls, for reading off where "
-                   "something is.";
-        case ControlSolid:
-            return "Solid - the body itself: the cells the flow is not "
-                   "allowed into.";
-        case ControlWire:
-            return "Wire - draw the body as edges only, so you can see the "
-                   "flow through it.";
+        case ControlShow:
+            return "Show - what is in the picture besides the field: the "
+                   "body, its wireframe, the outline of the domain, cell "
+                   "lines on the far walls, and the microphone crosses. Each "
+                   "ticks on and off on its own, so the list stays open while "
+                   "you set them.";
+        case ControlSliceAxis:
+            return "Cut along - which axis the flat view slices through. The "
+                   "slider beside it moves the plane, and so do Up and Down.";
         case ControlSliceX:
         case ControlSliceY:
         case ControlSliceZ:
             return "Slice - one flat cut through the volume, coloured cell by "
                    "cell. The slider picks which plane.";
-        case ControlCloud:
-            return "Cloud - the whole volume painted see-through: every cell "
-                   "that differs from the still air is a coloured block, the "
-                   "rest is not drawn. The slider sets how solid. Turns Iso "
-                   "off; the two are alternatives. Key: C.";
+        case ControlVolumeStyle:
+            return "Volume - how the inside of the box is drawn, one way at a "
+                   "time. Cloud paints every cell that differs from the still "
+                   "air as a see-through block (key C). Iso draws a skin "
+                   "through every point where the field equals one value, "
+                   "like a contour line in 3D (key I). Vortices draws where "
+                   "the flow spins faster than it shears, which is what a "
+                   "vortex is. Off leaves the body and the box. Each has its "
+                   "own slider beside it.";
         case ControlHelp:
             return "What? - the whole panel of explanations, pinned open, "
                    "rather than one line at a time on hover.";
-        case ControlIso:
-            return "Iso - a skin drawn through every point where the field "
-                   "equals one chosen value, like a contour line but in 3D. "
-                   "The slider picks the value. Turns Cloud off; the two are "
-                   "alternatives. Key: I.";
         case ControlDensity:
             return "Density - colour by the gas density, which is what makes "
                    "a shock look like a shock. A compressible run writes it "
                    "into every frame. Key: D.";
-        case ControlVortices:
-            return "Vortices - Q shows where the flow spins faster than it "
-                   "shears, which is what a vortex is. Tip and wake vortices "
-                   "come out as tubes. The slider is how strict: right for "
-                   "only the strongest cores, left for every swirl.";
+
         case ControlStreamlines:
             return "Streams - the path a weightless speck would take through "
                    "this one frame, drawn from hundreds of starting points.";
@@ -9491,16 +9511,13 @@ private:
         case ControlColour:
             return "Colour - which number the colours mean. Density is the "
                    "one that shows a shock as a shock.";
-        case ControlFront:
-        case ControlBack:
-        case ControlLeft:
-        case ControlRight:
-        case ControlTop:
-        case ControlBottom:
-            return "Snap the camera square onto one axis. Numpad 1/3/7 do the "
-                   "same, with Ctrl for the opposite side.";
+        case ControlSnapTo:
+            return "Snap to - put the camera square onto one side of the box. "
+                   "Resting on a name lights that side up in the picture, so "
+                   "there is no guessing which is which. Numpad 1/3/7 do the "
+                   "same three, with Ctrl for the opposite side.";
         default:
-            return "Which axis the 2D view cuts along.";
+            return "";
         }
     }
 
@@ -9517,12 +9534,10 @@ private:
             std::size_t control;
         };
         static const Entry entries[] = {
-            {"How the volume is drawn - one at a time", ControlCloud},
-            {nullptr, ControlIso},
+            {"How the volume is drawn - one at a time", ControlVolumeStyle},
             {nullptr, ControlSliceX},
             {"What else is in the picture", ControlSolid},
             {nullptr, ControlWire},
-            {nullptr, ControlVortices},
             {nullptr, ControlStreamlines},
             {nullptr, ControlTracers},
             {nullptr, ControlBox},
@@ -9533,7 +9548,7 @@ private:
             {nullptr, ControlMoveTool},
             {nullptr, ControlOrtho},
             {nullptr, ControlFrameAll},
-            {nullptr, ControlFront}
+            {nullptr, ControlSnapTo}
         };
 
         const float width = std::min(
@@ -9581,6 +9596,330 @@ private:
             }
             y += lineHeight;
         }
+    }
+
+    // ---- the picker menus -------------------------------------------------
+    //
+    // A menu is a list under the button that opened it. It knows which button
+    // that was, so one of these serves all three pickers; it is drawn last so
+    // it sits over the picture, and it swallows the click that lands on it.
+
+    std::vector<std::string> viewMenuItems(std::size_t owner) const {
+        std::vector<std::string> items;
+        if (owner == ControlVolumeStyle) {
+            items = {"off", "cloud", "isosurface", "vortices"};
+        } else if (owner == ControlSnapTo) {
+            items = {"front", "back", "left", "right", "top", "bottom"};
+        } else if (owner == ControlSliceAxis) {
+            items = {"X", "Y", "Z"};
+        } else if (owner == ControlShow) {
+            items = {"body", "wireframe", "box", "grid", "microphones"};
+        } else if (owner == ControlRange) {
+            items = {"series 99%", "series full", "frame 99%", "frame full"};
+        } else if (owner == ControlFlatField) {
+            items = {"pressure", "speed"};
+            if (activeFrame_ != nullptr) {
+                for (const std::string& name : activeFrame_->scalarNames) {
+                    items.push_back(name);
+                }
+            }
+        } else if (owner == ControlColour) {
+            // Off first, because "clear the screen" is the one anybody hunts
+            // for. Then the two everyone wants, then whatever this run wrote,
+            // then the derived ones.
+            items = {"off", "speed", "pressure"};
+            if (activeFrame_ != nullptr) {
+                for (const std::string& name : activeFrame_->scalarNames) {
+                    items.push_back(name);
+                }
+            }
+            items.push_back("u");
+            items.push_back("v");
+            items.push_back("w");
+            items.push_back("vorticity");
+            items.push_back("Q");
+        }
+        return items;
+    }
+
+    void openViewMenu(std::size_t owner) {
+        openViewMenuFrom(owner, viewControls_[owner].bounds);
+    }
+
+    void openViewMenuFrom(std::size_t owner, const sf::FloatRect& from) {
+        if (viewMenu_.open && viewMenu_.owner == owner) {
+            closeViewMenu();
+            return;
+        }
+        viewMenu_.open = true;
+        viewMenu_.owner = owner;
+        viewMenu_.from = from;
+        viewMenu_.items = viewMenuItems(owner);
+        viewMenu_.hovered = -1;
+        updateLayout(layoutSize_);
+    }
+
+    void closeViewMenu() {
+        if (!viewMenu_.open) {
+            return;
+        }
+        viewMenu_.open = false;
+        viewMenu_.items.clear();
+        viewMenu_.hovered = -1;
+        viewport3D_.setFaceHighlight(-1);
+        updateLayout(layoutSize_);
+    }
+
+    sf::FloatRect viewMenuBounds() const {
+        if (!viewMenu_.open || viewMenu_.items.empty()) {
+            return {{0.0f, -100000.0f}, {1.0f, 1.0f}};
+        }
+        const float rowHeight = 24.0f;
+        const float width = std::max(viewMenu_.from.size.x, 148.0f);
+        const float height =
+            static_cast<float>(viewMenu_.items.size()) * rowHeight + 8.0f;
+        float x = viewMenu_.from.position.x;
+        const float right = static_cast<float>(layoutSize_.x) - 8.0f;
+        if (x + width > right) {
+            x = std::max(8.0f, right - width);
+        }
+        return {{x, viewMenu_.from.position.y + viewMenu_.from.size.y + 2.0f},
+                {width, height}};
+    }
+
+    int viewMenuItemAt(sf::Vector2f point) const {
+        const sf::FloatRect box = viewMenuBounds();
+        if (!box.contains(point)) {
+            return -1;
+        }
+        const float rowHeight = 24.0f;
+        const int index = static_cast<int>(
+            (point.y - box.position.y - 4.0f) / rowHeight);
+        if (index < 0 ||
+            index >= static_cast<int>(viewMenu_.items.size())) {
+            return -1;
+        }
+        return index;
+    }
+
+    // Resting on a side of the box lights that side up in the picture. There
+    // are six names for six sides and no way to know which is which from the
+    // words alone; this is the answer to that.
+    void trackViewMenuHover(sf::Vector2f point) {
+        if (!viewMenu_.open) {
+            return;
+        }
+        const int index = viewMenuItemAt(point);
+        if (index == viewMenu_.hovered) {
+            return;
+        }
+        viewMenu_.hovered = index;
+        if (viewMenu_.owner == ControlSnapTo) {
+            // front/back are the z faces, left/right the x, top/bottom the y,
+            // in the order the menu lists them.
+            static const int faces[6] = {4, 5, 0, 1, 3, 2};
+            viewport3D_.setFaceHighlight(
+                index >= 0 && index < 6 ? faces[index] : -1);
+        }
+    }
+
+    bool handleViewMenuClick(sf::Vector2f point) {
+        if (!viewMenu_.open) {
+            return false;
+        }
+        const int index = viewMenuItemAt(point);
+        if (index < 0) {
+            closeViewMenu();
+            // Swallowed only when the click was inside the menu box; a click
+            // anywhere else closes it and then goes on to do whatever it was
+            // going to do.
+            return viewMenuBounds().contains(point);
+        }
+        const std::size_t owner = viewMenu_.owner;
+        const std::string chosen = viewMenu_.items[
+            static_cast<std::size_t>(index)];
+        // Show is a list of things that are on or off independently, so it
+        // stays open while they are ticked; the others pick one and close.
+        if (owner != ControlShow) {
+            closeViewMenu();
+        }
+        if (owner == ControlVolumeStyle) {
+            setVolumeStyle(index);
+        } else if (owner == ControlSnapTo) {
+            static const int axis[6] = {2, 2, 0, 0, 1, 1};
+            static const bool far[6] = {false, true, true, false, false, true};
+            viewport3D_.setView(axis[index], far[index]);
+            status_ = "Looking at the " + chosen + " of the box.";
+        } else if (owner == ControlColour) {
+            chooseColourField(chosen);
+        } else if (owner == ControlSliceAxis) {
+            setSlicePlane(
+                chosen == "X" ? SliceAxis::X
+                              : (chosen == "Y" ? SliceAxis::Y : SliceAxis::Z),
+                sliceIndex_);
+        } else if (owner == ControlShow) {
+            toggleShown(chosen);
+        } else if (owner == ControlRange) {
+            useSeriesRange_ = chosen.rfind("series", 0) == 0;
+            trimmedRange_ = chosen.find("99%") != std::string::npos;
+            resultTextureCacheValid_ = false;
+            status_ = std::string("Colours span ") +
+                (useSeriesRange_ ? "the whole series" : "this frame") +
+                (trimmedRange_
+                     ? ", with the outermost 0.5% at each end left out so a "
+                       "few extreme cells cannot flatten the rest."
+                     : ", every value included.");
+        } else if (owner == ControlFlatField) {
+            chooseFlatField(chosen);
+        }
+        updateLayout(layoutSize_);
+        return true;
+    }
+
+    // "off" here means the same thing it means on the button: stop drawing the
+    // field and leave the body, the box and the slices. It is the quickest way
+    // to clear the picture and the thing people go looking for first.
+    void chooseColourField(const std::string& name) {
+        if (name == "off") {
+            setVolumeStyle(0);
+            view3DSettings_.sliceX = false;
+            view3DSettings_.sliceY = false;
+            view3DSettings_.sliceZ = false;
+            syncViewportSettings();
+            status_ = "Colour off - the body and the box, nothing painted.";
+            return;
+        }
+        if (name == "speed") {
+            view3DSettings_.colourBy = VolumeField::Speed;
+        } else if (name == "pressure") {
+            view3DSettings_.colourBy = VolumeField::Pressure;
+        } else if (name == "u") {
+            view3DSettings_.colourBy = VolumeField::VelocityX;
+        } else if (name == "v") {
+            view3DSettings_.colourBy = VolumeField::VelocityY;
+        } else if (name == "w") {
+            view3DSettings_.colourBy = VolumeField::VelocityZ;
+        } else if (name == "vorticity") {
+            view3DSettings_.colourBy = VolumeField::Vorticity;
+        } else if (name == "Q") {
+            view3DSettings_.colourBy = VolumeField::QCriterion;
+        } else {
+            view3DSettings_.colourBy = VolumeField::Scalar;
+            view3DSettings_.colourScalar = name;
+        }
+        if (view3DSettings_.colourBy != VolumeField::Scalar) {
+            view3DSettings_.colourScalar.clear();
+        }
+        view3DSettings_.isoField = view3DSettings_.colourBy;
+        // Choosing a field with everything off is a request to see it.
+        if (volumeStyle() == 0 && !view3DSettings_.sliceX &&
+            !view3DSettings_.sliceY && !view3DSettings_.sliceZ) {
+            setVolumeStyle(activeFrame_ && activeFrame_->volumetric() ? 1 : 0);
+            if (!activeFrame_ || !activeFrame_->volumetric()) {
+                view3DSettings_.sliceZ = true;
+            }
+        }
+        syncViewportSettings();
+        status_ = "Coloured by " + name + ".";
+    }
+
+    void drawViewMenu() {
+        if (!viewMenu_.open || viewMenu_.items.empty()) {
+            return;
+        }
+        const sf::FloatRect box = viewMenuBounds();
+        sf::RectangleShape background(box.size);
+        background.setPosition(box.position);
+        background.setFillColor(OVERLAY_BACKGROUND);
+        background.setOutlineColor(ACCENT);
+        background.setOutlineThickness(1.0f);
+        window_->draw(background);
+
+        const float rowHeight = 24.0f;
+        const std::string current = currentViewMenuItem();
+        for (std::size_t index = 0; index < viewMenu_.items.size(); ++index) {
+            const float top = box.position.y + 4.0f +
+                static_cast<float>(index) * rowHeight;
+            const bool hovered =
+                viewMenu_.hovered == static_cast<int>(index);
+            if (hovered) {
+                sf::RectangleShape row({box.size.x - 2.0f, rowHeight});
+                row.setPosition({box.position.x + 1.0f, top});
+                row.setFillColor(ACCENT_DARK);
+                window_->draw(row);
+            }
+            const bool ticked = viewMenu_.owner == ControlShow
+                ? isShown(viewMenu_.items[index])
+                : viewMenu_.items[index] == current;
+            window_->draw(makeText(
+                font_,
+                (ticked ? "* " : "  ") + viewMenu_.items[index],
+                13,
+                {box.position.x + 8.0f, top + 3.0f},
+                ticked ? ACCENT : TEXT));
+        }
+    }
+
+    std::string currentViewMenuItem() const {
+        if (viewMenu_.owner == ControlVolumeStyle) {
+            return volumeStyleName(volumeStyle());
+        }
+        if (viewMenu_.owner == ControlColour) {
+            return colourFieldLabel();
+        }
+        if (viewMenu_.owner == ControlSliceAxis) {
+            return sliceAxisName();
+        }
+        if (viewMenu_.owner == ControlRange) {
+            return std::string(useSeriesRange_ ? "series" : "frame") +
+                (trimmedRange_ ? " 99%" : " full");
+        }
+        if (viewMenu_.owner == ControlFlatField) {
+            if (resultQuantity_ == ResultQuantity::Pressure) return "pressure";
+            if (resultQuantity_ == ResultQuantity::Velocity) return "speed";
+            return activeScalarName_;
+        }
+        return std::string();
+    }
+
+    void chooseFlatField(const std::string& name) {
+        if (name == "pressure") {
+            resultQuantity_ = ResultQuantity::Pressure;
+            activeScalarName_.clear();
+        } else if (name == "speed") {
+            resultQuantity_ = ResultQuantity::Velocity;
+            activeScalarName_.clear();
+        } else {
+            resultQuantity_ = ResultQuantity::Scalar;
+            activeScalarName_ = name;
+        }
+        resultTextureCacheValid_ = false;
+        status_ = "Flat view coloured by " + name + ".";
+    }
+
+    bool isShown(const std::string& what) const {
+        if (what == "body") return view3DSettings_.showSolid;
+        if (what == "wireframe") return view3DSettings_.wireframeSolid;
+        if (what == "box") return view3DSettings_.showBox;
+        if (what == "grid") return view3DSettings_.showGrid;
+        if (what == "microphones") return view3DSettings_.showMicrophones;
+        return false;
+    }
+
+    void toggleShown(const std::string& what) {
+        if (what == "body") {
+            view3DSettings_.showSolid = !view3DSettings_.showSolid;
+        } else if (what == "wireframe") {
+            view3DSettings_.wireframeSolid = !view3DSettings_.wireframeSolid;
+        } else if (what == "box") {
+            view3DSettings_.showBox = !view3DSettings_.showBox;
+        } else if (what == "grid") {
+            view3DSettings_.showGrid = !view3DSettings_.showGrid;
+        } else if (what == "microphones") {
+            view3DSettings_.showMicrophones =
+                !view3DSettings_.showMicrophones;
+        }
+        syncViewportSettings();
     }
 
     void drawViewControlHelp() {
@@ -10531,6 +10870,20 @@ private:
     std::string publishedTitle_;
     std::string runProgressText_;
     bool showViewHelp_ = false;
+    // One little menu shared by every picker in the 3D bar. Six buttons for
+    // six sides of a box, and a Colour that has to be clicked nine times to
+    // get back where it was, are what this replaces.
+    struct ViewMenu {
+        bool open = false;
+        std::size_t owner = 0;
+        // Where it hangs from. Kept here rather than looked up through the
+        // owner, because the flat view's Range and Field buttons are not part
+        // of the 3D control array and want a menu just as much.
+        sf::FloatRect from{{0.0f, 0.0f}, {0.0f, 0.0f}};
+        std::vector<std::string> items;
+        int hovered = -1;
+    };
+    ViewMenu viewMenu_;
     // The update check's answer, written by its own thread and read by the
     // drawing one. A mutex rather than an atomic because it is a string and a
     // bool that have to agree with each other.

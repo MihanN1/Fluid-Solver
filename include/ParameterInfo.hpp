@@ -26,6 +26,7 @@ enum ParameterIndex : std::size_t {
     SurfaceTension,
     ContactAngle,
     SourceLine,
+    VortexLine,
     GravityEnabled,
     GravityAccel,
     GravityAngle,

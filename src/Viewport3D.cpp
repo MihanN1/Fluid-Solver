@@ -1704,6 +1704,7 @@ void Viewport3D::rebuildAll() {
     rebuildTracers();
     rebuildMarkers();
     rebuildHighlight();
+    rebuildFaceHighlight();
 }
 
 // The cloud: every cell of the volume that differs from the still air around
@@ -1895,6 +1896,60 @@ void Viewport3D::setHighlight(bool on, std::size_t i, std::size_t j,
     highlightCell_[1] = j;
     highlightCell_[2] = k;
     rebuildHighlight();
+}
+
+void Viewport3D::setFaceHighlight(int face) {
+    if (faceHighlighted_ == face) {
+        return;
+    }
+    faceHighlighted_ = face;
+    rebuildFaceHighlight();
+}
+
+void Viewport3D::rebuildFaceHighlight() {
+    faceHighlight_.clear();
+    if (faceHighlighted_ < 0 || faceHighlighted_ > 5 || !frame_) {
+        return;
+    }
+    const Bounds box = bounds();
+    const float low[3] = {box.lowX, box.lowY, box.lowZ};
+    const float high[3] = {box.highX, box.highY, box.highZ};
+    const int axis = faceHighlighted_ / 2;
+    const bool atHigh = (faceHighlighted_ % 2) == 1;
+    const int axisA = axis == 0 ? 1 : 0;
+    const int axisB = axis == 2 ? 1 : 2;
+
+    // A cross over the wall as well as its outline: at a glancing angle an
+    // outline alone is four lines that could belong to any of the six.
+    const sf::Color colour(255, 210, 60);
+    const auto corner = [&](bool a, bool b, float out[3]) {
+        out[axis] = atHigh ? high[axis] : low[axis];
+        out[axisA] = a ? high[axisA] : low[axisA];
+        out[axisB] = b ? high[axisB] : low[axisB];
+    };
+    const bool loop[5][2] = {
+        {false, false}, {true, false}, {true, true}, {false, true},
+        {false, false}
+    };
+    faceHighlight_.reserve(12u);
+    for (int step = 0; step < 4; ++step) {
+        float from[3];
+        float to[3];
+        corner(loop[step][0], loop[step][1], from);
+        corner(loop[step + 1][0], loop[step + 1][1], to);
+        faceHighlight_.add(from[0], from[1], from[2], colour);
+        faceHighlight_.add(to[0], to[1], to[2], colour);
+    }
+    float a[3];
+    float b[3];
+    corner(false, false, a);
+    corner(true, true, b);
+    faceHighlight_.add(a[0], a[1], a[2], colour);
+    faceHighlight_.add(b[0], b[1], b[2], colour);
+    corner(true, false, a);
+    corner(false, true, b);
+    faceHighlight_.add(a[0], a[1], a[2], colour);
+    faceHighlight_.add(b[0], b[1], b[2], colour);
 }
 
 void Viewport3D::rebuildHighlight() {
@@ -2841,6 +2896,9 @@ void Viewport3D::draw(sf::RenderWindow& window, const sf::FloatRect& area) {
     glLineWidth(2.5f);
     submit(markers_, GL_LINES, "markers");
     submit(highlight_, GL_LINES, "highlight");
+    glLineWidth(3.0f);
+    submit(faceHighlight_, GL_LINES, "faceHighlight");
+    glLineWidth(2.5f);
     glLineWidth(1.5f);
     submit(box_, GL_LINES, "box");
     submit(streamlines_, GL_LINES, "streamlines");
