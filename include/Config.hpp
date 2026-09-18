@@ -145,6 +145,30 @@ bool parseSources(const std::string& text,
                   std::vector<FlowSource>& out,
                   std::string& error);
 
+// A vortex put into the flow at the start, rather than waited for.
+//
+// The Q button only ever draws vortices that are there, and a body flying
+// straight and level makes almost none, so "show me a vortex" used to mean
+// setting up a whole shedding case and waiting for it. One of these is a
+// vortex from the first step.
+//
+// strength is the peak swirl speed in m/s and radius is the distance from the
+// axis at which that peak sits, which is where the profile below puts its
+// maximum - so both numbers are things you can picture. axis is 0, 1 or 2 for
+// a tube running along x, y or z.
+struct SeedVortex {
+    float x = 0.0f, y = 0.0f, z = 0.0f;
+    float radius = 0.0f;
+    float strength = 0.0f;
+    int axis = 2;
+};
+
+bool parseVortices(const std::string& text,
+                   std::vector<SeedVortex>& out,
+                   std::string& error);
+
+std::string vorticesHelp();
+
 std::string sourcesHelp();
 
 struct Profile {
@@ -361,6 +385,9 @@ struct Config {
     // not write over each other; and it is what the tray, the taskbar and the
     // window call this run instead of "Fluid Solver".
     std::string runName = "";
+
+    // "x=0.5,y=0.5,z=0.5,radius=0.05,strength=60,axis=z;..." - see SeedVortex.
+    std::string vortices = "";
     std::string runNameFolder() const;
 
     // Geometry
@@ -392,6 +419,7 @@ struct Config {
 
     Regime regime = Regime::Incompressible;
     FrameState frameState = FrameState::Slim;
+
 
     float gamma = 1.4f;
     float R = 287.05f;

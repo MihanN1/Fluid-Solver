@@ -1204,5 +1204,112 @@ int main() {
 
     removeDir(root);
     std::cout << "CompressibleTests OK\n";
+    // The isentropic vortex, which is an exact steady solution of the Euler
+    // equations: dropped into a uniform stream it is carried along without
+    // changing shape at all. So whatever has happened to it after crossing the
+    // grid is the scheme's own dissipation and nothing else, which makes this
+    // the standard way to measure a compressible solver - and the reason the
+    // vortices= key seeds this profile rather than something made up.
+    {
+        Config cfg = gasConfig(root / "vortex");
+        cfg.Lx = 1.0f;
+        cfg.Ly = 1.0f;
+        cfg.nx = 160;
+        cfg.ny = 160;
+        cfg.nz = 1;
+        cfg.caseType = CaseType::Channel;
+        cfg.boundaries = defaultChannelBoundaries();
+        cfg.machInlet = 0.3f;
+        // Everything open, so the vortex leaves without meeting a wall.
+        cfg.boundaries[BoundarySide::Bottom].kind = BoundaryKind::Outlet;
+        cfg.boundaries[BoundarySide::Top].kind = BoundaryKind::Outlet;
+        const double stream =
+            0.3 * std::sqrt(1.4 * 287.05 * 288.15);
+        // Long enough to carry the vortex about forty cells; ten is not far
+        // enough for dissipation to show up at all.
+        cfg.totalTime = 0.0024;
+        cfg.limiter = LimiterKind::VanLeer;
+        cfg.timeScheme = TimeScheme::RK3;
+        // Core ten cells across, well inside what the scheme can carry.
+        cfg.vortices = "x=0.35,y=0.5,z=0,radius=0.0625,strength=40";
+
+        RestartData frame;
+        if (!runCase(cfg, frame, error))
+            return fail("the vortex run failed: " + error);
+
+        const std::size_t cells =
+            static_cast<std::size_t>(frame.nx) * frame.ny;
+        if (frame.stateRho.size() != cells)
+            return fail("the vortex frame carries no state");
+
+        // Two different measurements, because the fastest-swirling cell is
+        // not the middle of the vortex - it sits out on the ring, a radius
+        // away, and using it as the position would put the answer ten cells
+        // off on whichever side happened to win. The middle is where the
+        // pressure is lowest, which is what holds the swirl in.
+        double fastest = 0.0;
+        double lowest = std::numeric_limits<double>::max();
+        int atI = 0;
+        int atJ = 0;
+        for (int j = 1; j < frame.ny - 1; ++j)
+            for (int i = 1; i < frame.nx - 1; ++i) {
+                const std::size_t id =
+                    static_cast<std::size_t>(j) * frame.nx + i;
+                const double density = frame.stateRho[id];
+                if (!(density > 0.0))
+                    continue;
+                const double u = frame.stateRhoU[id] / density;
+                const double v = frame.stateRhoV[id] / density;
+                const double kinetic = 0.5 * density * (u * u + v * v);
+                const double pressure =
+                    (cfg.gamma - 1.0) * (frame.stateRhoE[id] - kinetic);
+                if (pressure < lowest) {
+                    lowest = pressure;
+                    atI = i;
+                    atJ = j;
+                }
+                // The swirl is what is left after the free stream is taken
+                // out; the stream is along x.
+                const double speed =
+                    std::sqrt((u - stream) * (u - stream) + v * v);
+                fastest = std::max(fastest, speed);
+            }
+
+        if (fastest < 0.5 * 40.0)
+            return fail("the vortex lost more than half its swirl crossing "
+                        "the grid: " + std::to_string(fastest) +
+                        " m/s of the 40 it started with. Either the seeding "
+                        "is wrong or the scheme is far more dissipative than "
+                        "it should be");
+        if (fastest > 1.2 * 40.0)
+            return fail("the vortex came out faster than it went in: " +
+                        std::to_string(fastest) +
+                        " m/s of 40, which is not something an exact solution "
+                        "of the Euler equations does");
+
+        // And it has to have moved with the stream rather than sat still.
+        const double travelled = stream * frame.currentTime;
+        const double expectedX = 0.35 + travelled;
+        const double actualX = (atI + 0.5) * frame.dx;
+        if (std::fabs(actualX - expectedX) > 4.0 * frame.dx)
+            return fail("the vortex is at x = " + std::to_string(actualX) +
+                        " where the stream should have carried it to " +
+                        std::to_string(expectedX));
+
+        const double height = (atJ + 0.5) * frame.dy;
+        if (std::fabs(height - 0.5) > 4.0 * frame.dy)
+            return fail("the vortex drifted off its own line, to y = " +
+                        std::to_string(height));
+
+        char line[220];
+        std::snprintf(line, sizeof(line),
+                      "isentropic vortex  %.1f m/s of the 40 it started with "
+                      "after %.0f cells of travel, centre within %.1f cells "
+                      "of where the stream put it",
+                      fastest, travelled / frame.dx,
+                      std::fabs(actualX - expectedX) / frame.dx);
+        report(line);
+    }
+
     return 0;
 }

@@ -205,6 +205,7 @@ public:
 
     bool setInitialState(RestartData&& state, const std::string& framePrefix);
     void reportCore() const;
+    void seedVortices();
     void run();
 
 private:

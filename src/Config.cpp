@@ -38,7 +38,7 @@ const char* const kKeys[] = {
     "omega", "smootherOmega",
     "mgIterations", "mgTolerance", "mgMinCoarseSize",
     "useCuda", "saveInterval", "outputDir", "extraFields", "frameState",
-    "runName",
+    "runName", "vortices",
     "geometryFile", "sliceAngleX", "sliceAngleY", "sliceAngleZ",
     "sliceRotation",
     "invertSection", "wallMotion", "profiles",
@@ -693,6 +693,137 @@ std::string sourcesHelp() {
         "    sources=\"x=0.5,y=0.2,r=0.05,rate=2,angle=90,phase=1\"\n"
         "    sources=\"x=0.5,y=0.2,z=0.3,r=0.05,rate=2,angle=90,elev=30\"\n"
         "------------------------------------------------------------------\n";
+}
+
+
+std::string vorticesHelp() {
+    return "--- vortices ---------------------------------------------------\n"
+           "Vortices put into the flow at the start, rather than waited for.\n"
+           "\n"
+           "    vortices=x=0.5,y=0.5,z=0.5,radius=0.05,strength=60,axis=z\n"
+           "\n"
+           "  x, y, z    where the axis of the tube passes through, in metres\n"
+           "  radius     the distance from that axis at which the swirl is\n"
+           "             fastest, in metres. Keep it to at least eight cells\n"
+           "             or the scheme will smear the vortex away before it\n"
+           "             has gone anywhere.\n"
+           "  strength   that fastest swirl speed, in m/s. Positive turns\n"
+           "             anticlockwise looking down the axis.\n"
+           "  axis       x, y or z - which way the tube runs. Default z.\n"
+           "\n"
+           "Several are separated by semicolons. A compressible run gets the\n"
+           "isentropic vortex, which is an exact steady solution of the Euler\n"
+           "equations: left alone in a uniform stream it is carried along\n"
+           "without changing shape, so how much of it survives crossing the\n"
+           "box is a direct measurement of the scheme's own dissipation. An\n"
+           "incompressible run gets the same velocity profile, which is\n"
+           "divergence free as it stands and so needs no projection.\n"
+           "\n"
+           "The core of a compressible vortex is colder and thinner than the\n"
+           "air around it, and there is a limit to how fast it can swirl\n"
+           "before the middle would have to have no temperature left. Past\n"
+           "that the strength is reduced and the run says so.\n";
+}
+
+bool parseVortices(const std::string& text,
+                   std::vector<SeedVortex>& out,
+                   std::string& error) {
+    out.clear();
+    const std::string body = trimSpace(text);
+    if (body.empty() || toLower(body) == "none")
+        return true;
+
+    size_t start = 0;
+    while (start <= body.size()) {
+        const size_t end = body.find(';', start);
+        const std::string token =
+            trimSpace(body.substr(start, end == std::string::npos
+                                             ? std::string::npos
+                                             : end - start));
+        start = (end == std::string::npos) ? body.size() + 1 : end + 1;
+        if (token.empty())
+            continue;
+
+        SeedVortex vortex;
+        bool sawRadius = false;
+        bool sawStrength = false;
+        size_t at = 0;
+        while (at <= token.size()) {
+            const size_t comma = token.find(',', at);
+            const std::string piece =
+                trimSpace(token.substr(at, comma == std::string::npos
+                                               ? std::string::npos
+                                               : comma - at));
+            at = (comma == std::string::npos) ? token.size() + 1 : comma + 1;
+            if (piece.empty())
+                continue;
+
+            const size_t equals = piece.find('=');
+            if (equals == std::string::npos) {
+                error = "'" + piece +
+                        "' has no '=' in it. Every setting of a vortex is "
+                        "<name>=<value>.";
+                return false;
+            }
+            const std::string name =
+                toLower(trimSpace(piece.substr(0, equals)));
+            const std::string valueText = trimSpace(piece.substr(equals + 1));
+
+            if (name == "axis") {
+                const std::string axis = toLower(valueText);
+                if (axis == "x" || axis == "0") {
+                    vortex.axis = 0;
+                } else if (axis == "y" || axis == "1") {
+                    vortex.axis = 1;
+                } else if (axis == "z" || axis == "2") {
+                    vortex.axis = 2;
+                } else {
+                    error = "axis of a vortex is x, y or z, not '" +
+                            valueText + "'.";
+                    return false;
+                }
+                continue;
+            }
+
+            double value = 0.0;
+            std::string why;
+            if (!parseNumber(name, valueText, false, value, why)) {
+                error = why;
+                return false;
+            }
+            if (name == "x") {
+                vortex.x = static_cast<float>(value);
+            } else if (name == "y") {
+                vortex.y = static_cast<float>(value);
+            } else if (name == "z") {
+                vortex.z = static_cast<float>(value);
+            } else if (name == "radius" || name == "r") {
+                vortex.radius = static_cast<float>(value);
+                sawRadius = true;
+            } else if (name == "strength" || name == "swirl") {
+                vortex.strength = static_cast<float>(value);
+                sawStrength = true;
+            } else {
+                error = "'" + name +
+                        "' is not a setting of a vortex. They are x, y, z, "
+                        "radius, strength and axis.";
+                return false;
+            }
+        }
+
+        if (!sawRadius || !(vortex.radius > 0.0f)) {
+            error = "a vortex needs a radius greater than zero - the distance "
+                    "from its axis at which the swirl is fastest.";
+            return false;
+        }
+        if (!sawStrength) {
+            error = "a vortex needs a strength - how fast it swirls at that "
+                    "radius, in m/s.";
+            return false;
+        }
+        out.push_back(vortex);
+    }
+    return true;
 }
 
 bool parseSources(const std::string& text,
@@ -2546,7 +2677,8 @@ std::string Config::serialize() const {
         << "profiles=" << profiles << "\n"
         << "extraFields=" << extraFields << "\n"
         << "frameState=" << frameStateName(frameState) << "\n"
-        << "runName=" << runName << "\n";
+        << "runName=" << runName << "\n"
+        << "vortices=" << vortices << "\n";
 
     return out.str();
 }
@@ -2827,6 +2959,12 @@ bool Config::setParam(const std::string& key,
     }
     else if (k == "outputDir")    { outputDir = cleanValue(value); ok = true; }
     else if (k == "runName")      { runName = cleanValue(value); ok = true; }
+    else if (k == "vortices") {
+        std::vector<SeedVortex> parsed;
+        ok = parseVortices(value, parsed, error);
+        if (ok)
+            vortices = cleanValue(value);
+    }
     else if (k == "geometryFile") { geometryFile = cleanValue(value); ok = true; }
     else if (k == "sliceAngleX") ok = assignFloat(sliceAngleX, k, value, -kHuge, kHuge,
              "the angle must be a finite number of degrees", error);

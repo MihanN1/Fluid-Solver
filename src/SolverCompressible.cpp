@@ -743,6 +743,141 @@ bool CompressibleRun::setInitialState(RestartData&& state,
     return true;
 }
 
+
+
+// Vortices asked for in the configuration, stamped into the field before the
+// first step.
+//
+// The isentropic vortex. It is the standard one, and it is standard because it
+// is an exact steady solution of the Euler equations: a uniform stream with
+// this perturbation in it carries the vortex along without the vortex changing
+// shape at all. Anything that happens to it afterwards in a real run is the
+// scheme's own dissipation, which is what makes it the usual way to measure a
+// compressible solver's accuracy as well as a way to get a vortex on screen.
+//
+// The profile, with d the distance from the axis and r = d / radius:
+//
+//   swirl(r) = A r exp((1 - r^2) / 2)
+//
+// which peaks at exactly r = 1 with a value of A. So "radius" is the distance
+// at which it spins fastest and "strength" is how fast it spins there - two
+// numbers a person can picture, rather than the dimensionless beta the
+// textbooks carry.
+//
+// The core has to be colder and thinner than the air around it, because that
+// is what balances the pressure pulling inward, and that sets a ceiling on the
+// swirl: past it the middle of the vortex would need a negative temperature.
+// The ceiling is sqrt(2 gamma R T / ((gamma - 1) e)) - about 460 m/s in air at
+// room temperature - and a stronger one is cut back to it with a word said.
+void CompressibleRun::seedVortices() {
+    std::vector<SeedVortex> seeds;
+    std::string error;
+    if (!parseVortices(cfg.vortices, seeds, error)) {
+        std::cout << "\n!!! " << error << "\n    No vortex is placed.\n\n";
+        return;
+    }
+    if (seeds.empty())
+        return;
+
+    Block block = view(rho, rhou, rhov, rhow, rhoE, rhoY);
+    const float gamma = cfg.gamma;
+    const float gasR = cfg.R;
+    const float ceiling =
+        std::sqrt(2.0f * gamma * gasR * cfg.T0 /
+                  ((gamma - 1.0f) * 2.718281828f));
+
+    std::cout << "\nVortices placed at the start:\n";
+    for (SeedVortex& seed : seeds) {
+        if (std::fabs(seed.strength) > 0.98f * ceiling) {
+            const float wanted = seed.strength;
+            seed.strength =
+                (seed.strength > 0.0f ? 1.0f : -1.0f) * 0.98f * ceiling;
+            std::cout << "  strength " << wanted
+                      << " m/s would empty the core; cut back to "
+                      << seed.strength << " m/s.\n";
+        }
+        if (!volumetric && seed.axis != 2) {
+            std::cout << "  a tube along "
+                      << (seed.axis == 0 ? "x" : "y")
+                      << " needs a third dimension; laid along z instead.\n";
+            seed.axis = 2;
+        }
+
+        const int axis = seed.axis;
+        const int axisA = axis == 0 ? 1 : 0;
+        const int axisB = axis == 2 ? 1 : 2;
+        const float centre[3] = {seed.x, seed.y, seed.z};
+        const float amplitude = seed.strength;
+        const float radius = seed.radius;
+
+        const int nxLocal = nx;
+        const int nyLocal = ny;
+        const int nzLocal = nz;
+        #pragma omp parallel for collapse(2) schedule(static) \
+            if (nzLocal * nyLocal >= 64)
+        for (int k = 0; k < nzLocal; ++k)
+        for (int j = 0; j < nyLocal; ++j)
+            for (int i = 0; i < nxLocal; ++i) {
+                const float position[3] = {
+                    block.cellX(i), block.cellY(j), block.cellZ(k)};
+                const float offsetA = position[axisA] - centre[axisA];
+                const float offsetB = position[axisB] - centre[axisB];
+                const float distance =
+                    std::sqrt(offsetA * offsetA + offsetB * offsetB);
+                const float scaled = distance / radius;
+                // Four radii out the perturbation is a millionth of its peak;
+                // past that it is not worth the exponential.
+                if (scaled > 4.0f)
+                    continue;
+
+                const int id = block.index(i, j, k);
+                Primitive q = primitiveOf(block, gas, id);
+                const float shape = std::exp(0.5f * (1.0f - scaled * scaled));
+                // Tangential, turning anticlockwise looking down the axis.
+                const float swirl = amplitude * shape / radius;
+                float velocity[3] = {q.u, q.v, q.w};
+                velocity[axisA] += -swirl * offsetB;
+                velocity[axisB] += swirl * offsetA;
+
+                const float drop =
+                    (gamma - 1.0f) * amplitude * amplitude /
+                    (2.0f * gamma * gasR) * shape * shape;
+                const float temperature = std::max(cfg.T0 - drop, 1.0f);
+                const float density =
+                    (cfg.pInf / (gasR * cfg.T0)) *
+                    std::pow(temperature / cfg.T0, 1.0f / (gamma - 1.0f));
+
+                q.u = velocity[0];
+                q.v = velocity[1];
+                q.w = volumetric ? velocity[2] : 0.0f;
+                q.rho = density;
+                q.p = density * gasR * temperature;
+                writeState(block, id, q);
+            }
+
+        char line[200];
+        std::snprintf(line, sizeof(line),
+                      "  at (%.4g, %.4g, %.4g), radius %.4g m, %.4g m/s at "
+                      "that radius, tube along %c",
+                      seed.x, seed.y, seed.z, seed.radius, seed.strength,
+                      seed.axis == 0 ? 'x' : (seed.axis == 1 ? 'y' : 'z'));
+        std::cout << line << "\n";
+        const float cellsAcross =
+            seed.radius / std::max(std::max(dx, dy), volumetric ? dz : dx);
+        if (cellsAcross < 8.0f) {
+            std::snprintf(line, sizeof(line),
+                          "    the core is %.1f cells across; under about 8 "
+                          "the scheme smears it away within a few dozen cells "
+                          "of travel",
+                          cellsAcross);
+            std::cout << line << "\n";
+        }
+    }
+    std::cout << "\n";
+    fillSolidCells(block, gas);
+    fillGhostCells(block, sides, gas);
+}
+
 void CompressibleRun::computeStep() {
     Block current = view(rho, rhou, rhov, rhow, rhoE, rhoY);
     Block stage1 = view(rho1, rhou1, rhov1, rhow1, rhoE1, rhoY1);
@@ -1324,6 +1459,7 @@ void CompressibleRun::reportStep() const {
 
 void CompressibleRun::run() {
     initialise();
+    seedVortices();
     resolveBodyMotion();
     reportBodies();
     regridIfDue();
@@ -1835,6 +1971,14 @@ void CompressibleRun::writeMicrophoneAudio() const {
                   << "x";
     std::cout << "):\n";
 
+    // Every track is built first and written afterwards, because they have to
+    // share one gain. Each file used to be scaled to its own peak, which meant
+    // a microphone in the quiet corner came out of the speakers exactly as
+    // loud as one under the flight path - so the recordings could not be
+    // compared by ear at all, which is most of what four of them are for.
+    std::vector<std::vector<double>> tracks(mics.size());
+    std::vector<double> peaks(mics.size(), 0.0);
+
     for (std::size_t m = 0; m < mics.size(); ++m) {
         const std::vector<float>& channel = micSamples[m];
         if (channel.size() != samples)
@@ -1893,7 +2037,28 @@ void CompressibleRun::writeMicrophoneAudio() const {
             value -= drift;
             peak = std::max(peak, std::fabs(value));
         }
-        const double gain = peak > 0.0 ? 0.9 * 32767.0 / peak : 0.0;
+        tracks[m] = std::move(track);
+        peaks[m] = peak;
+    }
+
+    double loudest = 0.0;
+    std::size_t loudestMic = 0;
+    for (std::size_t m = 0; m < mics.size(); ++m) {
+        if (peaks[m] > loudest) {
+            loudest = peaks[m];
+            loudestMic = m;
+        }
+    }
+    if (!(loudest > 0.0)) {
+        std::cout << "  every microphone read a flat line - nothing to "
+                     "write.\n";
+        return;
+    }
+    const double gain = 0.9 * 32767.0 / loudest;
+
+    for (std::size_t m = 0; m < mics.size(); ++m) {
+        if (tracks[m].empty())
+            continue;
 
         char name[64];
         std::snprintf(name, sizeof(name), "microphone%zu.wav", m + 1);
@@ -1933,7 +2098,7 @@ void CompressibleRun::writeMicrophoneAudio() const {
         out.write("data", 4);
         put32(dataBytes);
 
-        for (double value : track) {
+        for (double value : tracks[m]) {
             double scaled = value * gain;
             scaled = std::max(-32768.0, std::min(32767.0, scaled));
             put16(static_cast<uint16_t>(static_cast<int16_t>(
@@ -1941,13 +2106,24 @@ void CompressibleRun::writeMicrophoneAudio() const {
         }
         out.close();
 
-        char line[220];
+        // The peak in pascals is the number that means something; the decibels
+        // beside it are that pressure against the usual 20 micropascal
+        // reference, which is what "how loud was it" is normally answered in.
+        // A .wav has no absolute level of its own - the speakers decide that -
+        // so this line is the only place the real loudness lives.
+        const double decibels =
+            20.0 * std::log10(std::max(peaks[m], 1.0e-12) /
+                              std::max(cfg.acousticRef, 1.0e-12f));
+        char line[240];
         std::snprintf(line, sizeof(line),
-                      "  mic %zu -> %s, full scale is %.4g Pa of fluctuation",
-                      m + 1, name, peak);
+                      "  mic %zu -> %s, peak %.4g Pa (%.1f dB)%s",
+                      m + 1, name, peaks[m], decibels,
+                      m == loudestMic ? "  <- sets the scale for all of them"
+                                      : "");
         std::cout << line << "\n";
     }
-    std::cout << "Written next to the frames in "
+    std::cout << "All files share one gain, so they can be compared by ear.\n"
+              << "Written next to the frames in "
               << pathToConsole(outputPath) << "\n";
 }
 
