@@ -189,8 +189,12 @@ is its own executable and drives the solver as a child process.
 - ✅ The domain box and the cell grid
 - ✅ The body's surface, solid or wireframe
 - ✅ Slice planes on any axis, moved through the volume
+- ✅ The whole volume as a translucent cloud, every cell that differs from the
+  still air painted and the rest not drawn
 - ✅ Isosurfaces by marching cubes
 - ✅ Vortices as a Q-criterion surface, with their core lines
+- ✅ Any of those three at once, each with its own slider, all coloured by the
+  one field chosen
 - ✅ 3D streamlines, with animated tracers
 - ✅ Click to select: a body picks it in the BODIES group, a domain face focuses
   that face's boundary row
@@ -223,7 +227,12 @@ is its own executable and drives the solver as a child process.
   version 1 included — still loads, as a volume one cell deep with `w` zero
 - ✅ Continue a stopped simulation from any frame
 - ✅ Compact frames, about 19 bytes a cell in a plane, with nothing in them
-  stored twice
+  stored twice — a compressible frame no longer carries the conserved
+  variables beside the three fields they are made of, and `frameState` says how
+  much further to go
+- ✅ `runName` puts a run's frames in a folder of their own
+- ✅ A `stop` file in the output folder asks a run with no console of its own
+  to finish the step, write the frame and return
 
 ---
 
@@ -403,7 +412,8 @@ Fluid-Solver/
 │   ├── TurbulenceTests.cpp         <- the two models against what they claim
 │   ├── CompressibleTests.cpp       <- Sod, an oblique shock, two gases, the
 │   │                                  acoustics, a driven body, a written wav,
-│   │                                  a stretched grid and the refinement
+│   │                                  a stretched grid, the refinement, and an
+│   │                                  isentropic vortex carried across the grid
 │   ├── VolumeTests.cpp             <- the plane still being the plane, the cube
 │   │                                  cavity, gravity down each of the three
 │   │                                  axes, a closed box's mass, a volumetric
@@ -705,6 +715,9 @@ above 0.1, `nu=0`.
 | `useCuda` | switch | 1 | 1 / 0, ignored on a CPU-only build |
 | `saveInterval` | int, steps | 20 | >= 1 |
 | `extraFields` | list | empty | `vorticity` (a vector in a volume, a scalar in a plane), `divergence`, `speed`, `objectId`, `density`, `source`, `curvature`, `nuT`, `wallDistance`, `strain`, comma separated |
+| `frameState` | name | `slim` | how much of the run state goes into each frame: `slim` drops only what can be put back exactly (half of a compressible frame, nothing of an incompressible one), `minimal` also drops the packed face velocities (a sixth off an incompressible frame, and a continuation becomes close rather than exact), `full` writes everything down |
+| `runName` | text | empty | frames go into `output/<runName>` instead of `output`; anything a folder name cannot hold is replaced. Only while `outputDir` is the default — a folder you named yourself is used as given |
+| `vortices` | list | empty | `x=0.5,y=0.5,z=0.5,radius=0.05,strength=60,axis=z` — vortices put into the flow at the start, semicolon separated, see below |
 | `outputDir` | path | `output` | created on the first frame, empty = current directory |
 | `geometryFile` | path, `none` or `empty` | `none` | `none` is the verification circle (a sphere at `nz > 1`), `empty` is nothing at all |
 | `sliceAngleX` `sliceAngleY` `sliceAngleZ` `sliceRotation` | float, deg | 0 | any finite; applied as Rz·Ry·Rx |
@@ -1432,6 +1445,44 @@ every frame of a `kOmegaSST` run, whether or not anybody asked: the frame is
 also the restart file, and a two-equation model that comes back with the inlet
 values in it has thrown away everything the run spent its time building.
 
+## Vortices put in by hand
+
+    "Fluid Solver.exe" regime=compressible machInlet=0.3 nx=160 ny=160 \
+                       "vortices=x=0.35,y=0.5,z=0,radius=0.0625,strength=40"
+
+A vortex written into the initial field instead of waited for. Several are
+separated by semicolons.
+
+| | |
+|---|---|
+| `x` `y` `z` | where the axis of the tube passes through, in metres |
+| `radius` | the distance from that axis at which the swirl is fastest, in metres |
+| `strength` | that fastest swirl speed, in m/s; positive turns anticlockwise looking down the axis |
+| `axis` | `x`, `y` or `z` — which way the tube runs. Default `z` |
+
+`radius` and `strength` mean what they say: the swirl profile peaks at exactly
+`radius` from the axis, and it peaks at exactly `strength`. Keep `radius` to at
+least eight cells or the scheme smears the vortex away before it has gone
+anywhere.
+
+A compressible run gets the **isentropic vortex**, which is an exact steady
+solution of the Euler equations: left alone in a uniform stream it is carried
+along without changing shape. That is the point of it — how much of it survives
+crossing the box is a direct measurement of the scheme's own dissipation,
+against an answer that is known rather than guessed at. `CompressibleTests`
+does exactly that: it refuses a vortex that has lost half its swirl or that has
+somehow gained any, and it refuses one that has drifted off where the stream
+should have carried it. The line it prints on the grid above is 40.3 m/s of the
+40 it started with after thirty-nine cells of travel, centre within 0.3 cells.
+
+An incompressible run gets the same velocity profile, which is divergence free
+as it stands and so needs no projection to start from.
+
+The core of a compressible vortex is colder and thinner than the air around it,
+and there is a limit to how fast it can swirl before the middle would have to
+have no temperature left at all. Past that the strength is reduced to the
+ceiling and the run says on the console that it did.
+
 ## Bodies that travel
 
     "Fluid Solver.exe" "profiles=disc.obj@x=0.5,y=0.5,size=0.2" \
@@ -1986,9 +2037,23 @@ anti-aliasing filter at the same time, and costs one pass. Where a window
 happens to hold no input sample - a rate above the run's own - it interpolates
 between the two nearest instead.
 
-**It is peak-normalised** to 0.9 of full scale, and the run prints the pascal
-value that ended up there, so the file is audible and you can still say what
-it was.
+**It is peak-normalised** to 0.9 of full scale — and to 0.9 of full scale
+across the whole set, not one file at a time. Normalising each microphone to
+its own peak makes the quiet one as loud as the loud one, which throws away the
+only thing several microphones were put out there to measure. One gain is
+worked out from the loudest of them and every file gets it, so a mic in the
+shadow of the body sounds quieter than a mic in front of it, because it was.
+The run prints each one's peak in pascals and in decibels, and marks the one
+that set the scale:
+
+```text
+  mic 1 -> microphone1.wav, peak 412.6 Pa (146.3 dB)  <- sets the scale for all of them
+  mic 2 -> microphone2.wav, peak 88.4 Pa (132.9 dB)
+All files share one gain, so they can be compared by ear.
+```
+
+A `.wav` has no absolute level of its own — the speakers decide that — so that
+line is the only place the real loudness lives.
 
 `micAudioSpeed` stretches the timebase without touching the simulation. 1 is
 real time. 0.05 plays it twenty times slower and divides every frequency by
@@ -2307,7 +2372,7 @@ infinite by construction.
 
 ### Checked against
 
-`CompressibleTests`, nine cases, and four of them have an exact answer rather
+`CompressibleTests`, ten cases, and five of them have an exact answer rather
 than a measured one.
 
 **Sod's shock tube against the exact Riemann solution.** Not a table - the
@@ -2362,6 +2427,17 @@ refined run that comes out *identical* to the fine reference, because that
 means the patches covered the whole domain and no coarse-fine boundary was ever
 exercised; and it checks the closed box holds its mass to better than 5e-4,
 which it does at 8.6e-5.
+
+**An isentropic vortex carried across the grid.** The one case where the right
+answer is "exactly what went in": the vortex is an exact steady solution of the
+Euler equations, so a stream that carries it without changing it is the
+scheme's own dissipation measured against arithmetic rather than against
+another run. Seeded with `vortices=` at 40 m/s of swirl on a 160×160 grid, it
+comes out at 40.3 m/s after thirty-nine cells of travel, with its centre —
+found by the pressure minimum, not by the peak swirl, which sits a whole radius
+off — within 0.3 cells of where the stream should have put it. The test refuses
+a vortex that has lost half its swirl, one that has somehow gained any, and one
+that has drifted off its own line.
 
 ## Turbulence
 
@@ -2776,6 +2852,21 @@ A switch for something this build was not compiled with is shown as
 "not in this build" rather than hidden — the menu explains why one machine is
 slower than the one next to it instead of leaving it a mystery.
 
+**And a compressible run says, in one line at the top, what it is actually
+running on:**
+
+```text
+Compressible core: GPU (CUDA).
+Compressible core: CPU, 8 threads - no NVIDIA driver on this machine.
+```
+
+When it is not the GPU the line says why not, and names the reason rather than
+shrugging: the build has no CUDA in it, there is no driver, `useCuda=0`,
+`amrLevels` keeps the run on the host, `gridStretch` keeps the run on the host,
+or no device answered. The block above it says what the build *can* do; this
+says what this run *does*, which is the question actually being asked when the
+task manager shows a cold card and eight busy cores.
+
 ## While it runs
 
 On Windows the solver puts an icon in the tray for the length of a run. Its
@@ -2789,6 +2880,33 @@ that is running, write the frame, and return. The run can then be continued
 from that frame exactly as described below — which is the point of stopping
 that way rather than killing the process halfway through a file. A second
 Ctrl+C is left to the default handler and kills it outright.
+
+**A run with no console of its own can be asked the same way.** A file called
+`stop` in the output folder means "finish this step, write the frame, come
+back", and the run looks for one twice a second:
+
+```powershell
+New-Item "output\<run>\stop"      # or: touch output/<run>/stop
+```
+
+That is the only way to reach a run started by something else — the UI's Stop
+button writes exactly this file. A stop file left behind by a previous run is
+removed when the next one starts, so it cannot stop a run before it has begun,
+and it is removed again when the run ends.
+
+**Every step line says how far along the run is.** `t = 0.0003221 s` on its own
+is no help unless you remember what you asked for, so the line ends with
+`0.0003221 / 0.0006 s (53%)` — the same number the tray tooltip and the taskbar
+carry. A wall of step numbers then tells you whether this finishes in a minute
+or in an hour.
+
+**`runName` keeps runs apart.** Frames go into `output/<runName>` rather than
+straight into `output`, so a series of runs does not land on top of itself;
+anything a folder name cannot hold is replaced. It only does this while
+`outputDir` is still the default — a folder you named yourself is a folder you
+meant, and having the run put its frames somewhere underneath it instead would
+be the sort of helpfulness nobody asked for. Left empty, everything goes where
+it always did.
 
 Elsewhere there is no tray a static console binary can reach without dragging
 in a desktop toolkit, so the same progress goes into the terminal's title,
@@ -2979,9 +3097,11 @@ Available display modes:
 - Velocity magnitude
 - Velocity vectors
 - Solid mask
-- Slice planes on any axis, isosurfaces, Q-criterion vortices with their core
-  lines, and 3D streamlines with animated tracers — the volume half, in the
-  viewport
+- Slice planes on any axis, a translucent cloud of the whole volume,
+  isosurfaces, Q-criterion vortices with their core lines, and 3D streamlines
+  with animated tracers — the volume half, in the viewport. The cloud, the
+  isosurface and the vortices can be on together, and everything on screen
+  takes the same colour field
 
 Interactive controls include:
 
@@ -3036,7 +3156,9 @@ executable and the tests link the same objects, so what is tested is what runs.
 | `SurfaceTensionTests` | the pressure inside a drop against `sigma/R`, the spurious current a drop that should be at rest develops anyway, and a square blob of water refusing to stay square |
 | `ConservationTests` | divergence left after the projection, inflow against outflow, and a fluid at rest under real gravity staying at rest |
 | `ConvectionTests` | every scheme run on the same case, and the ordering of how much of the field each one throws away |
-| `RestartTests` | a run cut in half and continued reproducing the run that was never cut |
+| `RestartTests` | a run cut in half and continued reproducing the run that was never cut, and the frame it stopped at still carrying the face velocities that make it exact |
+| `CompressibleTests` | Sod against the exact Riemann solution, an oblique shock against theta-beta-M, two gases, both halves of the acoustics, a driven body, a `.wav` that is a `.wav`, a stretched grid, the refinement hierarchy standing still and running, and an isentropic vortex that has to come out of the far side the same size it went in |
+| `TurbulenceTests` | the wall distance and the damping against the model's own definition, k and omega staying finite and positive, k surviving a restart, and a backward step where the model has to take most of the laminar backflow out |
 | `VolumeTests` | the whole third dimension: that a plane is still the plane, the cube cavity against Ghia, a light drop rising the same distance whichever axis gravity is turned to, a closed box keeping its mass, a volumetric restart, turbulence staying finite in a volume, walls turning about every axis, a shock tube refusing to notice the two directions it should not, refinement in depth, and a solid body that is a body rather than a stack of discs |
 | `BackendAgreementTests` | AVX2 on against off and many threads against one, which is the thing that quietly turns one solver into several that disagree |
 
@@ -3714,6 +3836,8 @@ About 19 bytes a cell, and nothing in it is stored twice.
 | `configText` | ~0.1 | the run's own settings |
 
 The `facePack` figure is measured on a plane. A volume carries a third face array through the same predictor and the same varint, and the block stays **lossless to the bit** either way; what it comes to per cell for a given volume is a property of that flow, and there is no measured number for it here to quote.
+
+A compressible frame carries density, the velocity vector and pressure as well, and it used to carry the five conserved variables on top of them — which are those same three rearranged. Twenty of the forty-one bytes a cell were the second copy of the first twenty-one. They are not written any more: the restart rebuilds them from what is there, exactly, and `RestartTests` checks that a run cut in half and continued still reproduces the run that was never cut. That is where `frameState` comes in. `slim`, the default, drops only what can be put back exactly — half a compressible frame, nothing of an incompressible one — so the guarantee is unchanged and the file is smaller. `minimal` also drops the packed face velocities, which is a sixth off an incompressible frame and makes a continuation *close* rather than exact, because the faces then have to be rebuilt from the cell averages and projected. `full` writes everything down, for when you want the frame to be the whole truth on disk rather than a recipe for it.
 
 There is no pressure array for the restart to read: `SCALARS pressure` is the same field multiplied by `ro`, bit for bit, so the reader divides `ro` back out — taking the density from the frame's own configuration text rather than from the run being started, in case that changed.
 
