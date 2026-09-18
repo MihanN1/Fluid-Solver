@@ -450,22 +450,30 @@ with vertex arrays, `pushGLStates()` / `popGLStates()` is how raw GL and SFML
 drawing share a window, and that is the whole of the new dependency list —
 which is to say there isn't one.
 
-What it draws, each switched on by its own button along the viewport:
+What it draws sits behind eight buttons along the viewport, each of which opens
+a list rather than doing something on its own. A list has room for a name and a
+sentence saying what the name means; a button five letters wide has room for
+`Iso`, and `Iso` has never taught anybody anything:
 
 | | |
 |---|---|
-| **Box** | the domain, as an outline |
-| **Grid** | the cell grid on the domain faces |
-| **Solid** | the body's surface. **Wire** draws it as a wireframe instead |
-| **Slice X / Y / Z** | a plane of cells, coloured by the current field, moved through the volume on its own track |
-| **Iso** | an isosurface of the colour field, by marching cubes |
-| **Vortices** | a Q-criterion isosurface, with its **core lines** drawn through it |
-| **Streams** | 3D streamlines seeded through the volume |
-| **Tracers** | dots that run along those streamlines, animated |
-| **Colour** | which field everything is coloured by: pressure, speed, u, v, w, vorticity, Q, or any scalar the frame carries |
-| **Ortho** | orthographic instead of perspective |
-| **Frame all** | put the whole volume back in view |
-| **Front / Back / Left / Right / Top / Bottom** | the six axis views |
+| **Layers** | what fills the box: **cloud**, **isosurface**, **vortices**. Ticks, not a choice — any of the three, all three at once, none. Each one that is on gets its own slider under the bar |
+| **Slices** | **slice X / Y / Z**, ticks as well, each a plane of cells coloured by the current field and moved on its own slider |
+| **Flow** | **streams**, the path a weightless speck would take, and **tracers**, dots running along them |
+| **Show** | **body**, **wireframe**, **box**, **grid**, **microphones** |
+| **Colour** | one field for everything that is drawn: **off**, pressure, speed, u, v, w, vorticity, Q, and every scalar the frame carries. A cloud of Q is a cloud of vortices; an isosurface of density is a shock |
+| **Camera** | **rotate** / **move** for what left-drag does, **ortho**, **frame all**, and the six axis views |
+| **Range** | which values the colour scale spans: the series or this frame, trimmed or whole |
+| **Run** | **continue this run**, **run details**, **recover the setup** |
+
+Every entry carries a sentence, shown in a box beside the list while the cursor
+rests on it — including the one that says what Q is. A tick is drawn `[x]` or
+`[ ]`, the button itself says what is on (`Layers: cloud+vortices`), and the
+lists whose entries are independent stay open while you tick several.
+
+The keys do the same thing: `C` cloud, `I` isosurface, `Q` vortices, `[` and `]`
+for how solid the cloud is, and each of them toggles that one layer and leaves
+the others alone.
 
 Everything above is built into vertex arrays **once per frame change**, not per
 redraw, and the isosurface, the vortex surface and the streamlines are built
@@ -488,7 +496,10 @@ under the cursor:
   line what it currently is and what its speed row holds. Six faces, six rows,
   and no counting which one `bcFront` is.
 
-Hovering reads out the cell under the cursor without selecting anything.
+Hovering reads out the cell under the cursor without selecting anything, in a
+small box that follows the cursor. It used to go on the bottom line, where it
+shared the room with the triangle count and with whatever warning the run had
+produced, and the three took turns.
 
 ## The 2D view is a slice through the volume
 
