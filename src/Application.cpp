@@ -10021,9 +10021,28 @@ private:
                       : view3DSettings_.colourBy == VolumeField::Speed);
             if (activeFrame_ != nullptr) {
                 for (const std::string& name : activeFrame_->scalarNames) {
+                    // A run asked for extraFields=speed, or for vorticity in
+                    // a plane, writes a field the list already has an entry
+                    // for - worked out from the velocity vector, which every
+                    // frame carries. Two entries with the same name, one
+                    // letter apart in what they show, is not a choice anybody
+                    // wanted to be offered.
+                    //
+                    // Speed is in both lists already. Vorticity is only in
+                    // the 3D one, so in the flat view the run's own vorticity
+                    // field is the only way to see it and stays.
+                    if (name == "speed" ||
+                        (!flat && name == "vorticity")) {
+                        continue;
+                    }
                     std::string help = "A field this run wrote into every "
                                        "frame.";
-                    if (name == "density") {
+                    if (name == "phase") {
+                        help = "Which fluid is in the cell, 0 for one and 1 "
+                               "for the other. An isosurface of it at 0.5 is "
+                               "the surface between them - the wave, the "
+                               "splash, the free surface.";
+                    } else if (name == "density") {
                         help = "Mass per cubic metre. This is the one that "
                                "makes a shock look like a shock: speed shows "
                                "it as a smear and density as an edge.";

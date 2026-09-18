@@ -2483,6 +2483,42 @@ void Viewport3D::appendSurface(
         return;
     }
     const VtkFrame& frame = *frame_;
+
+    // Which two cells along one axis a point falls between, and how far. A
+    // marching-cubes vertex sits *between* two cells by construction - that is
+    // what it is for - so taking the value of whichever cell it happens to
+    // round into paints the surface in the two values either side of it,
+    // alternating as the surface weaves from one cell to the next. On a phase
+    // field, 0 on one side of the surface and 1 on the other, that comes out
+    // as rainbow stripes across a free surface that is all one thing.
+    const auto bracket = [](double position,
+                            std::size_t cell,
+                            std::size_t count,
+                            auto centreOf,
+                            std::size_t& first,
+                            std::size_t& second,
+                            float& weight) {
+        if (count <= 1u) {
+            first = second = 0u;
+            weight = 0.0f;
+            return;
+        }
+        if (position >= centreOf(cell)) {
+            first = cell;
+            second = std::min<std::size_t>(cell + 1u, count - 1u);
+        } else {
+            second = cell;
+            first = cell == 0u ? 0u : cell - 1u;
+        }
+        const double low = centreOf(first);
+        const double high = centreOf(second);
+        weight = high > low
+            ? clampFloat(
+                  static_cast<float>((position - low) / (high - low)),
+                  0.0f, 1.0f)
+            : 0.0f;
+    };
+
     batch.reserve(batch.vertexCount() + mesh.triangleCount() * 3u);
     for (std::size_t vertex = 0; vertex < mesh.triangleCount() * 3u; ++vertex) {
         const std::size_t base = vertex * 3u;
@@ -2496,7 +2532,37 @@ void Viewport3D::appendSurface(
             const std::size_t i = frame.columnAt(x);
             const std::size_t j = frame.rowAt(y);
             const std::size_t k = frame.planeAt(z);
-            const float value = colourField.at(i, j, k);
+            std::size_t i0 = i, i1 = i, j0 = j, j1 = j, k0 = k, k1 = k;
+            float tx = 0.0f;
+            float ty = 0.0f;
+            float tz = 0.0f;
+            bracket(x, i, colourField.nx,
+                    [&](std::size_t n) { return frame.cellCentreX(n); },
+                    i0, i1, tx);
+            bracket(y, j, colourField.ny,
+                    [&](std::size_t n) { return frame.cellCentreY(n); },
+                    j0, j1, ty);
+            bracket(z, k, colourField.nz,
+                    [&](std::size_t n) { return frame.cellCentreZ(n); },
+                    k0, k1, tz);
+            const auto mix = [](float low, float high, float t) {
+                return low + (high - low) * t;
+            };
+            const float c00 = mix(colourField.at(i0, j0, k0),
+                                  colourField.at(i1, j0, k0), tx);
+            const float c10 = mix(colourField.at(i0, j1, k0),
+                                  colourField.at(i1, j1, k0), tx);
+            const float c01 = mix(colourField.at(i0, j0, k1),
+                                  colourField.at(i1, j0, k1), tx);
+            const float c11 = mix(colourField.at(i0, j1, k1),
+                                  colourField.at(i1, j1, k1), tx);
+            float value = mix(mix(c00, c10, ty), mix(c01, c11, ty), tz);
+            // One non-finite corner poisons the interpolation, so fall back
+            // to the cell the vertex is in rather than drawing the whole
+            // triangle as "no value".
+            if (!std::isfinite(value)) {
+                value = colourField.at(i, j, k);
+            }
             colour = std::isfinite(value)
                 ? scalarColor(value, range.minimum, range.maximum)
                 : INVALID_COLOR;

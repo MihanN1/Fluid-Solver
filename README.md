@@ -461,7 +461,7 @@ sentence saying what the name means; a button five letters wide has room for
 | **Slices** | **slice X / Y / Z**, ticks as well, each a plane of cells coloured by the current field and moved on its own slider |
 | **Flow** | **streams**, the path a weightless speck would take, and **tracers**, dots running along them |
 | **Show** | **body**, **wireframe**, **box**, **grid**, **microphones** |
-| **Colour** | one field for everything that is drawn: **off**, pressure, speed, u, v, w, vorticity, Q, and every scalar the frame carries. A cloud of Q is a cloud of vortices; an isosurface of density is a shock |
+| **Colour** | one field for everything that is drawn: **off**, pressure, speed, u, v, w, vorticity, Q, and every scalar the frame carries — `density`, `phase`, `temperature`, `mach`, whatever the run wrote. A cloud of Q is a cloud of vortices; an isosurface of density is a shock; an isosurface of **phase** at 0.5 is the free surface of a two-fluid run. A field the run wrote that the list already has, `speed` above all, is not offered twice |
 | **Camera** | **rotate** / **move** for what left-drag does, **isometric**, **frame all**, and the six axis views |
 | **Range** | how far the colour scale is stretched: **99%**, leaving out the outermost half per cent at each end, or **full**. The 2D view's own Range button adds the series-wide scale, which the 3D view has no equivalent of — it paints u, v, w, vorticity and Q as well, and none of those is known until a frame is sampled |
 | **Run** | **continue this run**, **run details**, **recover the setup** |
