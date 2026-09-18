@@ -18,6 +18,18 @@
 #include <utility>
 
 namespace {
+// output/<run name>, when the run has a name and nobody said where to put the
+// frames. Two runs started from the same console with the same defaults used
+// to write into the same folder and interleave their frames; a name is the
+// simplest thing that stops that, and it is what the user already typed.
+static std::filesystem::path runOutputPath(const Config& cfg) {
+    std::filesystem::path base = narrowToPath(cfg.outputDir);
+    const std::string folder = cfg.runNameFolder();
+    if (!folder.empty() && cfg.outputDir == "output")
+        base /= narrowToPath(folder);
+    return resolveOutputDir(base);
+}
+
 
 enum PhiKind {
     PhiUpwind = 0,
@@ -169,7 +181,7 @@ Solver::Solver(const Config& cfg, Mesh& mesh)
     // Relative to the executable, not to the working directory: a shortcut, a
     // file manager and a terminal each hand the process a different one, so
     // "output" used to mean three different folders.
-    outputPath = resolveOutputDir(narrowToPath(cfg.outputDir));
+    outputPath = runOutputPath(cfg);
 
     configHeader = "formatVersion=" + std::to_string(FRAME_FORMAT_VERSION) +
                    "\n" + cfg.serialize();
@@ -4808,8 +4820,10 @@ void Solver::run() {
     // binary can reach - the terminal title. It reports simulated seconds
     // rather than steps, because dt moves and steps do not mean anything to
     // somebody waiting for the run to end.
-    progress::begin("Fluid Solver", currentTime, cfg.totalTime,
-                    pathToConsole(outputPath));
+    progress::begin(cfg.runName.empty()
+                        ? std::string("Fluid Solver")
+                        : "Fluid Solver - " + cfg.runName,
+                    currentTime, cfg.totalTime, pathToConsole(outputPath));
     bool stopped = false;
     bool diverged = false;
     bool steady = false;
@@ -5029,8 +5043,11 @@ void Solver::run() {
                       << ", |u|max = " << maxVel
                       << ", div = " << maxDivergence()
                       << ", mg res = " << lastResidual
-                      << " (" << multigrid.cyclesUsed() << " cycles)"
-                      << std::endl;
+                      << " (" << multigrid.cyclesUsed() << " cycles)";
+            const std::string where = progress::statusLine();
+            if (!where.empty())
+                std::cout << "   " << where;
+            std::cout << std::endl;
 
             if (bodiesMove) {
                 constexpr float degToRad = 3.14159265358979f / 180.0f;
@@ -5475,19 +5492,38 @@ void Solver::saveVTK(int stepNum) const {
     // the reader divides that one back out. The face velocities are stored as
     // what is left of them once the cell averages have predicted them, which
     // is a quarter of the space and still exact to the bit.
+    //
+    // frameState=slim leaves the pack out as well. What it buys back on a
+    // restart is one projection - the reader rebuilds the faces from the cell
+    // averages and makes them divergence free again, which it already knows
+    // how to do and already says it is doing - and what it costs is a sixth of
+    // every frame. A run that is written to be looked at rather than continued
+    // from is the normal case, and the exact faces are dead weight in all of
+    // those frames.
+    // Kept unless frameState says minimal. The packed faces are not a second
+    // copy of anything the frame already shows - they are the only copy, and
+    // without them a continuation has to rebuild the faces from the cell
+    // averages and project once, which moves the state. So the default keeps
+    // them: slim means "drop what can be put back exactly", and here nothing
+    // can. Measured on an 80x40x40 frame the pack is 16% of the file.
+    const bool writeFaces = cfg.frameState != FrameState::Minimal;
     const std::string facePack =
-        packFaceVelocities(nx, ny, nz, u, v, w, uCell, vCell, wCell);
+        writeFaces
+            ? packFaceVelocities(nx, ny, nz, u, v, w, uCell, vCell, wCell)
+            : std::string();
 
-    fout << "FIELD RestartData 2\n";
+    fout << "FIELD RestartData " << (writeFaces ? 2 : 1) << "\n";
     fout << "configText 1 " << configText.size() << " char\n";
     fout.write(configText.data(),
                static_cast<std::streamsize>(configText.size()));
     fout << "\n";
 
-    fout << "facePack 1 " << facePack.size() << " unsigned_char\n";
-    fout.write(facePack.data(),
-               static_cast<std::streamsize>(facePack.size()));
-    fout << "\n";
+    if (writeFaces) {
+        fout << "facePack 1 " << facePack.size() << " unsigned_char\n";
+        fout.write(facePack.data(),
+                   static_cast<std::streamsize>(facePack.size()));
+        fout << "\n";
+    }
 
     if (stepNum % (std::max(1, cfg.saveInterval) * 10) == 0 || stepNum == 0)
         std::cout << "Saved " << pathToConsole(filename) << std::endl;

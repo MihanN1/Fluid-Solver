@@ -37,7 +37,8 @@ const char* const kKeys[] = {
     "CFL", "totalTime", "dtUpdateInterval", "dtSafety",
     "omega", "smootherOmega",
     "mgIterations", "mgTolerance", "mgMinCoarseSize",
-    "useCuda", "saveInterval", "outputDir", "extraFields",
+    "useCuda", "saveInterval", "outputDir", "extraFields", "frameState",
+    "runName",
     "geometryFile", "sliceAngleX", "sliceAngleY", "sliceAngleZ",
     "sliceRotation",
     "invertSection", "wallMotion", "profiles",
@@ -350,6 +351,54 @@ bool parseRegime(const std::string& text, Regime& out, std::string& error) {
                      "variable, there is no pressure solve at all, and the "
                      "keys the pressure solve needed are refused rather than "
                      "quietly ignored");
+    return false;
+}
+
+// A run name has to survive being a folder name on three filesystems, so
+// anything that is not a letter, a digit, a space or one of - _ . becomes a
+// dash, runs of dashes collapse, and Windows' reserved trailing dot and space
+// are trimmed. An empty result means the name was all punctuation, and the
+// caller falls back to plain "output".
+std::string Config::runNameFolder() const {
+    std::string out;
+    out.reserve(runName.size());
+    for (const char c : runName) {
+        const unsigned char u = static_cast<unsigned char>(c);
+        const bool plain = std::isalnum(u) || c == ' ' || c == '-' ||
+                           c == '_' || c == '.' || u >= 0x80;
+        if (plain)
+            out.push_back(c);
+        else if (!out.empty() && out.back() != '-')
+            out.push_back('-');
+    }
+    while (!out.empty() && (out.back() == ' ' || out.back() == '.' ||
+                            out.back() == '-'))
+        out.pop_back();
+    while (!out.empty() && (out.front() == ' ' || out.front() == '-'))
+        out.erase(out.begin());
+    return out;
+}
+
+const char* frameStateName(FrameState state) {
+    if (state == FrameState::Full)
+        return "full";
+    return state == FrameState::Minimal ? "minimal" : "slim";
+}
+
+bool parseFrameState(const std::string& text, FrameState& out) {
+    const std::string name = toLower(cleanValue(text));
+    if (name == "slim" || name == "small" || name == "0" || name.empty()) {
+        out = FrameState::Slim;
+        return true;
+    }
+    if (name == "minimal" || name == "smallest" || name == "2") {
+        out = FrameState::Minimal;
+        return true;
+    }
+    if (name == "full" || name == "exact" || name == "1") {
+        out = FrameState::Full;
+        return true;
+    }
     return false;
 }
 
@@ -2087,8 +2136,23 @@ void Config::print() const {
     std::cout << "  mgTolerance      = " << mgTolerance << " (relative)\n";
     std::cout << "  mgMinCoarseSize  = " << mgMinCoarseSize << " cells/axis\n";
     std::cout << "  saveInterval     = " << saveInterval << " steps\n";
+    if (!runName.empty())
+        std::cout << "  runName          = " << runName << "\n";
     std::cout << "  extraFields      = "
               << (extraFields.empty() ? "none" : extraFields) << "\n";
+    std::cout << "  frameState       = " << frameStateName(frameState);
+    if (compressible())
+        std::cout << (frameState == FrameState::Full
+                          ? "  (conserved variables written out as well)"
+                          : "  (half the file; the conserved variables are "
+                            "rebuilt exactly on restart)");
+    else
+        std::cout << (frameState == FrameState::Minimal
+                          ? "  (a sixth smaller; a continuation is projected "
+                            "rather than exact)"
+                          : "  (face velocities kept, so a continuation is "
+                            "exact)");
+    std::cout << "\n";
     std::cout << "  outputDir        = " << outputDir << "\n";
     std::cout << "  geometryFile     = " << geometryFile << "\n";
     std::cout << "  sliceAngleX      = " << sliceAngleX << " deg\n";
@@ -2480,7 +2544,9 @@ std::string Config::serialize() const {
         << "turbLengthScale=" << turbLengthScale << "\n"
         << "sources=" << sources << "\n"
         << "profiles=" << profiles << "\n"
-        << "extraFields=" << extraFields << "\n";
+        << "extraFields=" << extraFields << "\n"
+        << "frameState=" << frameStateName(frameState) << "\n"
+        << "runName=" << runName << "\n";
 
     return out.str();
 }
@@ -2748,7 +2814,19 @@ bool Config::setParam(const std::string& key,
     else if (k == "useCuda") ok = assignBool(useCuda, k, value, error);
     else if (k == "saveInterval") ok = assignInt(saveInterval, k, value, 1, kIntMax,
              "a frame is written every N steps, so N is at least 1", error);
+    else if (k == "frameState") {
+        ok = parseFrameState(value, frameState);
+        if (!ok)
+            error = "frameState is slim, minimal or full. Slim is the "
+                    "default and drops only what can be put back exactly - "
+                    "half of a compressible frame, nothing of an "
+                    "incompressible one. Minimal also drops the packed face "
+                    "velocities, which is a sixth off an incompressible "
+                    "frame and makes a continuation close rather than exact. "
+                    "Full writes everything down.";
+    }
     else if (k == "outputDir")    { outputDir = cleanValue(value); ok = true; }
+    else if (k == "runName")      { runName = cleanValue(value); ok = true; }
     else if (k == "geometryFile") { geometryFile = cleanValue(value); ok = true; }
     else if (k == "sliceAngleX") ok = assignFloat(sliceAngleX, k, value, -kHuge, kHuge,
              "the angle must be a finite number of degrees", error);

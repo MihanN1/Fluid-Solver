@@ -685,7 +685,8 @@ bool loadRestart(const std::filesystem::path& file,
     // together with facePack, or approximately when a frame carries neither
     // that block nor the uFace/vFace arrays older frames spelled out
     std::string facePack;
-    std::vector<float> cellPressure, cellVelocity;
+    std::vector<float>& cellPressure = out.cellPressure;
+    std::vector<float>& cellVelocity = out.cellVelocity;
 
     std::string token;
     while (fin >> token) {

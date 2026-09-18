@@ -64,6 +64,32 @@ enum class StretchKind {
     Wake
 };
 
+// How much of the state a frame writes down.
+//
+// Slim, the default, drops only what can be put back EXACTLY. In a
+// compressible frame that is the five conserved variables: they are density,
+// the velocity vector and pressure rearranged, all three of which the frame
+// shows anyway, so dropping them halves the file and costs nothing but the
+// arithmetic on the way in. In an incompressible frame it is nothing at all -
+// the packed face velocities there are not a second copy of anything, they are
+// the only copy, and a frame without them can only be continued by rebuilding
+// the faces from the cell averages and projecting once, which moves the state.
+//
+// Minimal drops that too: a sixth off every incompressible frame, paid for
+// with a restart that is close rather than exact. Worth it for a run that is
+// being written to be looked at, which is most of them, and not worth it for
+// one that will be continued.
+//
+// Full writes everything down, for a restart that does no arithmetic at all.
+enum class FrameState {
+    Slim,
+    Minimal,
+    Full
+};
+
+bool parseFrameState(const std::string& text, FrameState& out);
+const char* frameStateName(FrameState state);
+
 std::string stretchKindName(StretchKind kind);
 bool parseStretchKind(const std::string& text, StretchKind& out);
 std::string gridStretchHelp();
@@ -329,6 +355,14 @@ struct Config {
     int saveInterval = 20;              // write a VTK file every N steps
     std::string outputDir = "output";   // directory for solution_*.vtk
 
+    // What to call this run. Empty is every run before this one. When it is
+    // set and outputDir has been left alone, the frames go to
+    // output/<runName> instead of output, so two runs started the same way do
+    // not write over each other; and it is what the tray, the taskbar and the
+    // window call this run instead of "Fluid Solver".
+    std::string runName = "";
+    std::string runNameFolder() const;
+
     // Geometry
     std::string geometryFile = "none";
 
@@ -357,6 +391,7 @@ struct Config {
     float turbLengthScale = 0.0f;
 
     Regime regime = Regime::Incompressible;
+    FrameState frameState = FrameState::Slim;
 
     float gamma = 1.4f;
     float R = 287.05f;

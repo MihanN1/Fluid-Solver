@@ -33,6 +33,15 @@ struct RestartData {
     std::vector<float> stateRho, stateRhoU, stateRhoV, stateRhoW, stateRhoE,
         stateRhoY;
 
+    // The cell arrays exactly as the frame shows them: pressure in the units
+    // it was written in - absolute Pa for a compressible frame, where out.p
+    // above has been divided by the reference density and is no use - and the
+    // cell-centre velocity vector. A compressible run rebuilds its conserved
+    // variables from these plus density, which is why a frame no longer has to
+    // carry the conserved variables at all.
+    std::vector<float> cellPressure;
+    std::vector<float> cellVelocity;
+
     std::vector<float> gridFaceX, gridFaceY, gridFaceZ;
 
     std::vector<std::pair<std::string, std::vector<float>>> extras;

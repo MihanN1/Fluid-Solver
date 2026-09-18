@@ -564,6 +564,34 @@ dimension, so Slice, Contour, Stream Tracer and Volume all work with no
 persuasion. `extraFields=vorticity` writes a **vector** in a volume and a
 scalar in a plane, so the Glyph filter has something to point at.
 
+### 13b. Making vortices, so the Vortices button has something to draw
+
+Q only ever draws what is there, and a missile flying straight and level makes
+almost none. The trick is incidence: hold the same body at 20 degrees nose-up
+in a Mach 0.6 stream and the air cannot get round it sideways without rolling
+up. A pair of vortices leaves the nose and runs the length of the body, the
+fins throw four more off their tips, and the lot trails away downstream.
+
+    profiles=missile.obj@x=0.45,y=0.5,z=0.5,size=0.45,ax=20,ay=180,az=0
+    machInlet=0.6      bodyMotion=            turbulence=none
+    nx=160 ny=80 nz=80 Lx=2.0 Ly=1.0 Lz=1.0
+    bcLeft=inlet       everything else outlet
+    totalTime=0.006    acousticFields=0
+
+The body is held and the air blown past it rather than the body flown through
+still air: no remasking, no per-step voxelisation, and the wake settles instead
+of being chased down the box. `turbulence=none` on purpose - these vortices are
+shed by the geometry, not grown out of a boundary layer, so they are there in
+an inviscid solve and a model would only smear them.
+
+Measured on the frame at 6 ms: 2235 vortex core segments with the slider loose,
+627 with it strict. Above about Mach 0.8 the nose shock starts to dominate the
+Q field and the vortices get hard to pick out; past about 35 degrees the flow
+separates off the whole upper side and it stops being a tidy pair.
+
+`vortices.cfdui` in the repository is this, written out with the rest of the
+keys and a note on which buttons to press.
+
 ### 14. Saving a setup, and getting one back out of a run
 
 In the UI: **Save configuration** writes every parameter as `key=value` lines
@@ -2451,6 +2479,69 @@ wrote, then u, v, w, vorticity and Q. The last five are derived from the
 velocity vector, which is always there, so they were never the ones that were
 hard to find.
 
+**The setup panel says how much disk the run will take** - `VTK ~45 | ~4.5 GB`
+beside the frame count, worked out from the grid, the regime and the extra
+fields. It is an estimate and it says so, and it is the difference between
+finding out that forty frames is nine gigabytes before the run or after it.
+
+**Runs have names.** `runName=` on the command line, a `Run name` row in the
+OUTPUT group of the window. The frames go into a folder of that name instead of
+`run-1758...`, the tray and the taskbar say it while the run is on, and a
+second run of the same name gets a 2 after it rather than writing over the
+first. Empty still gives the timestamp.
+
+**A continuation goes into the folder it continues.** It used to get a new one,
+which split a series that belongs together across two directories: it had to be
+opened twice and could not be played through. The solver names a continued
+frame `solution_<from>_<step>.vtk`, so nothing collides with what is already
+there.
+
+**Stopping a run asks rather than kills.** A file called `stop` in the output
+folder means "finish this step, write the frame, come back" - the same clean
+stop as Ctrl+C, and the only one available to a run with no console of its own.
+That is what the window's Stop button writes now; pressing it a second time
+kills, as it always did. From a shell it is one command:
+
+    touch output/<run>/stop
+
+**How far along, on the console.** Every step line the solver prints now ends
+with where the run has got to - `0.0003221 / 0.0006 s (53%)` - so a wall of
+step numbers tells you whether this finishes in a minute or an hour. It was
+already in the tray tooltip and the taskbar; now it is in all three.
+
+**What the compressible core is running on, in one line, at the top of every
+run.** `Compressible core: GPU (CUDA).`, or `CPU, 8 threads - this build has no
+CUDA in it`, and when the build does have it but the run is not using it, the
+reason: no driver, `useCuda=0`, `amrLevels`, `gridStretch`. The acceleration
+block above it says what the build can do; this says what this run does, which
+is the question actually being asked when the task manager shows a cold card
+and eight busy cores.
+
+**The hover readout shows everything the frame holds**, not a chosen four of
+it. Pressure, u, v, w, speed, and every named field the run wrote - density on
+a compressible run, and whatever `extraFields` added - in the order the solver
+wrote them. In the flat view and in the 3D one.
+
+**It is clear which cell the cursor is on in 3D.** A ray that missed the body
+used to report the cell it entered the box through - a cell on the far wall,
+behind everything - which is why the readout looked like it was picking at
+random. It stops on the first thing that is actually drawn now: the body, a
+cloud block, or where it crosses a slice plane, and it says which of the three
+it was. The cell is outlined in white in the picture, grown to a visible size
+when the cells are smaller than a pixel.
+
+**`What?` pins the explanations open.** One line at a time on hover is no use
+when you do not know which button to hover. The button opens the lot, grouped
+the way the picture is built up: how the volume is drawn, what else is in it,
+colour, the camera.
+
+**The update check moved into the window.** It runs once at startup on a thread
+of its own and puts an `Update: 1.1` button in the top bar when there is
+something newer; pressing it opens the release page. It does not replace the
+running program behind your back - a portable build is a folder you chose where
+to put, possibly on a read-only share, and a window that overwrites itself in
+the middle of a two hour solve is not a feature.
+
 **The Results page is the picture and nothing else.** The right-hand column of
 input parameters is a Setup thing: on Results it is three hundred pixels of
 numbers describing a run that has already happened, that nothing on the page
@@ -2525,6 +2616,102 @@ widget), `Ctrl+C`/`Ctrl+X`/`Ctrl+V` on rows or on the whole configuration,
 
 Bugs that were live in 0.2 and are not now. Several of these were shipping
 silently, which is the only kind worth a section.
+
+**The window showed no percentage at all on a compressible run.** It read the
+simulated time out of the solver's own output by looking for `", t = "` - with
+the comma, which is how the projection solver prints it. The compressible one
+prints `"step   1230  t = ..."`, no comma, so the match never fired, the
+progress bar stayed empty and the tray tooltip said only that something was
+running. It looks for `"t = "` now and both solvers match.
+
+**The window froze while a run was on.** The solver takes every core it is
+given and holds them for minutes; at equal priority Windows then hands the
+window a slice only when one of those threads happens to yield, and sixty
+frames a second becomes about three. The solver is started below normal
+priority now, which costs the run about a percent on an otherwise idle machine
+and gives the window back. Stopping a run no longer blocks the window either -
+it used to sit in a four second wait for the process to die, which is four
+seconds of a frozen window and not long enough to finish writing a two hundred
+megabyte frame.
+
+**The vortex threshold was a share of the largest Q in the box, and the largest
+Q is in one cell against the body.** On a real flyby frame the peak reads
+3.3e7 while the wake is around 1e5, so the default setting of "fifteen per cent
+of the peak" asked for a surface at 5e6 and there was nothing there to draw:
+the Vortices button appeared to do nothing, and the slider did nothing until
+the last hair of its travel. It is a share of the cells that are rotating at
+all now, read as strictness - right for the strongest cores, left for every
+swirl - and it moves the picture along its whole length. On the frame above:
+8816 triangles at the loose end, 1760 at the strict one, where before there
+were none at either.
+
+**A compressible frame wrote its state down twice.** It carried density, the
+velocity vector and pressure - and then the five conserved variables as well,
+which are those same three rearranged. Twenty of the forty-one bytes a cell
+cost were the second copy. They are not written any more: a restart rebuilds
+them on the way in, from the fields the frame was showing all along. A frame of
+a five million cell run went from 201 MB to 103 MB, and so did the time to read
+one back. Checked by continuing the same run from a slim frame and from a full
+one and comparing sixty-seven steps later: 1e-6 relative, which is float
+round-off.
+
+`frameState` says how much a frame writes down, and the rule behind its three
+values is that **the default never gives up a guarantee**:
+
+| | drops | compressible | incompressible |
+|---|---|---|---|
+| `slim` (default) | only what comes back exactly | −49% | 0% |
+| `minimal` | also what needs a projection | −49% | −16% |
+| `full` | nothing | 0% | 0% |
+
+The two regimes differ because their spare data differs. A compressible frame's
+conserved variables are an algebraic identity away from what it already shows,
+so dropping them is free. An incompressible frame's packed face velocities are
+not a second copy of anything - they are the only copy, and a frame without
+them can be continued only by rebuilding the faces from the cell averages and
+projecting once, which moves the state. Dropping them by default was tried,
+measured at 16.4% of the file, and taken back out when the restart test refused
+it; `minimal` is there for a run being written to be looked at rather than
+continued from, which is most of them.
+
+**What was measured and not done.** A frame is 21 bytes a cell for a
+compressible run - pressure 4, density 4, mask 1, velocity 12 - and after the
+above there is nothing in it that is not load-bearing. Everything further costs
+something:
+
+* gzip over the whole file gets 25% (9.07 MB to 6.83 MB on a real frame).
+  Float mantissas are close to random and do not compress; 25% is not worth
+  a file ParaView cannot open.
+* Byte-shuffling the floats first, the way HDF5 and blosc do, gets much more -
+  42% on the scalars, 74% on the velocity, about 41% overall - but no VTK
+  format has it, and the one ParaView does read compressed, XML `.vti`, offers
+  only plain zlib, which is the 25% again. A writer and a reader in two
+  codebases for 25% is not a trade worth making.
+* 16-bit floats halve the field data and VTK has no such type; for a pressure
+  of 101325 Pa carrying fluctuations of tens of Pa they are useless anyway.
+* Bit-packing the 0/1 solid mask saves 4% and costs both ParaView and the
+  window the ability to read it.
+
+**The whole state came back off the graphics card every step of any run with a
+microphone in it.** A hundred and twenty megabytes over the bus, per step, to
+read four cells - and it ignored `micInterval` entirely, so asking for one
+sample in eight cost exactly as much as asking for all of them. It follows the
+interval now. This is most of what a CUDA run was waiting on: the card sat at a
+quarter load while the processor pulled the state over and ground through the
+acoustics.
+
+**The mask of a moving body was rebuilt on one core.** Three full sweeps of the
+volume every step - the mask itself, the surface velocity of every solid cell,
+and the refill of the cells the body has just uncovered - all serial while the
+rest of the solver was on every core the machine had. They are parallel now.
+
+**The compressible frame writer swapped bytes one float at a time.** VTK is
+big-endian and x86 is not, so every float in a frame is a byte swap away from
+the one in memory; the projection solver has done eight at a time since it
+learned about AVX2 and this one, the one that writes the big frames, was still
+doing four shifts and a memcpy per float into a 16 KB buffer. One shuffle does
+eight now, into a one megabyte buffer, and the bytes that come out are
+identical - checked against the old writer on a 21 MB frame.
 
 **Every frame of every compressible run was called uncontinuable.** A frame
 carries the state a run can be picked up from, and the window decides whether

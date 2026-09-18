@@ -1179,6 +1179,8 @@ int main() {
             if (!loadRestart(opening, first, error))
                 return fail("the refined run's first frame is unreadable: " +
                             error);
+            putConservedStateBack(
+                first, tubeCase(root / "amron", coarseFrame.nx, 1));
             for (float value : first.stateRho)
                 startMass += value;
         }

@@ -69,6 +69,34 @@ inline Config baseConfig(const std::filesystem::path& out) {
     return cfg;
 }
 
+
+// The one place the tests put a compressible frame's conserved variables back.
+// A frame no longer writes them down - they are density, the velocity vector
+// and pressure rearranged - and every check in the suite reads them, so this
+// runs the same reconstruction the solver runs on a restart. That makes the
+// reconstruction itself something every compressible test exercises, on real
+// solver output, rather than a path with one test of its own.
+inline void putConservedStateBack(RestartData& frame, const Config& cfg) {
+    if (!cfg.compressible())
+        return;
+    GasModel gas{};
+    gas.gamma1 = cfg.gamma;
+    gas.R1 = cfg.R;
+    gas.gamma2 = cfg.gamma2;
+    gas.R2 = cfg.R2;
+    gas.cp1 = cfg.gamma * cfg.R / (cfg.gamma - 1.0f);
+    gas.cv1 = cfg.R / (cfg.gamma - 1.0f);
+    gas.cp2 = cfg.gamma2 * cfg.R2 / (cfg.gamma2 - 1.0f);
+    gas.cv2 = cfg.R2 / (cfg.gamma2 - 1.0f);
+    gas.species = cfg.twoSpecies();
+    gas.active = cfg.twoSpecies();
+    rebuildConservedState(
+        frame,
+        gas,
+        static_cast<std::size_t>(frame.nx) * frame.ny * std::max(1, frame.nz),
+        cfg.twoSpecies());
+}
+
 inline bool runCase(Config cfg,
                     RestartData& out,
                     std::string& error,
@@ -112,7 +140,17 @@ inline bool runCase(Config cfg,
         error = "the run wrote no frame into " + dir.string();
         return false;
     }
-    return loadRestart(newest, out, error);
+    if (!loadRestart(newest, out, error))
+        return false;
+
+    // A compressible frame no longer writes the conserved variables down -
+    // they are density, the velocity vector and pressure rearranged, and
+    // writing them as well doubled the size of every frame. The checks below
+    // read them, so they are put back here by the same function the solver
+    // uses on a restart, which means every compressible test in the suite now
+    // also exercises that reconstruction on real solver output.
+    putConservedStateBack(out, cfg);
+    return true;
 }
 
 inline float maxDivergence(const RestartData& frame) {

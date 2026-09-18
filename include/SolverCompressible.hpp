@@ -159,6 +159,16 @@ void advanceStage(Block& in,
                   float diffusivity,
                   Workspace& work);
 
+// The five conserved variables of a frame that does not spell them out,
+// rebuilt from density, the velocity vector and pressure - the three things
+// every frame shows anyway. Returns false when the frame is missing one of
+// them; a frame that already carries the conserved arrays is left alone and
+// returns true.
+bool rebuildConservedState(RestartData& state,
+                           const GasModel& gas,
+                           std::size_t cells,
+                           bool wantSpecies);
+
 #ifdef USE_CUDA
 struct CompressibleDevice;
 
@@ -194,6 +204,7 @@ public:
     ~CompressibleRun();
 
     bool setInitialState(RestartData&& state, const std::string& framePrefix);
+    void reportCore() const;
     void run();
 
 private:

@@ -27,6 +27,11 @@ void begin(const std::string& title, double startAt, double total,
 // displayed second actually moved.
 void update(double current);
 
+// "0.0125 / 0.019 s (66%)" - where the run has got to, for the step line the
+// solver prints. Empty before begin() and after finish(), so a solver that
+// prints it unconditionally still reads correctly.
+std::string statusLine();
+
 // Reached the end, or gave up. Leaves a balloon on Windows and restores the
 // title elsewhere.
 void finish(bool ok);

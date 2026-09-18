@@ -6,6 +6,10 @@
 
 #include "AppPaths.hpp"
 #include "Progress.hpp"
+
+#ifdef __AVX2__
+#include <immintrin.h>
+#endif
 #include "Runtime.hpp"
 
 #include <algorithm>
@@ -21,6 +25,18 @@
 #include <sstream>
 
 namespace {
+// output/<run name>, when the run has a name and nobody said where to put the
+// frames. Two runs started from the same console with the same defaults used
+// to write into the same folder and interleave their frames; a name is the
+// simplest thing that stops that, and it is what the user already typed.
+static std::filesystem::path runOutputPath(const Config& cfg) {
+    std::filesystem::path base = narrowToPath(cfg.outputDir);
+    const std::string folder = cfg.runNameFolder();
+    if (!folder.empty() && cfg.outputDir == "output")
+        base /= narrowToPath(folder);
+    return resolveOutputDir(base);
+}
+
 
 using namespace cfd;
 
@@ -318,7 +334,7 @@ CompressibleRun::CompressibleRun(const Config& configuration, Mesh& meshIn)
     // Through resolveOutputDir for the same reason the projection solver goes
     // through it: an install directory a standard user cannot write to says so
     // and names where the frames went instead, rather than failing per frame.
-    outputPath = resolveOutputDir(narrowToPath(cfg.outputDir));
+    outputPath = runOutputPath(cfg);
 
     gas.gamma1 = cfg.gamma;
     gas.R1 = cfg.R;
@@ -389,6 +405,39 @@ CompressibleRun::CompressibleRun(const Config& configuration, Mesh& meshIn)
                                         solidVelZ.data());
     }
 #endif
+    reportCore();
+}
+
+// One line saying where the arithmetic is about to happen, and when it is not
+// the GPU, why not. The acceleration block at the top of a run says what the
+// build can do; this says what this run does, which is the question actually
+// being asked when the task manager shows a cold graphics card and eight busy
+// cores.
+void CompressibleRun::reportCore() const {
+    std::cout << "\nCompressible core: ";
+    if (onDevice) {
+        std::cout << "GPU (CUDA).\n\n";
+        return;
+    }
+    std::cout << "CPU";
+    if (runtime::openMpEnabled())
+        std::cout << ", " << runtime::threadCount() << " threads";
+    std::cout << " - ";
+    if (!runtime::builtWithCuda())
+        std::cout << "this build has no CUDA in it. The release rows with "
+                     "\"cuda\" in the name do;\n    the plain rows are CPU "
+                     "only.";
+    else if (!runtime::machineHasNvidia())
+        std::cout << "no NVIDIA driver on this machine.";
+    else if (!runtime::cudaEnabled() || !cfg.useCuda)
+        std::cout << "CUDA is turned off (useCuda=1 turns it back on).";
+    else if (cfg.adaptive())
+        std::cout << "amrLevels keeps the run on the host.";
+    else if (stretched)
+        std::cout << "gridStretch keeps the run on the host.";
+    else
+        std::cout << "no CUDA device answered.";
+    std::cout << "\n\n";
 }
 
 CompressibleRun::~CompressibleRun() {
@@ -531,9 +580,75 @@ void CompressibleRun::initialise() {
     fillGhostCells(block, sides, gas);
 }
 
+// The five conserved variables of a frame that does not carry them, rebuilt
+// from the three things every frame shows anyway.
+//
+// rho is the density array. rhou, rhov and rhow are that times the velocity
+// vector. rhoE is the pressure written back as energy. None of this is an
+// approximation - the conserved and the primitive variables are the same state
+// in two spellings, and the frame was showing the primitive one all along. So
+// carrying the conserved arrays as well meant writing every state twice, which
+// on a five million cell run is a hundred megabytes a frame to say nothing new.
+//
+// A frame written before this still carries them and is used as it stands.
+bool rebuildConservedState(RestartData& state,
+                           const GasModel& gas,
+                           std::size_t cells,
+                           bool wantSpecies) {
+    if (!state.stateRho.empty())
+        return true;
+    if (state.cellPressure.size() != cells ||
+        state.cellVelocity.size() != cells * 3)
+        return false;
+
+    const std::vector<float>* density = nullptr;
+    const std::vector<float>* fraction = nullptr;
+    for (const auto& extra : state.extras) {
+        if (extra.first == "density")
+            density = &extra.second;
+        else if (extra.first == "species")
+            fraction = &extra.second;
+    }
+    if (density == nullptr || density->size() != cells)
+        return false;
+    const bool species = wantSpecies && fraction != nullptr &&
+                         fraction->size() == cells;
+
+    state.stateRho.assign(cells, 0.0f);
+    state.stateRhoU.assign(cells, 0.0f);
+    state.stateRhoV.assign(cells, 0.0f);
+    state.stateRhoW.assign(cells, 0.0f);
+    state.stateRhoE.assign(cells, 0.0f);
+    if (species)
+        state.stateRhoY.assign(cells, 0.0f);
+
+    for (std::size_t id = 0; id < cells; ++id) {
+        // A solid cell is written with whatever the mask filler left in it,
+        // and the filler runs again after this, so a density of zero there
+        // would only produce infinities on the way through.
+        const float d = (*density)[id] > 0.0f ? (*density)[id] : 1.0e-6f;
+        const float u = state.cellVelocity[3 * id];
+        const float v = state.cellVelocity[3 * id + 1];
+        const float w = state.cellVelocity[3 * id + 2];
+        const float y = species ? (*fraction)[id] : 0.0f;
+        const float gamma = gammaOf(gas, y);
+        const float pressure = state.cellPressure[id];
+        state.stateRho[id] = d;
+        state.stateRhoU[id] = d * u;
+        state.stateRhoV[id] = d * v;
+        state.stateRhoW[id] = d * w;
+        state.stateRhoE[id] =
+            pressure / (gamma - 1.0f) + 0.5f * d * (u * u + v * v + w * w);
+        if (species)
+            state.stateRhoY[id] = d * y;
+    }
+    return true;
+}
+
 bool CompressibleRun::setInitialState(RestartData&& state,
                                       const std::string& prefix) {
     const std::size_t cells = static_cast<std::size_t>(nx) * ny * nz;
+    rebuildConservedState(state, gas, cells, cfg.twoSpecies());
     if (state.stateRho.size() != cells || state.stateRhoU.size() != cells ||
         state.stateRhoV.size() != cells || state.stateRhoE.size() != cells)
         return false;
@@ -911,7 +1026,9 @@ std::vector<float> CompressibleRun::primitive(const char* what) const {
 }
 
 void CompressibleRun::saveVTK(int stepNumber) const {
-    constexpr std::size_t kBufferWords = 4096;
+    // 256 K words is a megabyte a write, which turns the six thousand small
+    // writes a hundred megabyte frame used to make into a hundred large ones.
+    constexpr std::size_t kBufferWords = 262144;
     std::vector<uint32_t> buffer(kBufferWords);
     std::error_code directoryError;
     std::filesystem::create_directories(outputPath, directoryError);
@@ -925,17 +1042,42 @@ void CompressibleRun::saveVTK(int stepNumber) const {
         return;
     }
 
+    // VTK is big-endian and x86 is not, so every float in the file is a byte
+    // swap away from the one in memory. The projection solver has done that
+    // eight floats at a time since it learned about AVX2; this one was still
+    // doing it one float at a time with four shifts and a memcpy, and it is
+    // the solver that writes the big frames. On a profile of a run with a
+    // moving body it was the largest single thing in the picture.
+    //
+    // One shuffle reverses the four bytes of each of eight lanes, which is
+    // exactly the swap. The tail after the last group of eight goes through
+    // the old path, which is also what a build without AVX2 uses throughout.
     const auto writeArray = [&](const float* values, std::size_t count) {
         std::size_t done = 0;
         while (done < count) {
             const std::size_t take = std::min(kBufferWords, count - done);
-            for (std::size_t k = 0; k < take; ++k) {
+            const float* source = values + done;
+            uint32_t* destination = buffer.data();
+            std::size_t k = 0;
+#ifdef __AVX2__
+            const __m256i order = _mm256_setr_epi8(
+                3, 2, 1, 0, 7, 6, 5, 4, 11, 10, 9, 8, 15, 14, 13, 12,
+                3, 2, 1, 0, 7, 6, 5, 4, 11, 10, 9, 8, 15, 14, 13, 12);
+            for (; k + 8 <= take; k += 8) {
+                const __m256i word = _mm256_loadu_si256(
+                    reinterpret_cast<const __m256i*>(source + k));
+                _mm256_storeu_si256(
+                    reinterpret_cast<__m256i*>(destination + k),
+                    _mm256_shuffle_epi8(word, order));
+            }
+#endif
+            for (; k < take; ++k) {
                 uint32_t word;
-                std::memcpy(&word, values + done + k, sizeof(float));
-                buffer[k] = ((word & 0x000000FFu) << 24) |
-                            ((word & 0x0000FF00u) << 8) |
-                            ((word & 0x00FF0000u) >> 8) |
-                            ((word & 0xFF000000u) >> 24);
+                std::memcpy(&word, source + k, sizeof(float));
+                destination[k] = ((word & 0x000000FFu) << 24) |
+                                 ((word & 0x0000FF00u) << 8) |
+                                 ((word & 0x00FF0000u) >> 8) |
+                                 ((word & 0xFF000000u) >> 24);
             }
             fout.write(reinterpret_cast<const char*>(buffer.data()),
                        static_cast<std::streamsize>(take * sizeof(uint32_t)));
@@ -1072,7 +1214,15 @@ void CompressibleRun::saveVTK(int stepNumber) const {
         configText += bodyLine.str();
     }
 
-    const int arrays = (cfg.twoSpecies() ? 7 : 6) +
+    // What the restart block still has to say. The conserved variables are
+    // written only when they were asked for: they are density, the velocity
+    // vector and pressure rearranged, all three of which are in the frame
+    // already, so writing them as well doubles the file to store one state
+    // twice. frameState=full puts them back for anyone who wants a frame that
+    // restarts without a single float of arithmetic.
+    const bool writeState = cfg.frameState == FrameState::Full;   // see Config.hpp
+    const int stateArrays = writeState ? (cfg.twoSpecies() ? 6 : 5) : 0;
+    const int arrays = 1 + stateArrays +
                        (stretched ? (volumetric ? 3 : 2) : 0);
     fout << "FIELD RestartData " << arrays << "\n";
     fout << "configText 1 " << configText.size() << " char\n";
@@ -1115,13 +1265,15 @@ void CompressibleRun::saveVTK(int stepNumber) const {
         fout << "\n";
     }
 
-    writeField("stateRho", rho);
-    writeField("stateRhoU", rhou);
-    writeField("stateRhoV", rhov);
-    writeField("stateRhoW", rhow);
-    writeField("stateRhoE", rhoE);
-    if (cfg.twoSpecies())
-        writeField("stateRhoY", rhoY);
+    if (writeState) {
+        writeField("stateRho", rho);
+        writeField("stateRhoU", rhou);
+        writeField("stateRhoV", rhov);
+        writeField("stateRhoW", rhow);
+        writeField("stateRhoE", rhoE);
+        if (cfg.twoSpecies())
+            writeField("stateRhoY", rhoY);
+    }
 
     if (stepNumber % (std::max(1, cfg.saveInterval) * 10) == 0 ||
         stepNumber == 0)
@@ -1161,7 +1313,13 @@ void CompressibleRun::reportStep() const {
                   static_cast<double>(peakMach),
                   static_cast<double>(lowPressure),
                   static_cast<double>(highPressure));
-    std::cout << line << "\n";
+    // How far along, on the same line, because a wall of step numbers tells
+    // you nothing about whether this finishes in a minute or an hour.
+    const std::string where = progress::statusLine();
+    std::cout << line;
+    if (!where.empty())
+        std::cout << "   " << where;
+    std::cout << std::endl;
 }
 
 void CompressibleRun::run() {
@@ -1183,7 +1341,10 @@ void CompressibleRun::run() {
                               ? currentTime + cfg.addTime
                               : cfg.totalTime;
 
-    progress::begin("Fluid Solver", currentTime, target, cfg.outputDir);
+    progress::begin(cfg.runName.empty()
+                        ? std::string("Fluid Solver")
+                        : "Fluid Solver - " + cfg.runName,
+                    currentTime, target, pathToConsole(outputPath));
 
     if (!hasRestartState)
         saveVTK(step);
@@ -1220,7 +1381,15 @@ void CompressibleRun::run() {
         ++sinceReport;
 
         const bool wanted = (step % std::max(1, cfg.saveInterval)) == 0;
-        if (cfg.acousticFields || !mics.empty() || wanted)
+        // Only when something is going to read it. This used to pull the whole
+        // state back from the device on every step of any run that had a
+        // microphone in it, whatever micInterval said - on a five million cell
+        // grid that is a hundred megabytes over the bus per step, to read four
+        // cells. Now it follows the same interval the sampler does, so
+        // micInterval=8 costs an eighth as much.
+        const bool micDue =
+            !mics.empty() && (step % std::max(1, cfg.micInterval)) == 0;
+        if (cfg.acousticFields || micDue || wanted)
             syncFromDevice();
 
         updateAcoustics(dt);
@@ -1425,9 +1594,14 @@ void CompressibleRun::refreshSolidMask() {
     std::fill(solidVelX.begin(), solidVelX.end(), 0.0f);
     std::fill(solidVelY.begin(), solidVelY.end(), 0.0f);
     std::fill(solidVelZ.begin(), solidVelZ.end(), 0.0f);
-    for (int k = 0; k < nz; ++k)
-    for (int j = 0; j < ny; ++j)
-        for (int i = 0; i < nx; ++i) {
+    const int nxLocal = nx;
+    const int nyLocal = ny;
+    const int nzLocal = nz;
+    #pragma omp parallel for collapse(2) schedule(static) \
+        if (nzLocal * nyLocal >= 64)
+    for (int k = 0; k < nzLocal; ++k)
+    for (int j = 0; j < nyLocal; ++j)
+        for (int i = 0; i < nxLocal; ++i) {
             const std::size_t flat =
                 (static_cast<std::size_t>(k) * ny + j) * nx + i;
             if (!solidMask[flat])
@@ -1448,9 +1622,11 @@ void CompressibleRun::refreshSolidMask() {
         }
 
     Block block = view(rho, rhou, rhov, rhow, rhoE, rhoY);
-    for (int k = 0; k < nz; ++k)
-    for (int j = 0; j < ny; ++j)
-        for (int i = 0; i < nx; ++i) {
+    #pragma omp parallel for collapse(2) schedule(static) \
+        if (nzLocal * nyLocal >= 64)
+    for (int k = 0; k < nzLocal; ++k)
+    for (int j = 0; j < nyLocal; ++j)
+        for (int i = 0; i < nxLocal; ++i) {
             const std::size_t flat =
                 (static_cast<std::size_t>(k) * ny + j) * nx + i;
             if (solidMask[flat] || !before[flat])

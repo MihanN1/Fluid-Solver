@@ -3,7 +3,11 @@
 #include "Version.hpp"
 
 #include <atomic>
+#include <chrono>
 #include <cmath>
+#include <filesystem>
+#include <iostream>
+#include <system_error>
 #include <cstdio>
 #include <cstddef>
 #include <cstdlib>
@@ -30,7 +34,12 @@ namespace progress {
 namespace {
 
 std::atomic<bool> g_stop{false};
+// Two flags, because they answer different questions. g_active is "is there a
+// tray icon and a taskbar bar to keep up to date", which is off when the tray
+// is; g_tracking is "does this run have a start and a target", which is what
+// the numbers on the console need and has nothing to do with the tray.
 std::atomic<bool> g_active{false};
+std::atomic<bool> g_tracking{false};
 double g_start = 0.0;
 double g_total = 0.0;
 std::string g_title;
@@ -38,6 +47,9 @@ std::string g_title;
 // The last thing that was drawn, so a step that moved the clock by a
 // microsecond does not redraw anything.
 int g_lastPermille = -1;
+double g_current = 0.0;
+std::filesystem::path g_stopFile;
+std::chrono::steady_clock::time_point g_nextStopCheck{};
 
 int permilleOf(double current) {
     if (!(g_total > g_start))
@@ -348,7 +360,37 @@ void setTitle(const std::string& text) {
 }   // namespace
 
 void requestStop() { g_stop.store(true); }
-bool stopRequested() { return g_stop.load(); }
+
+// A file called "stop" in the output folder asks the run to finish the step it
+// is on, write the frame and come back - the same clean stop as Ctrl+C or the
+// tray menu, and the only one that works when the run has no console of its
+// own to press Ctrl+C in. That is what the window's Stop button now makes,
+// instead of killing the process in the middle of writing a two hundred
+// megabyte frame; and from a shell it is one command:
+//
+//     echo > output/run-.../stop            (cmd)
+//     touch output/run-.../stop             (bash)
+//
+// Checked twice a second rather than every step: a step can be a millisecond
+// on a small grid, and asking the filesystem that often for a file that is
+// almost never there is a waste of a syscall.
+bool stopRequested() {
+    if (g_stop.load())
+        return true;
+    if (g_stopFile.empty())
+        return false;
+    const auto now = std::chrono::steady_clock::now();
+    if (now < g_nextStopCheck)
+        return false;
+    g_nextStopCheck = now + std::chrono::milliseconds(500);
+    std::error_code ignored;
+    if (std::filesystem::exists(g_stopFile, ignored)) {
+        std::cout << "\n  stop file found - finishing this step and saving.\n";
+        g_stop.store(true);
+        return true;
+    }
+    return false;
+}
 
 void begin(const std::string& title, double startAt, double total,
            const std::string& outputDir) {
@@ -356,7 +398,19 @@ void begin(const std::string& title, double startAt, double total,
     g_start = startAt;
     g_total = total;
     g_lastPermille = -1;
+    g_current = startAt;
     g_stop.store(false);
+    g_tracking.store(true);
+    g_stopFile = outputDir.empty()
+        ? std::filesystem::path()
+        : std::filesystem::path(outputDir) / "stop";
+    g_nextStopCheck = std::chrono::steady_clock::now();
+    // A stop file left behind by the previous run would stop this one before
+    // it started.
+    if (!g_stopFile.empty()) {
+        std::error_code ignored;
+        std::filesystem::remove(g_stopFile, ignored);
+    }
 
 #if defined(_WIN32)
     // Installed whether or not the tray is on: Ctrl+C asking for a clean stop
@@ -398,6 +452,9 @@ void begin(const std::string& title, double startAt, double total,
 }
 
 void update(double current) {
+    if (!g_tracking.load())
+        return;
+    g_current = current;
     if (!g_active.load())
         return;
     const int permille = permilleOf(current);
@@ -415,7 +472,22 @@ void update(double current) {
 #endif
 }
 
+std::string statusLine() {
+    if (!g_tracking.load() || !(g_total > g_start))
+        return std::string();
+    char buffer[128];
+    std::snprintf(buffer, sizeof(buffer), "%.4g / %.4g s (%d%%)", g_current,
+                  g_total, permilleOf(g_current) / 10);
+    return std::string(buffer);
+}
+
 void finish(bool ok) {
+    g_tracking.store(false);
+    if (!g_stopFile.empty()) {
+        std::error_code ignored;
+        std::filesystem::remove(g_stopFile, ignored);
+        g_stopFile.clear();
+    }
     if (!g_active.load())
         return;
 #if defined(_WIN32)
