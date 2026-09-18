@@ -1,4 +1,4 @@
-# CFD Mask UI Optimized
+# Fluid Solver UI
 
 The solver it drives solves a volume now, and `nz = 1` is the plane it used to
 solve. So does this. There is a real 3D viewport, the old 2D view is still here
@@ -466,6 +466,14 @@ sentence saying what the name means; a button five letters wide has room for
 | **Range** | how far the colour scale is stretched: **99%**, leaving out the outermost half per cent at each end, or **full**. The 2D view's own Range button adds the series-wide scale, which the 3D view has no equivalent of — it paints u, v, w, vorticity and Q as well, and none of those is known until a frame is sampled |
 | **Run** | **continue this run**, **run details**, **recover the setup** |
 
+**continue this run** does not ask how much longer. It opens the Setup page
+holding that run's own settings, with the frame on screen as the starting
+point, and leaves the rest to you: change the total time, open a boundary, add
+a microphone, whatever the next run is supposed to differ by. The run button
+reads **Continue run** while that is armed, with **Start from zero** beside it
+for the other choice, and pressing either one is the last word — nothing is
+carried on behind your back.
+
 Every entry carries a sentence, shown in a box beside the list while the cursor
 rests on it — including the one that says what Q is. A tick is drawn `[x]` or
 `[ ]`, the button itself says what is on (`Layers: cloud+vortices`), and the
@@ -523,9 +531,14 @@ is a worse picture of a plane than the plane is.
 A frame carries pressure, the solid mask and velocity. Anything else the solver
 was asked to write - `vorticity`, `divergence`, `speed`, `objectId`, `phase`,
 `nuT`, `k`, `omega`, `wallDistance`, `strain` - is read into a registry keyed by
-the name the frame used, and the **Field** button walks whatever turned up and
-back round to pressure. Nothing in the UI has a list of which fields exist, so a
-field the solver learns to write later shows up without this project changing.
+the name the frame used, and the flat view's **Shows** button lists whatever
+turned up. Nothing in the UI has a list of which fields exist, so a field the
+solver learns to write later shows up without this project changing.
+
+`Pressure` and `Velocity` used to sit in front of that button as buttons of
+their own - two more ways to reach two of the entries already in the list, with
+nothing on the bar to say that that is what they were. The list has them, named,
+with a sentence each.
 
 That last sentence earned itself back during the port. `vorticity` is a scalar
 in a plane and a **vector** in a volume, and the registry did not have to be
@@ -702,6 +715,31 @@ so an ordinary series ends up entirely resident after one pass.
 The colour map that turns a frame into the displayed texture runs across cores
 too, and its buffer is kept between frames rather than reallocated per step.
 
+**What is left in a frame open, measured rather than guessed.** On a 128^3
+compressible frame — 2.1 million cells, 44 MB on disk — reading the file is
+5.6 ms and byte-swapping all of it is 1.6. The other ninety-odd milliseconds
+were arithmetic the viewer needs before it can draw anything: the finite masks,
+the speed of every cell, and the colour ranges. The trimmed range in particular
+— the 0.5% and 99.5% points that keep one stagnation cell from flattening the
+picture — was two `nth_element` passes over a copy of the field, about 28 ms,
+paid for pressure, for speed and for every named scalar the run wrote.
+
+It is a histogram now: min and max, then one increment per value into 4096
+bins, then a walk over the bins. A quantile placed to one part in four thousand
+of the range is exactly as good at ending a colour scale as an exact one, there
+is no second copy of two million floats, and the whole thing runs on every
+core. On two cores a frame opens in 73 ms where it took 93.
+
+**Sampling a field is done once, not once per layer.** The 3D view's colour is
+one setting for everything drawn, and each layer used to sample it for itself:
+with the cloud, an isosurface, the vortices and a slice plane all on and all
+coloured by Q, that was five passes over the volume computing the same velocity
+gradient tensor per cell. The viewport keeps the three most recent sampled
+fields and hands the same one to every layer, and throws them away when the
+frame changes. Q itself — the most expensive field there is, at 80 ms a pass —
+now runs across cores as well, 55 ms on two. Everything on at once, coloured by
+Q: 147 ms, where sampling Q *alone* is 55.
+
 ## Tests
 
 Enable `BUILD_TESTING` in CMake GUI if wanted, then build the test targets and run
@@ -806,7 +844,13 @@ Not as a compliment to Blender — as the thing to copy when a window has to hol
 a viewport, several hundred parameters and a timeline at once, because that is
 a problem somebody has already solved and users already know the answer to.
 
-- a **header strip** across the top;
+- a **header strip** across the top, in groups with a rule between them, so
+  that which buttons belong together is something you can see rather than
+  something to work out: the two **pages** (Setup, Results), the two things you
+  **open** (Open frames, Import STL / OBJ), the two **folders** (Show output
+  folder, Output folder), the **solver** and the **Keys** list — and, kept
+  apart from all of them at the end, **Stop simulation**, which is the one
+  button up there that interrupts work and should not be hit by accident;
 - the **viewport** filling the middle — the 3D one, or the 2D slice view, or
   the setup preview, depending on what you are doing;
 - a **properties column** down the right, holding the parameter groups, with
@@ -852,6 +896,17 @@ you have typed a number in and want it back.
 | `Up`, `Down` | move the slice plane one cell |
 | wheel | zoom, as it always did |
 | `V` | back to the 3D viewport |
+
+**Anywhere in the window:**
+
+| | |
+|---|---|
+| `F1` | the list of every key, in a panel over the window; the **Keys** button in the top bar opens the same one |
+| `Shift + F5` | stop the running simulation |
+| `Ctrl + S` / `Ctrl + O` | save and load a `.cfdui` configuration |
+| `Ctrl + Z` / `Ctrl + Y` | undo and redo, over the whole setup |
+| `Ctrl + C` / `X` / `V` | copy, cut and paste a row or the whole configuration |
+| `Ctrl + F` | filter the parameter panel |
 
 **Anywhere in the result view:**
 

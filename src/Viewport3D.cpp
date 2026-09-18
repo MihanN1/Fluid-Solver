@@ -890,7 +890,16 @@ ScalarVolume sampleVolumeField(
         const std::vector<float> xs = cellCentresX(frame);
         const std::vector<float> ys = cellCentresY(frame);
         const std::vector<float> zs = cellCentresZ(frame);
-        for (std::size_t k = 0; k < frame.nz; ++k) {
+        // A velocity gradient tensor per cell, and every cell independent of
+        // every other: about seventy milliseconds on a two million cell frame
+        // on one core, and it was on one core. This is the most expensive
+        // thing the viewport asks for and the easiest to hand out.
+        const std::ptrdiff_t planes = static_cast<std::ptrdiff_t>(frame.nz);
+#if defined(_OPENMP)
+#pragma omp parallel for schedule(static) if (count >= 32768)
+#endif
+        for (std::ptrdiff_t signedK = 0; signedK < planes; ++signedK) {
+            const std::size_t k = static_cast<std::size_t>(signedK);
             for (std::size_t j = 0; j < frame.ny; ++j) {
                 for (std::size_t i = 0; i < frame.nx; ++i) {
                     const VelocityGradient gradient =
@@ -1481,8 +1490,34 @@ void Viewport3D::Batch::add(float x, float y, float z, const sf::Color& colour) 
     colours.push_back(colour.a);
 }
 
+std::shared_ptr<const ScalarVolume> Viewport3D::sampledField(
+    VolumeField field,
+    const std::string& scalar) const {
+    if (!frame_) {
+        return std::make_shared<const ScalarVolume>();
+    }
+    for (const SampledField& entry : sampled_) {
+        if (entry.field == field &&
+            (field != VolumeField::Scalar || entry.scalar == scalar)) {
+            return entry.volume;
+        }
+    }
+    if (sampled_.size() >= MAX_SAMPLED_FIELDS) {
+        sampled_.erase(sampled_.begin());
+    }
+    SampledField entry;
+    entry.field = field;
+    entry.scalar = scalar;
+    entry.volume = std::make_shared<const ScalarVolume>(
+        sampleVolumeField(*frame_, field, scalar));
+    sampled_.push_back(entry);
+    return entry.volume;
+}
+
 void Viewport3D::setFrame(std::shared_ptr<const VtkFrame> frame) {
     frame_ = std::move(frame);
+    // Everything sampled describes the frame that just went away.
+    sampled_.clear();
     if (frame_) {
         settings_.sliceIndexX =
             std::min(settings_.sliceIndexX, frame_->nx ? frame_->nx - 1u : 0u);
@@ -1737,8 +1772,9 @@ void Viewport3D::rebuildCloud() {
     if (frame.nx == 0 || frame.ny == 0 || frame.nz == 0) {
         return;
     }
-    const ScalarVolume field =
-        sampleVolumeField(frame, settings_.colourBy, settings_.colourScalar);
+    const std::shared_ptr<const ScalarVolume> fieldHold =
+        sampledField(settings_.colourBy, settings_.colourScalar);
+    const ScalarVolume& field = *fieldHold;
     if (field.empty()) {
         return;
     }
@@ -2361,8 +2397,9 @@ void Viewport3D::rebuildSlices() {
         return;
     }
     const VtkFrame& frame = *frame_;
-    const ScalarVolume field =
-        sampleVolumeField(frame, settings_.colourBy, settings_.colourScalar);
+    const std::shared_ptr<const ScalarVolume> fieldHold =
+        sampledField(settings_.colourBy, settings_.colourScalar);
+    const ScalarVolume& field = *fieldHold;
     if (field.empty()) {
         return;
     }
@@ -2474,8 +2511,9 @@ void Viewport3D::rebuildIsosurface() {
         return;
     }
     const VtkFrame& frame = *frame_;
-    const ScalarVolume field =
-        sampleVolumeField(frame, settings_.isoField, settings_.colourScalar);
+    const std::shared_ptr<const ScalarVolume> fieldHold =
+        sampledField(settings_.isoField, settings_.colourScalar);
+    const ScalarVolume& field = *fieldHold;
     if (field.empty() || !field.range.available) {
         return;
     }
@@ -2495,10 +2533,9 @@ void Viewport3D::rebuildIsosurface() {
         cellCentresZ(frame),
         level);
 
-    const ScalarVolume colourField =
-        settings_.colourBy == settings_.isoField
-            ? field
-            : sampleVolumeField(frame, settings_.colourBy, settings_.colourScalar);
+    const std::shared_ptr<const ScalarVolume> colourHold =
+        sampledField(settings_.colourBy, settings_.colourScalar);
+    const ScalarVolume& colourField = *colourHold;
     appendSurface(isosurface_, mesh, colourField, colourRange(colourField));
 }
 
@@ -2576,8 +2613,9 @@ void Viewport3D::rebuildVortices() {
         return;
     }
     const VtkFrame& frame = *frame_;
-    const ScalarVolume criterion =
-        sampleVolumeField(frame, VolumeField::QCriterion, std::string());
+    const std::shared_ptr<const ScalarVolume> criterionHold =
+        sampledField(VolumeField::QCriterion, std::string());
+    const ScalarVolume& criterion = *criterionHold;
     if (criterion.empty() || !criterion.range.available) {
         return;
     }
@@ -2592,8 +2630,9 @@ void Viewport3D::rebuildVortices() {
         cellCentresY(frame),
         cellCentresZ(frame),
         level);
-    const ScalarVolume colourField =
-        sampleVolumeField(frame, settings_.colourBy, settings_.colourScalar);
+    const std::shared_ptr<const ScalarVolume> colourHold =
+        sampledField(settings_.colourBy, settings_.colourScalar);
+    const ScalarVolume& colourField = *colourHold;
     appendSurface(vortexSurface_, mesh, colourField, colourRange(colourField));
 
     const VortexCore core = vortexCoreLines(frame, criterion, level);

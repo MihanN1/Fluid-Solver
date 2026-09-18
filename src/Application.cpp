@@ -892,7 +892,6 @@ enum ViewControl : std::size_t {
     ControlColour,
     ControlRun,
     // Opened from inside the Run picker rather than from a button of its own.
-    ControlContinue,
     // The flat view's three.
     ControlSliceAxis,
     ControlRange,
@@ -1194,7 +1193,7 @@ std::filesystem::path chooseUiConfigFile(
 #ifdef _WIN32
     std::array<wchar_t, 32768> filename{};
     const wchar_t filter[] =
-        L"CFD Mask UI configuration (*.cfdui)\0*.cfdui\0"
+        L"Fluid Solver UI configuration (*.cfdui)\0*.cfdui\0"
         L"Text files (*.txt)\0*.txt\0"
         L"All files (*.*)\0*.*\0";
 
@@ -1205,8 +1204,8 @@ std::filesystem::path chooseUiConfigFile(
     dialog.lpstrFile = filename.data();
     dialog.nMaxFile = static_cast<DWORD>(filename.size());
     dialog.lpstrTitle = save
-        ? L"Save CFD Mask UI configuration"
-        : L"Load CFD Mask UI configuration";
+        ? L"Save Fluid Solver UI configuration"
+        : L"Load Fluid Solver UI configuration";
     dialog.lpstrDefExt = L"cfdui";
     dialog.Flags = OFN_PATHMUSTEXIST | OFN_NOCHANGEDIR | OFN_EXPLORER;
     if (!save) {
@@ -1525,6 +1524,20 @@ std::string readDiagnosticFile(const std::filesystem::path& path) {
         text.pop_back();
     }
     return text;
+}
+
+// Enough of a solver diagnostic to fit on the warning line and still say
+// something. readDiagnosticFile has already flattened the newlines, so this
+// cuts at a word rather than through the middle of one.
+std::string firstLineOf(const std::string& text, std::size_t limit = 110) {
+    if (text.size() <= limit) {
+        return text;
+    }
+    std::size_t cut = text.rfind(' ', limit);
+    if (cut == std::string::npos || cut < limit / 2) {
+        cut = limit;
+    }
+    return text.substr(0, cut) + "...";
 }
 
 double contourArea(const std::vector<Vec2>& contour) {
@@ -2107,14 +2120,14 @@ public:
 
         sf::RenderWindow window(
             sf::VideoMode({1600u, 900u}),
-            std::string("CFD Mask UI ") + CFD_MASK_UI_VERSION,
+            std::string("Fluid Solver UI ") + CFD_MASK_UI_VERSION,
             sf::Style::Default,
             sf::State::Windowed,
             contextSettings);
         window.setMinimumSize(sf::Vector2u{1000u, 800u});
         window.setFramerateLimit(60);
         window_ = &window;
-        windowTitle_ = std::string("CFD Mask UI ") + CFD_MASK_UI_VERSION;
+        windowTitle_ = std::string("Fluid Solver UI ") + CFD_MASK_UI_VERSION;
         // The icon belongs to the window as well as to the tray: without this
         // the taskbar button and the Alt+Tab list show SFML's default while
         // Explorer shows the one compiled into the executable.
@@ -2242,6 +2255,7 @@ public:
                 drawProperties();
             }
             drawTopTabs();
+            drawKeysOverlay();
             drawLoadingIndicator();
             drawStatus();
             window.display();
@@ -2311,22 +2325,38 @@ private:
             ? std::max(360.0f, width - LEFT_PANEL_WIDTH)
             : width;
         {
+            // The bar in groups, with a rule between them, because eight
+            // buttons in a row in the order they were written says nothing
+            // about which of them belong together: the two pages, the two
+            // things you open, the two folders, the solver, the keys - and
+            // Stop, which is the one button here that interrupts work and is
+            // kept away from the others so it is not hit by accident.
+            headerDividers_.clear();
             float x = 12.0f;
             const auto place = [&](Button& button, float w) {
                 button.bounds = {{x, 6.0f}, {w, 32.0f}};
                 x += w + 4.0f;
             };
+            const auto group = [&]() {
+                headerDividers_.push_back(x + 5.0f);
+                x += 15.0f;
+            };
             place(setupTab_, 80.0f);
             place(resultsTab_, 80.0f);
+            group();
             place(openVtkButton_, 130.0f);
-            place(stopSimulationButton_, 128.0f);
-            place(revealVtkButton_, 150.0f);
-            place(solverExeButton_, 124.0f);
             place(importButton_, 132.0f);
+            group();
+            place(revealVtkButton_, 150.0f);
             place(outputFolderButton_, 124.0f);
+            group();
+            place(solverExeButton_, 124.0f);
+            place(keysButton_, 64.0f);
+            group();
+            place(stopSimulationButton_, 128.0f);
             // Only takes a place in the bar when there is something to say.
             updateButton_.bounds = updateOffered()
-                ? sf::FloatRect{{x, 6.0f}, {168.0f, 32.0f}}
+                ? sf::FloatRect{{x + 11.0f, 6.0f}, {168.0f, 32.0f}}
                 : sf::FloatRect{{0.0f, -100000.0f}, {1.0f, 1.0f}};
         }
         resetDefaultsButton_.bounds = {
@@ -2335,10 +2365,20 @@ private:
             {panelX_ + 118.0f, height - 106.0f}, {92.0f, 34.0f}};
         loadConfigButton_.bounds = {
             {panelX_ + 218.0f, height - 106.0f}, {94.0f, 34.0f}};
-        generateButton_.bounds = {
-            {panelX_ + 18.0f, height - 62.0f},
-            {294.0f, 38.0f}
-        };
+        // While a continuation is armed the run button carries on from a
+        // frame, so the other choice - these same settings from t = 0 - needs
+        // somewhere to be. It only exists while that choice does.
+        if (continueArmed_) {
+            generateButton_.bounds = {
+                {panelX_ + 18.0f, height - 62.0f}, {186.0f, 38.0f}};
+            startOverButton_.bounds = {
+                {panelX_ + 208.0f, height - 62.0f}, {104.0f, 38.0f}};
+        } else {
+            generateButton_.bounds = {
+                {panelX_ + 18.0f, height - 62.0f}, {294.0f, 38.0f}};
+            startOverButton_.bounds = {
+                {0.0f, -100000.0f}, {1.0f, 1.0f}};
+        }
 
         {
             const float gap = 4.0f;
@@ -2495,21 +2535,24 @@ private:
                 y += 34.0f;
             }
         };
-        // Pressure, Velocity, Field, Vectors and Range are the 2D view's own
-        // controls; the 3D view colours itself from the Colour button in its
-        // own bar. Leaving them on screen there offers two ways to choose the
-        // same thing, one of which does nothing.
+        // Shows, Vectors and Range are the 2D view's own controls; the 3D
+        // view colours itself from the Colour button in its own bar. Leaving
+        // them on screen there offers two ways to choose the same thing, one
+        // of which does nothing.
+        //
+        // Pressure and Velocity used to sit in front of them as buttons of
+        // their own, which is two more ways to reach two of the entries that
+        // are already in the Shows list, with no way to tell from the bar
+        // that that is what they were.
         const bool flatControls = !view3D_;
-        for (Button* control : {&pressureButton_, &velocityButton_,
-                                &fieldButton_, &vectorButton_, &rangeButton_}) {
+        for (Button* control : {&fieldButton_, &vectorButton_,
+                                &rangeButton_}) {
             if (!flatControls) {
                 control->bounds = {{0.0f, -100000.0f}, {1.0f, 1.0f}};
                 control->enabled = false;
             }
         }
         if (flatControls) {
-            place(pressureButton_, 104.0f);
-            place(velocityButton_, 104.0f);
             place(fieldButton_, 146.0f);
             place(vectorButton_, 114.0f);
             place(rangeButton_, 132.0f);
@@ -2588,14 +2631,8 @@ private:
         setupTab_.selected = mode_ == DisplayMode::Setup;
         resultsTab_.selected = mode_ == DisplayMode::Results;
         resultsTab_.enabled = !frames_.empty();
-        pressureButton_.selected =
-            resultQuantity_ == ResultQuantity::Pressure;
-        velocityButton_.selected =
-            resultQuantity_ == ResultQuantity::Velocity;
         const std::vector<std::string>& available =
             activeFrame_ ? activeFrame_->scalarNames : emptyScalarNames();
-        pressureButton_.enabled = !view3D_;
-        velocityButton_.enabled = !view3D_;
         fieldButton_.enabled = !available.empty() && !view3D_;
         fieldButton_.selected = resultQuantity_ == ResultQuantity::Scalar;
         fieldButton_.enabled = !view3D_;
@@ -2619,12 +2656,19 @@ private:
 
         const bool haveSomethingToRun =
             !geometry_.empty() || solverInfo_.supportsCase;
+        // A continuation needs no geometry - the solid mask comes out of the
+        // frame - so it is allowed even when nothing has been imported.
         generateButton_.enabled =
-            solverAvailable && haveSomethingToRun &&
+            solverAvailable && (haveSomethingToRun || continueArmed_) &&
             !solverProcess_.active && !loadingResults;
+        generateButton_.label = continueArmed_
+            ? "Continue run"
+            : "Run simulation";
+        startOverButton_.enabled = generateButton_.enabled;
         outputFolderButton_.enabled =
             !solverProcess_.active && !loadingResults;
         openVtkButton_.enabled = !solverProcess_.active && !loadingResults;
+        keysButton_.selected = showKeys_;
         stopSimulationButton_.enabled = solverProcess_.active;
         stopSimulationButton_.label = stopRequestedAt_.has_value()
             ? "Stopping - kill?"
@@ -2852,6 +2896,15 @@ private:
             stopSimulationAndLoadFrames();
             return;
         }
+        if (button == sf::Mouse::Button::Left &&
+            keysButton_.hit(position)) {
+            showKeys_ = !showKeys_;
+            status_ = showKeys_
+                ? "Every key this window answers to. Press Keys again, or "
+                  "F1, to put it away."
+                : std::string();
+            return;
+        }
 
         if (button == sf::Mouse::Button::Left && updateOffered() &&
             updateButton_.hit(position)) {
@@ -2906,6 +2959,7 @@ private:
         }
         if (button == sf::Mouse::Button::Left &&
             loadConfigButton_.hit(position)) {
+            continueArmed_ = false;
             loadConfiguration();
             return true;
         }
@@ -2953,8 +3007,18 @@ private:
             }
         }
         if (button == sf::Mouse::Button::Left &&
+            startOverButton_.hit(position) && startOverButton_.enabled) {
+            disarmContinue();
+            updateLayout(layoutSize_);
+            return true;
+        }
+        if (button == sf::Mouse::Button::Left &&
             generateButton_.hit(position)) {
-            generateAndRun();
+            if (continueArmed_) {
+                continueFromSelectedFrame();
+            } else {
+                generateAndRun();
+            }
             return true;
         }
         if (button == sf::Mouse::Button::Left) {
@@ -3152,16 +3216,6 @@ private:
                 setViewTrackFromX(track, position.x);
                 return;
             }
-        }
-        if (pressureButton_.hit(position)) {
-            resultQuantity_ = ResultQuantity::Pressure;
-            resultTextureCacheValid_ = false;
-            return;
-        }
-        if (velocityButton_.hit(position)) {
-            resultQuantity_ = ResultQuantity::Velocity;
-            resultTextureCacheValid_ = false;
-            return;
         }
         if (fieldButton_.hit(position) && fieldButton_.enabled) {
             openViewMenuFrom(ControlFlatField, fieldButton_.bounds);
@@ -4978,8 +5032,62 @@ private:
             std::to_string(activeFrame_->frameNumber) + ": " + report;
     }
 
+    // Continue: open the Setup page holding this run's settings, with the
+    // frame on screen as the starting point, and let the person change
+    // whatever they want before pressing Run.
+    //
+    // It used to ask "how much longer" in a submenu and launch straight from
+    // there, which answers one question and forbids every other one - and the
+    // other one people actually have is "the same run but with the outlet
+    // open" or "...with one more microphone". The settings are in the frame;
+    // putting them on the page and letting them be edited is both simpler and
+    // more use than any list of durations.
+    void continueFromFrameInSetup() {
+        if (!activeFrame_) {
+            status_ = "Select a frame to continue from first.";
+            return;
+        }
+        if (!activeFrame_->restart.restartCapable) {
+            status_ =
+                "This frame carries no restart state, so there is nothing to "
+                "continue from. Frames written by Fluid Solver 0.1.1 and "
+                "newer do.";
+            return;
+        }
+        if (activeFrame_->restart.hasConfigText) {
+            loadConfigurationFromFrame();
+        } else {
+            setDisplayMode(DisplayMode::Setup);
+        }
+        continueArmed_ = true;
+        const double from = activeFrame_->restart.currentTime.value_or(0.0);
+        // Total time is what the run stopped at, so leaving it there would
+        // continue by nothing at all. Same again is a starting point, and the
+        // point of this whole change is that it is only a starting point.
+        if (sliders_[TotalTime].value <= from) {
+            sliders_[TotalTime].value = std::min(
+                sliders_[TotalTime].maximum, std::max(from * 2.0, from));
+        }
+        sliders_[AddTime].value = 0.0;
+        invalidSlider_.reset();
+        status_ = "Continuing from solver step " +
+            std::to_string(activeFrame_->frameNumber) + " at " +
+            formatSeconds(from) +
+            ". These are that run's settings - change what you like, set "
+            "Total time to where it should get to, then Continue run.";
+    }
+
+    void disarmContinue() {
+        continueArmed_ = false;
+        status_ = "Starting from zero: these settings run from t = 0 into a "
+                  "new folder, and the frames already there are left alone.";
+    }
+
     void resetDefaults() {
         pushUndo();
+        // These are no longer the settings the frame was computed with, so
+        // carrying on from it would be continuing something else.
+        continueArmed_ = false;
         for (Slider& slider : sliders_) {
             slider.value = slider.defaultValue;
             slider.text = slider.defaultText;
@@ -5145,6 +5253,7 @@ private:
 
     void generateAndRun() {
         std::string error;
+        continueArmed_ = false;
         refreshSolverInfo();
         if (!solverInfo_.valid || !solverInfo_.recognized) {
             status_ =
@@ -5388,27 +5497,6 @@ private:
                  : "");
     }
 
-    // Continue, with a number rather than a guess. The amount comes from the
-    // Run menu, which works it out from the run itself; the status line says
-    // what is about to happen before it happens.
-    void continueBy(double addSeconds) {
-        if (!activeFrame_) {
-            status_ = "Select a frame to continue from first.";
-            return;
-        }
-        if (!(addSeconds > 0.0)) {
-            status_ = "That leaves nothing to compute - the frame on screen "
-                      "is already at the end.";
-            return;
-        }
-        const double from = activeFrame_->restart.currentTime.value_or(0.0);
-        pendingContinueSeconds_ = addSeconds;
-        status_ = "Continuing from " + formatSeconds(from) + " for another " +
-            formatSeconds(addSeconds) + ", to " +
-            formatSeconds(from + addSeconds) + ".";
-        continueFromSelectedFrame();
-    }
-
     // Pick up an earlier run where a frame left off.
     //
     // Everything that decides the physics comes out of the frame: the grid,
@@ -5445,12 +5533,10 @@ private:
         }
 
         const double frameTime = frame.restart.currentTime.value_or(0.0);
-        // What the Run menu asked for wins; the panel row is the fallback for
-        // anyone who set it, and Total time the last resort.
-        const double addTime = pendingContinueSeconds_ > 0.0
-            ? pendingContinueSeconds_
-            : sliders_[AddTime].value;
-        pendingContinueSeconds_ = 0.0;
+        // "Continue: add time" seconds past the frame if that row was set,
+        // and otherwise Total time, which is the row the Setup page puts in
+        // front of everybody.
+        const double addTime = sliders_[AddTime].value;
         double target = sliders_[TotalTime].value;
         if (addTime > 0.0) {
             target = frameTime + addTime;
@@ -5545,6 +5631,10 @@ private:
 
         currentRunDirectory_ = runDirectory;
         currentRunIsContinuation_ = true;
+        // Armed once, used once. The frames that come back are a different
+        // frame to continue from, and deciding that for somebody silently is
+        // how a button ends up doing something nobody asked for.
+        continueArmed_ = false;
         continuationSourceStep_ =
             frame.restart.restartStep.value_or(frame.frameNumber);
         currentRunRequiresComputedFrame_ = true;
@@ -5724,13 +5814,31 @@ private:
                 "Continuation completed without a solver step newer than " +
                 std::to_string(continuationSourceStep_));
         }
-        const bool hasPreview =
-            fromFluidSolver && !previewSolid_.empty();
+        // The mask the panel voxelised for its preview is one plane, nx by ny.
+        // A volume run voxelises the whole model in three dimensions, so its
+        // mask is a box: comparing the two is comparing a page against a book
+        // and can only ever come out "different", which is why this warned
+        // about every volume run ever launched. The check belongs to plane
+        // runs, where the two are the same thing and it is exact.
+        const bool hasPreview = fromFluidSolver && !previewSolid_.empty() &&
+            catalog.activeFrame.nz <= 1;
         const bool previewMatches =
             hasPreview &&
             catalog.activeFrame.nx == previewNx_ &&
             catalog.activeFrame.ny == previewNy_ &&
             catalog.activeFrame.solid == previewSolid_;
+        // How many cells actually disagree, so the warning can say whether
+        // this is one cell on a rim or the body being somewhere else
+        // entirely. Only meaningful when the two masks are the same size.
+        std::size_t maskDifferences = 0;
+        if (hasPreview && catalog.activeFrame.solid.size() ==
+                              previewSolid_.size()) {
+            for (std::size_t cell = 0; cell < previewSolid_.size(); ++cell) {
+                if (catalog.activeFrame.solid[cell] != previewSolid_[cell]) {
+                    ++maskDifferences;
+                }
+            }
+        }
         const std::string solverDiagnostic =
             fromFluidSolver
                 ? readDiagnosticFile(
@@ -5772,22 +5880,52 @@ private:
             if (!resultsWarning_.empty()) {
                 resultsWarning_ += "  ";
             }
-            resultsWarning_ +=
-                "MASK MISMATCH: Fluid Solver VTK differs from GUI preview.";
+            // Say what differs. "MASK MISMATCH" told you a comparison had
+            // failed and nothing about which comparison, by how much, or
+            // whether it mattered - which is the same as telling you nothing
+            // while looking alarming about it.
+            if (catalog.activeFrame.nx != previewNx_ ||
+                catalog.activeFrame.ny != previewNy_) {
+                resultsWarning_ +=
+                    "The solver used a " +
+                    std::to_string(catalog.activeFrame.nx) + " x " +
+                    std::to_string(catalog.activeFrame.ny) +
+                    " grid where the preview drew " +
+                    std::to_string(previewNx_) + " x " +
+                    std::to_string(previewNy_) +
+                    ": the frames are of a different run than the picture on "
+                    "the Setup page.";
+            } else {
+                const double share = previewSolid_.empty()
+                    ? 0.0
+                    : 100.0 * static_cast<double>(maskDifferences) /
+                          static_cast<double>(previewSolid_.size());
+                char line[240];
+                std::snprintf(
+                    line, sizeof(line),
+                    "The body came out %zu cells different from the Setup "
+                    "preview (%.2f%% of the grid) - the frames are right, the "
+                    "preview was drawn from a slightly different "
+                    "voxelisation.",
+                    maskDifferences, share);
+                resultsWarning_ += line;
+            }
         }
         if (!solverDiagnostic.empty()) {
             if (!resultsWarning_.empty()) {
                 resultsWarning_ += "  ";
             }
-            resultsWarning_ += "SOLVER REPORTED STDERR.";
+            // And what it said, rather than the fact that it said something.
+            resultsWarning_ += "The solver wrote to its error output: " +
+                firstLineOf(solverDiagnostic);
         }
         setDisplayMode(DisplayMode::Results);
         const auto indexMilliseconds = std::chrono::duration_cast<
             std::chrono::milliseconds>(
             std::chrono::steady_clock::now() - resultCatalogStarted_).count();
         status_ = hasPreview && !previewMatches
-            ? "Adapter verification failed: Fluid Solver VTK mask differs "
-              "from the GUI preview."
+            ? std::string("The body in the frames is not the body the Setup "
+                          "preview drew - see the line above the picture.")
             : "Indexed " + std::to_string(frames_.size()) +
                   " VTK frame(s) in " +
                   std::to_string(indexMilliseconds) + " ms; loaded solver step " +
@@ -5796,7 +5934,8 @@ private:
                   std::to_string(frames_.front().frameNumber) + " to " +
                   std::to_string(frames_.back().frameNumber) + "." +
                   (hasPreview
-                       ? " Fluid Solver mask matches the GUI preview."
+                       ? " The body is cell for cell what the Setup preview "
+                         "drew."
                        : "");
         if (stopped) {
             status_ = "Stopped Fluid Solver. " + status_;
@@ -7343,6 +7482,26 @@ private:
     }
 
     bool handleShortcut(const sf::Event::KeyPressed& key) {
+        // The two that are not Ctrl+something, and are handled here so they
+        // work from every page and while a row is focused.
+        //
+        // F1 is the list of keys, which is the one convention every program
+        // on this desktop keeps. Shift+F5 stops the run: a long solve is
+        // exactly the thing you want to be able to interrupt without hunting
+        // for a button, and it is deliberately not a key that can be hit by
+        // accident while typing a number into the panel.
+        if (key.code == sf::Keyboard::Key::F1) {
+            showKeys_ = !showKeys_;
+            return true;
+        }
+        if (key.code == sf::Keyboard::Key::F5 && key.shift) {
+            if (solverProcess_.active) {
+                stopSimulationAndLoadFrames();
+            } else {
+                status_ = "Nothing is running.";
+            }
+            return true;
+        }
         const bool control = key.control;
         if (!control)
             return false;
@@ -8130,6 +8289,9 @@ private:
         saveConfigButton_.draw(*window_, font_, lastMouse_);
         loadConfigButton_.draw(*window_, font_, lastMouse_);
         generateButton_.draw(*window_, font_, lastMouse_);
+        if (continueArmed_) {
+            startOverButton_.draw(*window_, font_, lastMouse_);
+        }
         drawParameterTooltip();
     }
 
@@ -8520,6 +8682,97 @@ private:
         runDetailsText_ = output.str();
     }
 
+    // Every key the window answers to, on one screen, reachable from both
+    // pages. A shortcut nobody can find is a shortcut nobody has.
+    static const std::vector<std::pair<const char*, const char*>>& keyRows() {
+        static const std::vector<std::pair<const char*, const char*>> rows = {
+            {"ANYWHERE", ""},
+            {"F1", "this list"},
+            {"Shift + F5", "stop the running simulation"},
+            {"Ctrl + S / Ctrl + O", "save and load a .cfdui configuration"},
+            {"Ctrl + Z / Ctrl + Y", "undo and redo, over the whole setup"},
+            {"Ctrl + C / X / V", "copy, cut and paste a row or the lot"},
+            {"Ctrl + F", "filter the parameter panel"},
+            {"", ""},
+            {"THE SETUP PAGE", ""},
+            {"left drag", "turn the model"},
+            {"middle drag", "turn the preview camera"},
+            {"Shift + middle drag", "slide it"},
+            {"wheel", "zoom"},
+            {"Home", "preview camera back to the opening angle"},
+            {"", ""},
+            {"THE RESULTS PAGE", ""},
+            {"V", "swap between the 3D viewport and the flat view"},
+            {"Left / Right", "previous and next frame"},
+            {"Home / End", "first and last frame"},
+            {"Space", "play and pause"},
+            {"", ""},
+            {"IN THE 3D VIEWPORT", ""},
+            {"left drag", "turn the view (or slide it, from Camera > move)"},
+            {"middle drag", "slide the view; Shift does it either way"},
+            {"wheel", "zoom"},
+            {"left click", "pick a body, or a wall of the box"},
+            {"F", "frame the whole volume"},
+            {"C / I / Q", "cloud, isosurface, vortices - one layer each"},
+            {"[ / ]", "how solid the cloud is"},
+            {"D", "colour everything by density"},
+            {"G / R", "move and turn the selected body by a typed amount"},
+            {"Numpad 1 / 3 / 7", "front, right, top; Ctrl for the other three"},
+            {"Numpad 5", "isometric or perspective"},
+            {"Numpad 4 / 6 / 8 / 2", "turn the view in 15 degree steps"},
+            {"Numpad 9", "flip to the opposite side"},
+            {"", ""},
+            {"IN THE FLAT VIEW", ""},
+            {"X / Y / Z", "which axis the slice is cut along"},
+            {"Up / Down", "move the slice plane one cell"},
+            {"wheel", "zoom"}
+        };
+        return rows;
+    }
+
+    void drawKeysOverlay() {
+        if (!showKeys_) {
+            return;
+        }
+        const std::vector<std::pair<const char*, const char*>>& rows =
+            keyRows();
+        const float lineHeight = 15.0f;
+        const float width = 520.0f;
+        const float height =
+            static_cast<float>(rows.size()) * lineHeight + 24.0f;
+        const float top = std::max(
+            HEADER_HEIGHT + 8.0f,
+            (static_cast<float>(layoutSize_.y) - height) * 0.5f);
+        const sf::Vector2f position{
+            std::max(12.0f, (panelX_ - width) * 0.5f), top};
+        sf::RectangleShape background({width, height});
+        background.setPosition(position);
+        background.setFillColor(OVERLAY_BACKGROUND);
+        background.setOutlineColor(ACCENT);
+        background.setOutlineThickness(1.0f);
+        window_->draw(background);
+        float y = position.y + 12.0f;
+        for (const auto& row : rows) {
+            const std::string key = row.first;
+            const std::string what = row.second;
+            if (key.empty() && what.empty()) {
+                y += lineHeight;
+                continue;
+            }
+            if (what.empty()) {
+                // A heading: the group it belongs to.
+                window_->draw(makeText(
+                    font_, key, 12, {position.x + 14.0f, y}, ACCENT));
+            } else {
+                window_->draw(makeText(
+                    font_, key, 12, {position.x + 14.0f, y}, TEXT));
+                window_->draw(makeText(
+                    font_, what, 12, {position.x + 190.0f, y}, MUTED));
+            }
+            y += lineHeight;
+        }
+    }
+
     void drawRunDetailsOverlay() {
         const float width = std::min(720.0f, resultViewport_.size.x - 40.0f);
         const float height = std::min(500.0f, resultViewport_.size.y - 40.0f);
@@ -8542,8 +8795,6 @@ private:
     }
 
     void drawResults() {
-        pressureButton_.draw(*window_, font_, lastMouse_);
-        velocityButton_.draw(*window_, font_, lastMouse_);
         fieldButton_.draw(*window_, font_, lastMouse_);
         vectorButton_.draw(*window_, font_, lastMouse_);
         rangeButton_.draw(*window_, font_, lastMouse_);
@@ -9366,7 +9617,7 @@ private:
             {
                 resultViewport_.position.x + 10.0f,
                 resultViewport_.position.y +
-                    (resultsWarning_.empty() ? 8.0f : 42.0f)
+                    (8.0f + warningHeight())
             },
             TEXT));
     }
@@ -9697,9 +9948,11 @@ private:
                  "A yellow cross at each microphone in the microphones= row.",
                  view3DSettings_.showMicrophones);
         } else if (owner == ControlRun) {
-            act("continue this run...",
-                "Carry on from the frame on screen, for a while longer. Asks "
-                "how much longer.");
+            act("continue this run",
+                "Open the Setup page holding this run's settings, with this "
+                "frame as the starting point. Change whatever you want there "
+                "- how far it runs, the boundaries, the microphones - and "
+                "press Continue run.");
             // A checkbox, but it closes the list: what it opens is a panel
             // over the whole picture, and leaving a menu floating on top of
             // that is just something else to dismiss.
@@ -9711,8 +9964,6 @@ private:
             act("recover the setup",
                 "Load the settings this frame was computed with back into "
                 "the Setup page, so the run can be changed and done again.");
-        } else if (owner == ControlContinue) {
-            appendContinueChoices(items);
         } else if (owner == ControlSliceAxis) {
             pick("X", "Cut across the box at a fixed x.",
                  sliceAxis_ == SliceAxis::X);
@@ -9818,49 +10069,6 @@ private:
         return items;
     }
 
-    // What to offer when Continue is pressed, worked out from the run itself.
-    //
-    // This used to take whatever "Continue: add time" happened to be, which is
-    // zero unless somebody found that row - so Continue ran to Total time,
-    // which the run had usually almost reached, and produced two frames and a
-    // shrug. And setting the row and pressing Generate instead started the
-    // whole thing again from zero, because that is what Generate does.
-    void appendContinueChoices(std::vector<MenuItem>& items) const {
-        const double from = activeFrame_
-            ? activeFrame_->restart.currentTime.value_or(0.0)
-            : 0.0;
-        const double already = std::max(from, 1.0e-9);
-        const auto entry = [&](const char* label, double add) {
-            std::ostringstream help;
-            help << "Run on to " << formatSeconds(from + add) << " - that is "
-                 << formatSeconds(add) << " more than the frame on screen.";
-            items.push_back(
-                {label, help.str(), false, MenuItem::Mark::None, false});
-        };
-        entry("a quarter as long again", already * 0.25);
-        entry("half as long again", already * 0.5);
-        entry("the same again", already);
-        entry("twice as long again", already * 2.0);
-        const double target = sliders_[TotalTime].value;
-        if (target > from) {
-            std::ostringstream label;
-            label << "on to Total time (" << formatSeconds(target) << ")";
-            items.push_back(
-                {label.str(),
-                 "Run on to the Total time set on the Setup page.",
-                 false, MenuItem::Mark::None, false});
-        }
-        const double typed = sliders_[AddTime].value;
-        if (typed > 0.0) {
-            std::ostringstream label;
-            label << "the " << formatSeconds(typed) << " from the panel";
-            items.push_back(
-                {label.str(),
-                 "The amount in the \"Continue: add time\" row on the Setup "
-                 "page.",
-                 false, MenuItem::Mark::None, false});
-        }
-    }
 
     void openViewMenu(std::size_t owner) {
         openViewMenuFrom(owner, viewControls_[owner].bounds);
@@ -10054,9 +10262,8 @@ private:
             return;
         }
         if (owner == ControlRun) {
-            if (chosen == "continue this run...") {
-                openViewMenuFrom(ControlContinue,
-                                 viewControls_[ControlRun].bounds);
+            if (chosen == "continue this run") {
+                continueFromFrameInSetup();
             } else if (chosen == "run details") {
                 showRunDetails_ = !showRunDetails_;
                 if (showRunDetails_) {
@@ -10065,10 +10272,6 @@ private:
             } else if (chosen == "recover the setup") {
                 loadConfigurationFromFrame();
             }
-            return;
-        }
-        if (owner == ControlContinue) {
-            continueBy(continueAmountFor(chosen));
             return;
         }
         if (owner == ControlSliceAxis) {
@@ -10126,20 +10329,6 @@ private:
         return index >= 0 ? faces[index] : -1;
     }
 
-    double continueAmountFor(const std::string& chosen) const {
-        const double from = activeFrame_
-            ? activeFrame_->restart.currentTime.value_or(0.0)
-            : 0.0;
-        const double already = std::max(from, 1.0e-9);
-        if (chosen == "a quarter as long again") return already * 0.25;
-        if (chosen == "half as long again") return already * 0.5;
-        if (chosen == "the same again") return already;
-        if (chosen == "twice as long again") return already * 2.0;
-        if (chosen.rfind("on to Total time", 0) == 0) {
-            return std::max(0.0, sliders_[TotalTime].value - from);
-        }
-        return sliders_[AddTime].value;
-    }
 
     // What a picker's button says it is set to. "Layers: cloud+vortices" is
     // the difference between glancing at the bar and opening three menus.
@@ -10319,7 +10508,7 @@ private:
         const sf::Vector2f position{
             resultViewport_.position.x + 10.0f,
             resultViewport_.position.y +
-                (resultsWarning_.empty() ? 30.0f : 64.0f)
+                (30.0f + warningHeight())
         };
         sf::RectangleShape background({width, height});
         background.setPosition(position);
@@ -10361,7 +10550,7 @@ private:
             {
                 resultViewport_.position.x + 10.0f,
                 resultViewport_.position.y +
-                    (resultsWarning_.empty() ? 8.0f : 42.0f)
+                    (8.0f + warningHeight())
             },
             TEXT));
         std::ostringstream counts;
@@ -10713,13 +10902,39 @@ private:
                 std::to_string(frames_[displayedFrame].frameNumber) + ")");
     }
 
-    void drawResultWarning() {
+    // The warning says something now rather than shouting an abbreviation, so
+    // it needs the room for a sentence or two. It wraps to the width of the
+    // picture and the picture starts under it, instead of the text being cut
+    // off at 150 characters in a box of a fixed height.
+    std::vector<std::string> warningLines() const {
         if (resultsWarning_.empty()) {
+            return {};
+        }
+        const float width = std::max(240.0f, resultViewport_.size.x - 16.0f);
+        const std::size_t columns =
+            static_cast<std::size_t>(std::max(40.0f, width / 5.9f));
+        std::vector<std::string> lines = wrapText(resultsWarning_, columns);
+        if (lines.size() > 4) {
+            lines.resize(4);
+            lines.back() += "...";
+        }
+        return lines;
+    }
+
+    float warningHeight() const {
+        const std::size_t lines = warningLines().size();
+        return lines == 0 ? 0.0f
+                          : static_cast<float>(lines) * 15.0f + 12.0f;
+    }
+
+    void drawResultWarning() {
+        const std::vector<std::string> lines = warningLines();
+        if (lines.empty()) {
             return;
         }
         sf::RectangleShape banner({
             resultViewport_.size.x,
-            34.0f
+            warningHeight()
         });
         banner.setPosition(resultViewport_.position);
         banner.setFillColor(WARNING_BACKGROUND);
@@ -10727,20 +10942,18 @@ private:
         banner.setOutlineThickness(1.0f);
         window_->draw(banner);
 
-        std::string display = resultsWarning_;
-        if (display.size() > 150) {
-            display.resize(147);
-            display += "...";
+        for (std::size_t line = 0; line < lines.size(); ++line) {
+            window_->draw(makeText(
+                font_,
+                lines[line],
+                12,
+                {
+                    resultViewport_.position.x + 8.0f,
+                    resultViewport_.position.y + 6.0f +
+                        static_cast<float>(line) * 15.0f
+                },
+                WARNING_TEXT));
         }
-        window_->draw(makeText(
-            font_,
-            display,
-            12,
-            {
-                resultViewport_.position.x + 8.0f,
-                resultViewport_.position.y + 8.0f
-            },
-            WARNING_TEXT));
     }
 
     void drawSimpleTrack(
@@ -10805,14 +11018,21 @@ private:
     }
 
     void drawTopTabs() {
+        for (const float x : headerDividers_) {
+            sf::RectangleShape rule({1.0f, 22.0f});
+            rule.setPosition({x, 11.0f});
+            rule.setFillColor(BORDER);
+            window_->draw(rule);
+        }
         setupTab_.draw(*window_, font_, lastMouse_);
         resultsTab_.draw(*window_, font_, lastMouse_);
         openVtkButton_.draw(*window_, font_, lastMouse_);
-        stopSimulationButton_.draw(*window_, font_, lastMouse_);
-        revealVtkButton_.draw(*window_, font_, lastMouse_);
-        solverExeButton_.draw(*window_, font_, lastMouse_);
         importButton_.draw(*window_, font_, lastMouse_);
+        revealVtkButton_.draw(*window_, font_, lastMouse_);
         outputFolderButton_.draw(*window_, font_, lastMouse_);
+        solverExeButton_.draw(*window_, font_, lastMouse_);
+        keysButton_.draw(*window_, font_, lastMouse_);
+        stopSimulationButton_.draw(*window_, font_, lastMouse_);
         if (updateOffered()) {
             updateButton_.draw(*window_, font_, lastMouse_);
         }
@@ -11125,8 +11345,13 @@ private:
     Button saveConfigButton_{"Save config"};
     Button loadConfigButton_{"Load config"};
     Button generateButton_{"Run simulation"};
-    Button pressureButton_{"Pressure"};
-    Button velocityButton_{"Velocity"};
+    Button startOverButton_{"Start from zero"};
+    Button keysButton_{"Keys"};
+    bool showKeys_ = false;
+    std::vector<float> headerDividers_;
+    // Set by "continue this run": the next Run carries the
+    // frame on the Results page forward instead of starting over.
+    bool continueArmed_ = false;
     Button continueRunButton_{"Continue run"};
     Button fieldButton_{"Field"};
     Button vectorButton_{"Vectors: Off"};
@@ -11261,7 +11486,6 @@ private:
     std::string publishedTitle_;
     std::string runProgressText_;
     bool showViewHelp_ = false;
-    double pendingContinueSeconds_ = 0.0;
     // One little menu shared by every picker in the 3D bar. Six buttons for
     // six sides of a box, and a Colour that has to be clicked nine times to
     // get back where it was, are what this replaces.

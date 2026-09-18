@@ -247,6 +247,22 @@ private:
         std::uint8_t a = 0;
     };
 
+    // Sampling one field over the whole volume is the most expensive thing in
+    // here - about 70 milliseconds for Q on a two million cell frame - and
+    // every layer that is on wants the same one, because the colour field is
+    // one setting for all of them. Six calls a rebuild was six times the same
+    // arithmetic; this hands out the one answer instead. Emptied when the
+    // frame changes, which is the only thing that can make it wrong.
+    //
+    // Handed out as a shared pointer rather than a reference on purpose: one
+    // rebuild asks for two different fields, and if asking for the second one
+    // could evict the first out from under the caller, the first reference
+    // would dangle. Shared ownership means an entry that is still being used
+    // stays alive whatever the cache does.
+    std::shared_ptr<const ScalarVolume> sampledField(
+        VolumeField field,
+        const std::string& scalar) const;
+
     void rebuildAll();
     void rebuildBox();
     void rebuildSolid();
@@ -298,6 +314,16 @@ private:
     bool cloudDescending_ = false;
     float cloudCosine_ = 0.0f;
     std::vector<Streamline> paths_;
+    struct SampledField {
+        VolumeField field = VolumeField::Pressure;
+        std::string scalar;
+        std::shared_ptr<const ScalarVolume> volume;
+    };
+    // Three is enough for every combination the settings can ask for at once -
+    // the colour field, the isosurface's field when it differs, and Q for the
+    // vortices - and three of them on a 2 million cell frame is 25 MB.
+    static constexpr std::size_t MAX_SAMPLED_FIELDS = 3;
+    mutable std::vector<SampledField> sampled_;
     unsigned int positionBuffer_ = 0;
     unsigned int colourBuffer_ = 0;
 };
