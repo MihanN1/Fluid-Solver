@@ -270,6 +270,7 @@ int main(int argc, char** argv) {
         // instead of one per attempt.
         std::vector<std::string> problems;
         bool wallMotionRefused = false;
+        bool vorticesRefused = false;
 
         for (int a = 1; a < argc; ++a) {
             const std::string arg = argv[a];
@@ -287,8 +288,11 @@ int main(int argc, char** argv) {
             std::string error, warning;
             if (!cfg.setParam(key, value, error, &warning)) {
                 problems.push_back(error);
-                if (Config::canonicalKey(key) == "wallMotion")
+                const std::string canon = Config::canonicalKey(key);
+                if (canon == "wallMotion")
                     wallMotionRefused = true;
+                else if (canon == "vortices")
+                    vorticesRefused = true;
                 continue;
             }
             if (!warning.empty())
@@ -305,11 +309,13 @@ int main(int argc, char** argv) {
             std::cerr << "\nNothing has been started. Fix the line and run it "
                          "again.\n\n";
             printUsage(argv[0]);
-            // The one key with a grammar the usage block cannot hold in a
-            // single line, so it gets its own explanation when it is the one
+            // The keys with a grammar the usage block cannot hold in a single
+            // line, so they get their own explanation when they are the one
             // that failed.
             if (wallMotionRefused)
                 std::cout << wallMotionHelp();
+            if (vorticesRefused)
+                std::cout << vorticesHelp();
             return 1;
         }
         runtime::apply();

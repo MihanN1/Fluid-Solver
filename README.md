@@ -1483,6 +1483,11 @@ and there is a limit to how fast it can swirl before the middle would have to
 have no temperature left at all. Past that the strength is reduced to the
 ceiling and the run says on the console that it did.
 
+Get the grammar wrong and the whole block above is printed under the refusal,
+the same way `wallMotion` does it — a key with a grammar of its own cannot be
+explained by one line of the usage block, and a one-line refusal is not much to
+go on.
+
 ## Bodies that travel
 
     "Fluid Solver.exe" "profiles=disc.obj@x=0.5,y=0.5,size=0.2" \

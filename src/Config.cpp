@@ -3275,6 +3275,8 @@ bool Config::confirm() {
                 std::cout << wallMotionHelp();
             if (canonicalKey(key) == "bodyMotion")
                 std::cout << bodyMotionHelp();
+            if (canonicalKey(key) == "vortices")
+                std::cout << vorticesHelp();
         }
         return false;
     }
