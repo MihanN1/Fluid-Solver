@@ -513,40 +513,45 @@ one, and `V` switches between them at any time. The input parameter panel is
 not drawn on this page — it belongs to Setup, and the picture takes the width.
 
 * **3D viewport.** Left drag turns the view, middle drag slides it, wheel
-  zooms. `Rotate` and `Move` in the bar, or `R` and `G`, decide which of the
-  first two the left button does — one of them is the only way to slide the
-  view on a trackpad with no middle button — and holding `Shift` slides it
-  either way. `F` frames everything. Numpad 1 / 3 / 7 lock to front / right /
-  top, Ctrl with them gives back / left / bottom, and the `Front` … `Bottom`
-  buttons do the same. Numpad 5, or `Ortho`, flips to isometric: parallel
-  projection, which is the one to read a shock angle off. Numpad 4 / 6 / 8 / 2
-  turn in 15 degree steps and Numpad 9 flips to the opposite side. The bar also
-  toggles the box, the cell grid, the solid surface and its wireframe, the
-  three slice planes, the cloud, the isosurface, vortices, streamlines and
-  tracers, and cycles what everything is coloured by (speed → pressure → u → v
-  → w → vorticity → Q → every scalar the frame carries, `density` included).
-  Resting the cursor on any of those buttons says in a sentence what the layer
-  is.
-* **A volume opens on the Cloud with the slice planes off**, a flat frame
-  opens on its one plane. Turn `Slice X/Y/Z` on when you want a cut; it stays
-  on until you load a result of the other kind.
+  zooms. `Camera > rotate` and `Camera > move` decide which of the first two
+  the left button does — one of them is the only way to slide the view on a
+  trackpad with no middle button — and holding `Shift` slides it either way.
+  `F` frames everything. Numpad 1 / 3 / 7 lock to front / right / top, Ctrl
+  with them gives back / left / bottom, and the six names in `Camera` do the
+  same; resting on one lights that side of the box up, so the names do not have
+  to be learned. Numpad 5, or `Camera > isometric`, gives parallel projection,
+  which is the one to read a shock angle off. Numpad 4 / 6 / 8 / 2 turn in 15
+  degree steps and Numpad 9 flips to the opposite side.
+* **The bar is eight lists, not thirty buttons**: `Layers` (cloud, isosurface,
+  vortices), `Slices` (X, Y, Z), `Flow` (streams, tracers), `Show` (body,
+  wireframe, box, grid, microphones), `Colour`, `Camera`, `Range` and `Run`.
+  Each button says what is on — `Layers: cloud+vortices` — and every entry in
+  every list carries a sentence, shown beside the list while the cursor rests
+  on it. `What?` pins the whole lot open at once.
+* **A volume opens on the cloud with the slice planes off**, a flat frame
+  opens on its one plane. Turn a slice on from `Slices` when you want a cut; it
+  stays on until you load a result of the other kind.
 * **Cloud** paints every cell that differs from the still air as a translucent
   coloured block and draws nothing where the field is flat, which is most of a
   box with one body in it. It is the closest thing here to a schlieren
   photograph: the shock cone, the wake and the vortices stand in clear air with
   no level to choose and no plane to position. `C` toggles it, `[` and `]` or
-  the slider beside the button set how solid.
-* **Cloud and Iso are a switch.** One at a time — both drawn at once is a fog
-  with a skin inside it. `C` and `I`, or the two buttons.
-* **Density**, the button or `D`, colours everything by the gas density, which
-  is what makes a shock look like a shock rather than a smear. A compressible
-  run writes it into every frame with nothing asked for, and a compressible
-  volume opens on it. In the flat view the `Field` button does the same in one
-  press and says which field it is showing.
+  its slider set how solid.
+* **All three layers can be on at once.** Cloud, isosurface and vortices are
+  three ticks, not one three-way switch: a faint cloud around a vortex tube is
+  a picture worth having, and if it turns into fog the cloud slider is right
+  there. `C`, `I` and `Q` toggle one each.
+* **Colour is one field for everything drawn.** Pick `density` and the cloud,
+  the isosurface and every slice are density; pick `Q` and the cloud is a cloud
+  of vortices. `off` clears the picture down to the body and the box. `D` goes
+  straight to density, which is what makes a shock look like a shock rather
+  than a smear — a compressible run writes it into every frame with nothing
+  asked for, and a compressible volume opens on it.
 * **Vortices** are the Q criterion drawn as an isosurface with the vortex core
-  lines through it. Turn it on, drag the Q slider until the structures separate
+  lines through it. Turn it on, drag its slider until the structures separate
   from the noise. This is the answer to "where are the vortices" that a colour
-  map never gave you.
+  map never gave you. Q, for the record, is rotation squared minus shear
+  squared: positive where the flow turns faster than it is being sheared.
 * **Streamlines and tracers** are seeded through the fluid, integrated with
   RK4, coloured by speed; turning tracers on sends a bright head down each one.
 * **Clicking selects.** Click a body and it is selected in the BODIES group.
@@ -2271,14 +2276,14 @@ process.
 **A real 3D viewport, on OpenGL**, in the same window. `<SFML/OpenGL.hpp>`
 gives OpenGL 1.1 with vertex arrays and `pushGLStates()`/`popGLStates()` is how
 raw GL and SFML drawing share a window, so the new dependency list is empty.
-What it draws, each on its own button: the domain **Box**, the cell **Grid**,
-the body's **Solid** surface or **Wire**frame, **Slice X/Y/Z** planes moved
-through the volume on their own track, the translucent **Cloud**,
-**Iso**surfaces by marching cubes, **Vortices** as a Q-criterion surface with
-their **core lines**, 3D **Streams** with animated **Tracers**, a **Colour**
+What it draws: the domain box and its cell grid, the body's surface or its
+wireframe, three slice planes moved through the volume on their own sliders,
+the translucent cloud, isosurfaces by marching cubes, vortices as a Q-criterion
+surface with their core lines, 3D streamlines with animated tracers, a colour
 field (pressure, speed, u, v, w, vorticity, Q, and every named scalar the frame
-carries — `density` among them, when the run wrote it), **Ortho**graphic or
-perspective, **Frame all**, and the six axis views.
+carries — `density` among them, when the run wrote it), orthographic or
+perspective, frame all, and the six axis views — all of it behind eight
+buttons that open lists, described further down.
 
 Everything is built into vertex arrays **once per frame change**, not per
 redraw, and the isosurface, the vortex surface and the streamlines are built
@@ -2451,33 +2456,36 @@ and brightens as you come back. And the budget is spent from the top: when more
 cells deserve drawing than the two hundred thousand the layer allows, it is the
 faintest that go, not the last ones the loop happened to reach.
 
-The slider beside the button sets how solid, from a tenth to eight on a log
-scale — `[` and `]` do the same from the keyboard, `C` toggles the layer. Cells
-inside the body are never painted; that is the `Solid` layer's job and it is
-drawn opaque underneath. The strength is remembered between sessions.
+Its slider sets how solid, from a tenth to eight on a log scale — `[` and `]`
+do the same from the keyboard, `C` toggles the layer. Cells inside the body are
+never painted; that is the body's job and it is drawn opaque underneath. The
+strength is remembered between sessions.
 
-**`Cloud` and `Iso` are one switch, not two toggles.** They are two answers to
-the same question — what does the inside of this volume look like — drawn on
-top of each other, and both on is a translucent fog with a skin buried in it
-and no way to read either. Turning one on turns the other off; pressing the one
-already on turns it off and leaves the volume bare. `C` and `I` from the
-keyboard.
+**The cloud, the isosurface and the vortices are three independent ticks.**
+They are three answers to the same question — what does the inside of this
+volume look like — and drawing two of them through each other can be hard to
+read, which is a reason to have a cloud slider and not a reason to forbid it.
+Any of them, all of them, none. Each one that is on gets its own slider under
+the bar and gives the room back when it goes off. `C`, `I` and `Q` toggle one
+each from the keyboard.
 
 **Density is one press away.** A compressible run writes density into every
 frame — not as an `extraFields` extra, as one of the two scalars the writer
 puts down before anything else — and until now the window had no route to it
-that did not involve clicking `Colour` eight times. There is a **Density**
-button in the 3D bar whenever the frame carries one, `D` does the same from the
-keyboard, and a compressible volume now *opens* coloured by density. Speed
-shows a shock as a smear and density shows it as an edge; that is the whole
-reason to want it. The flat view reaches it from its own `Field` button, which
-labels itself with the name it is showing.
+that did not involve clicking `Colour` eight times. It is an entry in the
+`Colour` list now, named, with a sentence saying why you want it; `D` goes
+straight there from the keyboard, and a compressible volume *opens* coloured by
+density. Speed shows a shock as a smear and density shows it as an edge; that
+is the whole reason to want it. The flat view reaches it from its own `Field`
+button, which labels itself with the name it is showing.
 
-The `Colour` cycle itself was reordered to put the frame's own named fields
-third rather than eighth — speed, pressure, then whatever the run actually
-wrote, then u, v, w, vorticity and Q. The last five are derived from the
-velocity vector, which is always there, so they were never the ones that were
-hard to find.
+`Colour` is a list rather than a cycle, so the frame's own named fields are
+visible rather than eight presses away: `off`, pressure, speed, then whatever
+the run actually wrote, then u, v, w, vorticity and Q. The last five are
+derived from the velocity vector, which is always there, so they were never the
+ones that were hard to find. Whatever is picked colours **everything that is
+drawn** — the cloud, the isosurface, the vortex surface and every slice — so a
+cloud of Q is a cloud of vortices and an isosurface of density is a shock.
 
 **The setup panel says how much disk the run will take** - `VTK ~45 | ~4.5 GB`
 beside the frame count, worked out from the grid, the regime and the extra
@@ -2528,12 +2536,59 @@ behind everything - which is why the readout looked like it was picking at
 random. It stops on the first thing that is actually drawn now: the body, a
 cloud block, or where it crosses a slice plane, and it says which of the three
 it was. The cell is outlined in white in the picture, grown to a visible size
-when the cells are smaller than a pixel.
+when the cells are smaller than a pixel. **The readout itself moved off the
+bottom line** and into a small box beside the cursor, because the bottom line
+is also where the triangle count lives and where a warning about the run
+appears, and three things wanting one line means you read whichever won.
 
-**`What?` pins the explanations open.** One line at a time on hover is no use
-when you do not know which button to hover. The button opens the lot, grouped
-the way the picture is built up: how the volume is drawn, what else is in it,
-colour, the camera.
+**The row of thirty buttons is eight lists.** `Box` `Grid` `Solid` `Wire`
+`Slice X` `Slice Y` `Slice Z` `Cloud` `Iso` `Vortices` `Streams` `Tracers`
+`Density` `Pressure` `Velocity` `Colour` `Ortho` `Rotate` `Move` `Frame all`
+`Front` `Back` `Left` `Right` `Top` `Bottom` `Range` `Continue` `Details`
+`Recover`, in a strip across the top of the picture, wrapping onto a second row
+on a narrow window, in the order they happened to be written. Nothing in that
+strip says which of them belong together, and a button five letters wide has
+room for `Iso` and no room whatever for what `Iso` is.
+
+They are now **Layers**, **Slices**, **Flow**, **Show**, **Colour**,
+**Camera**, **Range** and **Run**, each of which opens a list under itself. The
+button says what is on - `Layers: cloud+vortices`, `Colour: density` - so the
+state is readable without opening anything, and a list has the room a button
+never had.
+
+**Every entry in every list carries a sentence**, shown in a box beside the
+list while the cursor rests on that entry, and the same on the buttons
+themselves. Including the one that had to exist: *the Q criterion is rotation
+squared minus shear squared, positive where the flow turns faster than it is
+being sheared, which is the usual definition of a vortex and is what the
+vortices layer draws.* That is a thing you can now find out in the program, at
+the moment you are wondering, rather than in a document you are not reading.
+
+**The volume layers are three switches, not a three-way choice.** Cloud,
+isosurface and vortices used to be one setting with three values, because a
+cloud and a skin drawn through each other can be hard to read. They can be -
+and a faint cloud around a vortex tube is also exactly the picture wanted
+sometimes, and deciding that for somebody by making it impossible is not a
+kindness. All three can be on together, each gets its own slider under the bar
+while it is on and gives the room back when it is off, and the keys agree: `C`,
+`I` and `Q` each toggle one layer and leave the others alone.
+
+**Vortices are a field like any other.** There is no separate vortex colour, no
+separate vortex range, no separate anything: `Colour` sets one field for
+everything that is drawn, so a cloud of Q is a cloud of vortices, an isosurface
+of Q is the same surface the vortices layer draws, and an isosurface of density
+is a shock. `Density`, `Pressure` and `Velocity` are gone as buttons of their
+own - they were three doors into a list that has ten entries and now shows all
+ten, `off` among them.
+
+**Ticks are drawn as ticks.** `[x]` and `[ ]` down the left of the list, and a
+list whose entries are independent stays open while you set several of them,
+instead of closing after each one and making you find the button again.
+
+**`What?` pins the whole lot open.** One sentence at a time on hover is no use
+when you do not know which button to hover over. The button opens every
+explanation at once, grouped the way the picture is built up: what fills the
+box, what else is in it, colour, the camera, this run.
 
 **The update check moved into the window.** It runs once at startup on a thread
 of its own and puts an `Update: 1.1` button in the top bar when there is
@@ -2561,14 +2616,22 @@ see and the model changes what gets simulated, and both are wanted about
 equally often. A muted line along the bottom of the preview says so, because a
 camera nobody knows about is the same as no camera.
 
-**Every 3D layer explains itself.** `Iso`, `Q` and `Streams` are what these
-things are called in every solver that draws them, which is no help whatever
-the first time you meet one, and the button is six letters wide with nowhere to
-say more. Resting the cursor on any of them puts a sentence over the top left
-of the picture: what the layer is, in words, and what the slider beside it
-does. "A skin drawn through every point where the field equals one chosen
-value, like a contour line but in 3D." "Q shows where the flow spins faster
-than it shears, which is what a vortex is."
+**`Continue run` says what it is about to do, in seconds.** It used to take
+whatever the `Continue: add time` row happened to hold, which is zero unless
+you went looking for that row - so it ran to `Total time`, which the run had
+usually all but reached, and gave you two more frames and a shrug. And typing
+the extra time into Setup and pressing Generate instead started the whole thing
+over from zero, because that is what Generate does. Neither of those is
+obviously wrong until it has wasted an afternoon.
+
+It is a list now, worked out from the run on screen: **a quarter as long
+again**, **half as long again**, **the same again**, **twice as long again**,
+**on to Total time** when there is any left, and the amount in the panel row if
+somebody did set it. Resting on any of them says where that lands - *"Run on to
+12 ms - that is 6 ms more than the frame on screen"* - and choosing one says
+what it is doing before it does it: *"Continuing from 6 ms for another 6 ms, to
+12 ms."* A run continued this way still goes into the folder it continues, so
+the frames stay one series.
 
 **The 2D colour controls are gone while the 3D view is up.** `Pressure`,
 `Velocity`, `Field`, `Vectors` and `Range` colour the flat view; the 3D view
@@ -2601,7 +2664,8 @@ was computed with the body where it was, so the body does not jump — the
 **Keyboard, because the window used to answer to the mouse and nothing else:**
 `V` to swap views, `F` to frame, numpad 1/3/7 for front/right/top with `Ctrl`
 for the other three, 5 for isometric, 4/6/8/2 to turn in steps, 9 to flip, `C`
-for the cloud, `I` for the isosurface, `[` and `]` for how solid the cloud is,
+for the cloud, `I` for the isosurface and `Q` for the vortices - one layer each,
+the other two left alone - `[` and `]` for how solid the cloud is,
 `D` for density, `G` and `R` to move and
 turn the selected body by a typed amount, arrows and
 `Home`/`End`/`Space` through the frame series, and in the setup view `Home` to
@@ -2638,7 +2702,7 @@ megabyte frame.
 Q is in one cell against the body.** On a real flyby frame the peak reads
 3.3e7 while the wake is around 1e5, so the default setting of "fifteen per cent
 of the peak" asked for a surface at 5e6 and there was nothing there to draw:
-the Vortices button appeared to do nothing, and the slider did nothing until
+the vortices layer appeared to do nothing, and the slider did nothing until
 the last hair of its travel. It is a share of the cells that are rotating at
 all now, read as strictness - right for the strongest cores, left for every
 swirl - and it moves the picture along its whole length. On the frame above:
