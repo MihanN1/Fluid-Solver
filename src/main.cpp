@@ -271,6 +271,7 @@ int main(int argc, char** argv) {
         std::vector<std::string> problems;
         bool wallMotionRefused = false;
         bool vorticesRefused = false;
+        bool sourcesRefused = false;
 
         for (int a = 1; a < argc; ++a) {
             const std::string arg = argv[a];
@@ -293,6 +294,8 @@ int main(int argc, char** argv) {
                     wallMotionRefused = true;
                 else if (canon == "vortices")
                     vorticesRefused = true;
+                else if (canon == "sources")
+                    sourcesRefused = true;
                 continue;
             }
             if (!warning.empty())
@@ -316,6 +319,8 @@ int main(int argc, char** argv) {
                 std::cout << wallMotionHelp();
             if (vorticesRefused)
                 std::cout << vorticesHelp();
+            if (sourcesRefused)
+                std::cout << sourcesHelp();
             return 1;
         }
         runtime::apply();

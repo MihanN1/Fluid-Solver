@@ -79,7 +79,6 @@ enum class AmrCriterion {
     Everything
 };
 
-std::string amrCriterionName(AmrCriterion kind);
 bool parseAmrCriterion(const std::string& text, AmrCriterion& out);
 
 struct AmrSettings {
@@ -145,10 +144,6 @@ public:
                            int baseNx,
                            int baseNy,
                            int baseNz);
-
-    std::vector<uint8_t>& patchSolid(int which, std::size_t patch) {
-        return levels_[which].patches[patch].solid;
-    }
 
 private:
     std::vector<AmrLevel> levels_;

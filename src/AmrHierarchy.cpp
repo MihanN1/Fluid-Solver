@@ -252,22 +252,6 @@ std::vector<AmrBox> amrCluster(const std::vector<uint8_t>& tags,
     return out;
 }
 
-std::string amrCriterionName(AmrCriterion kind) {
-    switch (kind) {
-    case AmrCriterion::Density:
-        return "density";
-    case AmrCriterion::Vorticity:
-        return "vorticity";
-    case AmrCriterion::Species:
-        return "species";
-    case AmrCriterion::Body:
-        return "body";
-    case AmrCriterion::Everything:
-    default:
-        return "everything";
-    }
-}
-
 bool parseAmrCriterion(const std::string& text, AmrCriterion& out) {
     const std::string name = lowerCase(text);
     if (name == "density" || name == "shock") {

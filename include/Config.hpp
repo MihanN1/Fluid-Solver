@@ -125,8 +125,6 @@ bool parseMixingKind(const std::string& text, MixingKind& out,
                      std::string& error);
 const char* mixingKindName(MixingKind kind);
 
-bool parseVofScheme(const std::string& text, VofScheme& out, std::string& error);
-bool parsePhaseInit(const std::string& text, PhaseInit& out, std::string& error);
 const char* vofSchemeName(VofScheme scheme);
 const char* phaseInitName(PhaseInit init);
 
@@ -251,8 +249,6 @@ enum class EaseKind {
 bool parseInterpKind(const std::string& text, InterpKind& out,
                      std::string& error);
 bool parseEaseKind(const std::string& text, EaseKind& out, std::string& error);
-const char* interpKindName(InterpKind kind);
-const char* easeKindName(EaseKind kind);
 
 struct BodyKeyframe {
     float time = 0.0f;
@@ -511,7 +507,6 @@ struct Config {
 
     std::vector<Microphone> resolvedMicrophones() const;
 
-    bool listening() const { return !microphones.empty(); }
     bool recordsAudio() const { return micAudio && !microphones.empty(); }
     bool adaptive() const { return compressible() && amrLevels > 0; }
     bool stretchedGrid() const {

@@ -359,7 +359,6 @@ void setTitle(const std::string& text) {
 
 }   // namespace
 
-void requestStop() { g_stop.store(true); }
 
 // A file called "stop" in the output folder asks the run to finish the step it
 // is on, write the frame and come back - the same clean stop as Ctrl+C or the

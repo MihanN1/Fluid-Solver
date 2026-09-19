@@ -41,7 +41,6 @@ void finish(bool ok);
 bool stopRequested();
 
 // Ask for that stop from code - the Ctrl+C handler uses it.
-void requestStop();
 
 // Takes the icon down and puts the console back the way it was found. Safe to
 // call twice, and called automatically at exit.

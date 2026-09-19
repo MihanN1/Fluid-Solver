@@ -65,7 +65,6 @@ const char* boundaryKindName(BoundaryKind kind);
 const char* inletProfileName(InletProfile profile);
 const char* boundarySideName(BoundarySide side);
 
-bool sideIsOpen(const BoundarySpec& spec);
 
 void inletBandCells(const BoundarySpec& spec,
                     int cellsAlongSide,

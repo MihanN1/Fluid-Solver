@@ -630,28 +630,6 @@ const char* mixingKindName(MixingKind kind) {
     return kind == MixingKind::Miscible ? "miscible" : "immiscible";
 }
 
-bool parseVofScheme(const std::string& text, VofScheme& out,
-                    std::string& error) {
-    const std::string key = toLower(trimSpace(text));
-    if (key == "upwind") { out = VofScheme::Upwind; return true; }
-    if (key == "hric")   { out = VofScheme::Hric;   return true; }
-    if (key == "cicsam") { out = VofScheme::Cicsam; return true; }
-    error = "'" + text + "' is not a VOF scheme. Use upwind, hric or cicsam.";
-    return false;
-}
-
-bool parsePhaseInit(const std::string& text, PhaseInit& out,
-                    std::string& error) {
-    const std::string key = toLower(trimSpace(text));
-    if (key == "layer")  { out = PhaseInit::Layer;  return true; }
-    if (key == "drop")   { out = PhaseInit::Drop;   return true; }
-    if (key == "column") { out = PhaseInit::Column; return true; }
-    if (key == "file")   { out = PhaseInit::File;   return true; }
-    error = "'" + text +
-            "' is not an initial shape. Use layer, drop, column or file.";
-    return false;
-}
-
 const char* vofSchemeName(VofScheme scheme) {
     switch (scheme) {
     case VofScheme::Upwind: return "upwind";
@@ -1312,33 +1290,6 @@ bool parseEaseKind(const std::string& text, EaseKind& out,
                      "ordinary easings and in for back, bounce and elastic, "
                      "the same choice a 3D package makes");
     return false;
-}
-
-const char* interpKindName(InterpKind kind) {
-    switch (kind) {
-    case InterpKind::Constant: return "constant";
-    case InterpKind::Bezier:   return "bezier";
-    case InterpKind::Sine:     return "sine";
-    case InterpKind::Quad:     return "quad";
-    case InterpKind::Cubic:    return "cubic";
-    case InterpKind::Quart:    return "quart";
-    case InterpKind::Quint:    return "quint";
-    case InterpKind::Expo:     return "expo";
-    case InterpKind::Circ:     return "circ";
-    case InterpKind::Back:     return "back";
-    case InterpKind::Bounce:   return "bounce";
-    case InterpKind::Elastic:  return "elastic";
-    default:                   return "linear";
-    }
-}
-
-const char* easeKindName(EaseKind kind) {
-    switch (kind) {
-    case EaseKind::In:    return "in";
-    case EaseKind::Out:   return "out";
-    case EaseKind::InOut: return "inout";
-    default:              return "auto";
-    }
 }
 
 std::string bodyMotionHelp() {
@@ -3277,6 +3228,8 @@ bool Config::confirm() {
                 std::cout << bodyMotionHelp();
             if (canonicalKey(key) == "vortices")
                 std::cout << vorticesHelp();
+            if (canonicalKey(key) == "sources")
+                std::cout << sourcesHelp();
         }
         return false;
     }

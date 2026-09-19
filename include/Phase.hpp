@@ -50,17 +50,9 @@ public:
     const std::vector<float>& density() const { return rho; }
     const std::vector<float>& viscosity() const { return mu; }
 
-    const std::vector<float>& faceNuX() const { return nuFaceX; }
-    const std::vector<float>& faceNuY() const { return nuFaceY; }
-    const std::vector<float>& faceNuZ() const { return nuFaceZ; }
-
     const std::vector<float>& faceInvRhoX() const { return invRhoX; }
     const std::vector<float>& faceInvRhoY() const { return invRhoY; }
     const std::vector<float>& faceInvRhoZ() const { return invRhoZ; }
-
-    float rhoOf(float fraction) const {
-        return fraction * rho1 + (1.0f - fraction) * rho2;
-    }
 
     void resize(int nxIn, int nyIn, int nzIn);
     void setFluids(float rho1In, float rho2In, float mu1In, float mu2In);

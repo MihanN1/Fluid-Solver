@@ -49,7 +49,6 @@ public:
 
     void resize(int nxIn, int nyIn, int nzIn);
     void setState(std::vector<float>&& kIn, std::vector<float>&& omegaIn);
-    bool hasState() const { return !k.empty(); }
 
 private:
     TurbulenceKind kind = TurbulenceKind::None;

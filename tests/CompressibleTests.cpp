@@ -751,7 +751,6 @@ int main() {
         const double pressure = 1.0e5;
         const double centre = 0.5;
         const double width = 0.12;
-        const double squeeze = 0.4;
 
         const auto measure = [&](int count, bool linear) {
             const auto density = [&](double x) {
@@ -1062,8 +1061,6 @@ int main() {
         Block copy = base;
         std::vector<float> saveRho = rho;
         std::vector<float> saveRhoU = rhou;
-        std::vector<float> saveRhoV = rhov;
-        std::vector<float> saveRhoE = rhoE;
         AmrBox whole;
         whole.nx = nx;
         whole.ny = ny;

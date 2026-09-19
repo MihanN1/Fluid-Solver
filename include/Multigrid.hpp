@@ -160,8 +160,6 @@ private:
     bool pressureSingular = false;
     bool coefficientsUniform = true;
     MultigridBC pressureBC;
-    std::vector<float> fineFaceX;
-    std::vector<float> fineFaceY;
     bool firstSolve = true;
     bool useCuda = false;
 

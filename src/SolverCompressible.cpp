@@ -314,14 +314,6 @@ void advanceStage(Block& in,
                     diffusivity);
 }
 
-namespace {
-
-int roundUp(double value) {
-    return static_cast<int>(value + 0.5);
-}
-
-}
-
 CompressibleRun::CompressibleRun(const Config& configuration, Mesh& meshIn)
     : cfg(configuration), mesh(meshIn) {
     nx = cfg.nx;
@@ -517,7 +509,6 @@ void CompressibleRun::initialise() {
 
     Block block = view(rho, rhou, rhov, rhow, rhoE, rhoY);
     const bool tube = cfg.caseType == CaseType::ShockTube;
-    const float baseDensity = cfg.pInf / (cfg.R * cfg.T0);
     const float speedOfSound = std::sqrt(cfg.gamma * cfg.R * cfg.T0);
     const bool blows = cfg.boundaries[BoundarySide::Left].kind ==
                        BoundaryKind::Inlet;

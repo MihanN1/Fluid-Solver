@@ -97,7 +97,6 @@ private:
     std::vector<uint8_t> prevSolidMask;
     std::vector<uint8_t> prevUFluidMask, prevVFluidMask, prevWFluidMask;
     std::vector<int> prevObjectId;
-    std::vector<float> bodyForceScratch;
     int freshCells = 0;
     int bodyPasses = 0;
     bool renumberReported = false;
@@ -167,7 +166,6 @@ private:
 
     PhaseField phase;
     bool multiphase = false;
-    std::vector<float> coeffX, coeffY, coeffZ;
     void refreshPhaseCoefficients();
     void advectPhase();
 

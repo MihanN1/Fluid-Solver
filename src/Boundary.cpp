@@ -108,10 +108,6 @@ const char* boundarySideName(BoundarySide side) {
     return "left";
 }
 
-bool sideIsOpen(const BoundarySpec& spec) {
-    return spec.kind == BoundaryKind::Outlet;
-}
-
 void inletBandCells(const BoundarySpec& spec,
                     int cellsAlongSide,
                     int& first,

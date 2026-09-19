@@ -86,7 +86,6 @@ public:
     void checkPlacement(const Profile& profile);
 
     bool prepareMotion();
-    bool motionReady() const { return motionPrepared; }
     void setPose(int object, const BodyPose& pose);
     const BodyPose& pose(int object) const { return poses[object]; }
     void updateSolid();
