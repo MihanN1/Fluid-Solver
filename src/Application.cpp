@@ -323,16 +323,6 @@ struct Slider {
         return options[index];
     }
 
-    bool setChoice(const std::string& wanted) {
-        for (std::size_t index = 0; index < options.size(); ++index) {
-            if (options[index] == wanted) {
-                value = static_cast<double>(index);
-                return true;
-            }
-        }
-        return false;
-    }
-
     std::string displayValue() const {
         if (kind == ControlKind::Choice)
             return choice();
@@ -3763,6 +3753,9 @@ private:
         pollTrayCommands();
         pollResultCatalog();
         pollSelectedFrame();
+        // The check runs on a thread of its own and lands whenever it lands,
+        // so the answer is picked up here rather than waited for.
+        refreshUpdateButton();
         // Playback no longer waits for the loaders to fall idle. They are
         // always busy pulling the window in now, and the next step is usually
         // already decoded; a cache miss simply lands a frame or two later.
@@ -9075,22 +9068,9 @@ private:
         return nullptr;
     }
 
-    bool frameCarriesDensity() const {
-        return activeFrame_ && densityScalarName(*activeFrame_) != nullptr;
-    }
-
-    bool colouredByDensity() const {
-        if (!activeFrame_ ||
-            view3DSettings_.colourBy != VolumeField::Scalar) {
-            return false;
-        }
-        const char* name = densityScalarName(*activeFrame_);
-        return name != nullptr && view3DSettings_.colourScalar == name;
-    }
-
-    // Straight to density, in one press, from wherever the cycle happens to
-    // be. In 2D that is the Field button's business and this only points it at
-    // the right entry.
+    // Straight to density, in one press, wherever the colour happens to be.
+    // In the flat view that is the Shows list's business and this only points
+    // it at the right entry.
     bool showDensity() {
         if (!activeFrame_) {
             return false;
@@ -10470,15 +10450,6 @@ private:
         status_ = "Coloured by " + name +
             ". Every layer that is on takes this - a cloud of Q is a cloud of "
             "vortices, an isosurface of density is a shock.";
-    }
-
-    bool isShown(const std::string& what) const {
-        if (what == "body") return view3DSettings_.showSolid;
-        if (what == "wireframe") return view3DSettings_.wireframeSolid;
-        if (what == "box") return view3DSettings_.showBox;
-        if (what == "grid") return view3DSettings_.showGrid;
-        if (what == "microphones") return view3DSettings_.showMicrophones;
-        return false;
     }
 
     void toggleShown(const std::string& what) {

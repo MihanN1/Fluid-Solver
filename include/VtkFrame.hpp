@@ -240,9 +240,6 @@ public:
         const std::vector<std::filesystem::path>& paths);
     static VtkSeriesLoadResult parseRecoverableSeries(
         const std::vector<std::filesystem::path>& paths);
-    static VtkSeriesCatalog catalogSeries(
-        const std::vector<std::filesystem::path>& paths,
-        bool recoverable);
     static VtkSeriesCatalog indexSeries(
         const std::vector<std::filesystem::path>& paths,
         bool recoverable);

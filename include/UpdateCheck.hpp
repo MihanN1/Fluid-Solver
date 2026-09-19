@@ -19,8 +19,6 @@ namespace update {
 // Where the check gets its numbers. The window is its own release with its own
 // version, so it cannot use the solver's: it asks about the repository it was
 // built from and compares against the version stamped into this binary.
-const char* currentVersion();
-const char* releasesPage();
 
 struct Result {
     bool checked = false;      // the request actually completed

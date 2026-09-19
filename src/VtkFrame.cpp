@@ -144,22 +144,6 @@ public:
             "Unexpected end of VTK file before binary " + context);
     }
 
-    float takeBigEndianFloat(const std::string& context) {
-        const std::uint32_t bits = takeBigEndianWord(context);
-        float value = 0.0f;
-        static_assert(sizeof(value) == sizeof(bits));
-        std::memcpy(&value, &bits, sizeof(value));
-        return value;
-    }
-
-    int takeBigEndianInt(const std::string& context) {
-        const std::uint32_t bits = takeBigEndianWord(context);
-        std::int32_t value = 0;
-        static_assert(sizeof(value) == sizeof(bits));
-        std::memcpy(&value, &bits, sizeof(value));
-        return static_cast<int>(value);
-    }
-
     void skipBinaryValues(
         std::size_t count,
         const std::string& type,
@@ -233,14 +217,6 @@ private:
         std::memcpy(destination, cursor_, byteCount);
         cursor_ += byteCount;
         swapWords(reinterpret_cast<std::uint32_t*>(destination), count);
-    }
-
-    std::uint32_t takeBigEndianWord(const std::string& context) {
-        std::uint32_t word = 0;
-        require(sizeof(word), "reading " + context);
-        std::memcpy(&word, cursor_, sizeof(word));
-        cursor_ += sizeof(word);
-        return swapWord(word);
     }
 
     void fill() {
@@ -1936,37 +1912,6 @@ bool sameSeriesLayout(
         frame.solid.size() == reference.solid.size();
 }
 
-void includeRange(DataRange& combined, const DataRange& range) {
-    if (!range.available) {
-        return;
-    }
-    if (!combined.available) {
-        combined = range;
-        return;
-    }
-    combined.minimum = std::min(combined.minimum, range.minimum);
-    combined.maximum = std::max(combined.maximum, range.maximum);
-}
-
-VtkFrame layoutOf(const VtkFrame& frame) {
-    VtkFrame layout;
-    layout.association = frame.association;
-    layout.nx = frame.nx;
-    layout.ny = frame.ny;
-    layout.nz = frame.nz;
-    layout.originX = frame.originX;
-    layout.originY = frame.originY;
-    layout.originZ = frame.originZ;
-    layout.faceX = frame.faceX;
-    layout.faceY = frame.faceY;
-    layout.faceZ = frame.faceZ;
-    layout.spacingX = frame.spacingX;
-    layout.spacingY = frame.spacingY;
-    layout.spacingZ = frame.spacingZ;
-    layout.solid = frame.solid;
-    return layout;
-}
-
 } // namespace
 
 
@@ -2081,119 +2026,6 @@ VtkSeriesLoadResult VtkFrameParser::parseRecoverableSeries(
         }
     }
     return result;
-}
-
-VtkSeriesCatalog VtkFrameParser::catalogSeries(
-    const std::vector<std::filesystem::path>& paths,
-    bool recoverable) {
-    if (paths.empty()) {
-        throw VtkParseError("No VTK frame files were selected");
-    }
-
-    VtkSeriesCatalog catalog;
-    std::vector<std::pair<int, std::filesystem::path>> numberedPaths;
-    numberedPaths.reserve(paths.size());
-    for (const std::filesystem::path& path : paths) {
-        std::error_code error;
-        if (!std::filesystem::is_regular_file(path, error) || error) {
-            if (!recoverable) {
-                throw VtkParseError(
-                    "VTK frame file does not exist: " + path.string());
-            }
-            catalog.rejected.push_back(
-                path.filename().string() +
-                ": file does not exist or is not regular");
-            continue;
-        }
-        const std::optional<int> number = frameNumberFromFilename(path);
-        if (!number) {
-            if (!recoverable) {
-                throw VtkParseError(
-                    "Expected a solver solution filename: " +
-                    path.filename().string());
-            }
-            catalog.rejected.push_back(
-                path.filename().string() +
-                ": expected a solver solution filename");
-            continue;
-        }
-        numberedPaths.emplace_back(*number, path);
-    }
-
-    std::sort(
-        numberedPaths.begin(),
-        numberedPaths.end(),
-        [](const auto& first, const auto& second) {
-            if (first.first != second.first) {
-                return first.first < second.first;
-            }
-            return first.second.string() < second.second.string();
-        });
-
-    std::optional<VtkFrame> referenceLayout;
-    for (std::size_t index = 0; index < numberedPaths.size(); ++index) {
-        const auto& numberedPath = numberedPaths[index];
-        if (index != 0 &&
-            numberedPaths[index - 1].first == numberedPath.first) {
-            if (!recoverable) {
-                throw VtkParseError(
-                    "Duplicate VTK frame number: " +
-                    std::to_string(numberedPath.first));
-            }
-            catalog.rejected.push_back(
-                numberedPath.second.filename().string() +
-                ": duplicate solver step " +
-                std::to_string(numberedPath.first));
-            continue;
-        }
-        try {
-            VtkFrame frame = parse(numberedPath.second);
-            if (!referenceLayout) {
-                referenceLayout = layoutOf(frame);
-            } else if (!sameSeriesLayout(*referenceLayout, frame)) {
-                throw VtkParseError(
-                    "VTK frame series changes association, grid, or mask");
-            }
-            includeRange(catalog.pressureRange, frame.pressureRange);
-            includeRange(
-                catalog.pressureTrimmedRange, frame.pressureTrimmedRange);
-            includeRange(
-                catalog.velocityMagnitudeTrimmedRange,
-                frame.velocityMagnitudeTrimmedRange);
-            includeRange(
-                catalog.velocityMagnitudeRange,
-                frame.velocityMagnitudeRange);
-            catalog.warningCount += frame.warnings.size();
-            catalog.frames.push_back({
-                frame.sourcePath,
-                frame.frameNumber,
-                frame.warnings.size()
-            });
-            if (index + 1u == numberedPaths.size()) {
-                catalog.activeFrame = std::move(frame);
-            }
-        } catch (const std::exception& exception) {
-            if (!recoverable) {
-                throw;
-            }
-            catalog.rejected.push_back(
-                numberedPath.second.filename().string() + ": " +
-                exception.what());
-        }
-    }
-
-    if (catalog.frames.empty()) {
-        return catalog;
-    }
-    if (catalog.activeFrame.sourcePath != catalog.frames.back().sourcePath) {
-        catalog.activeFrame = parse(catalog.frames.back().sourcePath);
-        if (!referenceLayout ||
-            !sameSeriesLayout(*referenceLayout, catalog.activeFrame)) {
-            throw VtkParseError(
-                "VTK frame changed while the series was being cataloged");
-        }
-    }
-    return catalog;
 }
 
 VtkSeriesCatalog VtkFrameParser::indexSeries(

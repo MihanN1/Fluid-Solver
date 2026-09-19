@@ -349,7 +349,5 @@ void checkInBackground(std::function<void(Result)> done) {
     }).detach();
 }
 
-const char* currentVersion() { return CFD_MASK_UI_VERSION; }
-const char* releasesPage() { return CFD_RELEASES_URL; }
 
 }   // namespace update
