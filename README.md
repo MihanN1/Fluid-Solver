@@ -1,6 +1,7 @@
 (lets just forget that we pushed 12 commits just for things to build normally and files to look at least alright 'cause we're stooooopid as shi)
 (from Kuzya: i dunno how it works, i have a feeling it's something alive, and changes by itself <3. TOTALLY NOT ME COMMITING 12 TIMES)
 # Fluid-Solver
+TO UNINSTALL EVERYTHING THE INSTALLER INSTALLED, U NEED TO LAUNCH 'unins....' FILE IN CORE FOLDER.
 
 > **1.0 is still the version, and it is no longer the last thing that happened.**
 >
