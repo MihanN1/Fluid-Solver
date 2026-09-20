@@ -737,8 +737,12 @@ int main() {
     config.nx = 1024;
     config.ny = 1024;
     config.nz = 1024;
+    if (!maskui::validateFluidSolverRunConfig(config, error)) {
+        return fail("a billion cells were refused: " + error);
+    }
+    config.nx = 7;
     if (maskui::validateFluidSolverRunConfig(config, error)) {
-        return fail("a billion cells were accepted");
+        return fail("a grid below the eight-cell floor was accepted");
     }
     config.nx = 50;
     config.ny = 50;

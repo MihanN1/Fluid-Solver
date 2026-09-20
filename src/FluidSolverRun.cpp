@@ -15,8 +15,6 @@ namespace maskui {
 namespace {
 
 constexpr int kMinimumGridDimension = 8;
-constexpr int kMaximumGridDimension = 1'000'000;
-constexpr std::size_t kMaximumGridCells = 100'000'000;
 
 bool fail(std::string& error, const std::string& message) {
     error = message;
@@ -53,28 +51,26 @@ bool requireNonNegative(const char* name,
 }
 
 bool validateGrid(const FluidSolverRunConfig& config, std::string& error) {
-    if (config.nx < kMinimumGridDimension ||
-        config.nx > kMaximumGridDimension) {
-        return fail(error, "nx must be in [8, 1000000]");
+    if (config.nx < kMinimumGridDimension) {
+        return fail(error, "nx must be at least 8");
     }
-    if (config.ny < kMinimumGridDimension ||
-        config.ny > kMaximumGridDimension) {
-        return fail(error, "ny must be in [8, 1000000]");
+    if (config.ny < kMinimumGridDimension) {
+        return fail(error, "ny must be at least 8");
     }
 
-    if (config.nz < 1 || config.nz > kMaximumGridDimension) {
-        return fail(error, "nz must be in [1, 1000000]");
+    if (config.nz < 1) {
+        return fail(error, "nz must be at least 1");
     }
 
     const std::size_t width = static_cast<std::size_t>(config.nx);
     const std::size_t height = static_cast<std::size_t>(config.ny);
     const std::size_t depth = static_cast<std::size_t>(config.nz);
-    if (width > std::numeric_limits<std::size_t>::max() / height ||
-        width * height > kMaximumGridCells) {
-        return fail(error, "nx * ny exceeds the 100000000-cell limit");
+    if (width > std::numeric_limits<std::size_t>::max() / height) {
+        return fail(error, "nx * ny overflows the addressable cell count");
     }
-    if (width * height > kMaximumGridCells / depth) {
-        return fail(error, "nx * ny * nz exceeds the 100000000-cell limit");
+    if (width * height > std::numeric_limits<std::size_t>::max() / depth) {
+        return fail(
+            error, "nx * ny * nz overflows the addressable cell count");
     }
     return true;
 }
