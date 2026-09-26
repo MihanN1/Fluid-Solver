@@ -1,5 +1,4 @@
-(lets just forget that we pushed 12 commits just for things to build normally and files to look at least alright 'cause we're stooooopid as shi)
-(from Kuzya: i dunno how it works, i have a feeling it's something alive, and changes by itself <3. TOTALLY NOT ME COMMITING 12 TIMES)
+(High performance computing, GPU acceleration, Multiprocessing and load balancing is included here)
 # Fluid-Solver
 TO UNINSTALL EVERYTHING THE INSTALLER INSTALLED, U NEED TO LAUNCH 'unins....' FILE IN CORE FOLDER.
 
